@@ -1,0 +1,22 @@
+# --- 核心框架 ---
+fastapi>=0.95.0
+uvicorn>=0.22.0
+PyQt5>=5.15.9
+PyQtWebEngine>=5.15.6
+
+# --- AI 与 网络 ---
+openai>=1.0.0
+requests>=2.31.0
+pydantic>=2.0.0
+
+# --- 语音与多媒体 ---
+edge-tts>=6.1.9
+# pyaudio>=0.2.13  # 如果开启语音识别需要取消注释
+
+# --- 工具与配置 ---
+PyYAML>=6.0
+matplotlib>=3.7.0  # 用于生成情绪图表
+
+# --- 阿里云语音识别 (可选，如果启用了 voice_recognizer.py) ---
+# aliyun-python-sdk-core
+# aliyun-python-sdk-nls

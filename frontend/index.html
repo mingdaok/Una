@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Una Renderer (Hybrid Pro)</title>
+    <script src="assets/pixi.min.js"></script>
+    <script src="assets/live2d.min.js"></script>
+    <script src="assets/live2dcubismcore.min.js"></script>
+    <script src="assets/pixi-live2d-display.min.js"></script>
+    <style>
+        body { margin: 0; background-color: transparent; overflow: hidden; }
+        #canvas { width: 100vw; height: 100vh; }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <script>
+        let app, model;
+        let audioCtx, analyser, audioSource, audioElement;
+        
+        // --- ⚙️ 参数配置 ---
+        const config = {
+            sensitivity: 2.5,     // 基础灵敏度
+            dynamicEmphasis: 4.0, // 🔥 动态强调系数 (让咬字更清晰)
+            smoothness: 0.6,      // 平滑系数 (越小越灵敏，越大越迟缓)
+        };
+
+        // 状态记录
+        let currentOpenY = 0;
+        let currentForm = 0;
+        let lastVolume = 0; // 记录上一帧音量，用于计算突变
+
+        (async function init() {
+            app = new PIXI.Application({
+                view: document.getElementById('canvas'),
+                transparent: true,
+                autoStart: true,
+                resizeTo: window,
+                antialias: true
+            });
+
+            try {
+                // 替换为你的肥牛模型路径
+                model = await PIXI.live2d.Live2DModel.from('Resources/v3/hiyori/hiyori_pro_mic.model3.json');
+                app.stage.addChild(model);
+                
+                const fitModel = () => {
+                    model.scale.set(0.2); // 肥牛可能需要调整大小
+                    model.anchor.set(0.5, 0.5);
+                    model.x = window.innerWidth / 2;
+                    model.y = window.innerHeight / 2;
+                };
+                fitModel();
+                window.onresize = fitModel;
+
+                console.log("✅ Live2D 模型加载完毕");
+
+                // --- 👄 混合驱动算法 ---
+                app.ticker.add(() => {
+                    if (!model || !model.internalModel || !model.internalModel.coreModel) return;
+
+                    let targetOpenY = 0;
+                    let targetForm = 0;
+
+                    if (analyser && audioElement && !audioElement.paused) {
+                        const bufferLength = analyser.frequencyBinCount;
+                        const dataArray = new Uint8Array(bufferLength);
+                        analyser.getByteFrequencyData(dataArray);
+                        
+                        // 1. 计算当前帧的总音量 (RMS)
+                        let sum = 0;
+                        const lowIndex = Math.floor(bufferLength * 0.05);
+                        const highIndex = Math.floor(bufferLength * 0.7);
+                        for (let i = lowIndex; i < highIndex; i++) {
+                            sum += dataArray[i] * dataArray[i]; // 平方和
+                        }
+                        const currentVolume = Math.sqrt(sum / (highIndex - lowIndex));
+
+                        // 2. 🔥 借鉴点：计算能量突变 (Delta)
+                        // 如果这一帧比上一帧响很多，说明是在“发音瞬间”
+                        let delta = Math.abs(currentVolume - lastVolume);
+                        lastVolume = currentVolume; // 更新记录
+
+                        // 3. 混合计算目标张开度
+                        // 基础音量占 40%，突变变化占 60% -> 既有长音支撑，又有咬字节奏
+                        if (currentVolume > 5) {
+                            let rawOpen = (currentVolume / 100) * 0.4 + (delta / 50) * 0.6;
+                            targetOpenY = Math.min(1.0, rawOpen * config.sensitivity);
+
+                            // 4. 计算嘴型 (Form) - 保持之前的频率重心算法
+                            let weightedSum = 0;
+                            let weightTotal = 0;
+                            for (let i = lowIndex; i < highIndex; i++) {
+                                weightedSum += i * dataArray[i];
+                                weightTotal += dataArray[i];
+                            }
+                            const centroid = weightTotal > 0 ? weightedSum / weightTotal : 0;
+                            const centerBin = (highIndex - lowIndex) * 0.25 + lowIndex;
+                            const deviation = centroid - centerBin;
+                            targetForm = Math.max(-1.0, Math.min(1.0, deviation * 0.05 * 2.0));
+                        }
+                    }
+
+                    // 5. 物理平滑
+                    currentOpenY += (targetOpenY - currentOpenY) * (1 - config.smoothness);
+                    currentForm += (targetForm - currentForm) * (1 - config.smoothness);
+
+                    // 6. 应用参数 (使用之前写的万能兼容函数)
+                    setMouthValue(model, currentOpenY);
+                    
+                    // 设置嘴型 Form
+                    if (model.internalModel.coreModel.setParameterValueById) {
+                        try { model.internalModel.coreModel.setParameterValueById('ParamMouthForm', currentForm); } catch(e) {}
+                    }
+                });
+
+            } catch (e) {
+                console.error("❌ 模型加载失败:", e);
+            }
+        })();
+
+        // --- 万能设置函数 (借鉴点：暴力兼容) ---
+        function setMouthValue(model, value) {
+            value = Math.max(0, Math.min(value, 1.0));
+            const core = model.internalModel.coreModel;
+            // 尝试所有可能的 ID
+            try { core.setParameterValueById('ParamMouthOpenY', value); } catch (e) {}
+            try { core.setParameterValueById('PARAM_MOUTH_OPEN_Y', value); } catch (e) {}
+            try { core.setParameterValueById('ParamMouthOpen', value); } catch (e) {}
+        }
+
+        // --- 播放控制 ---
+        window.playVoice = (relativePath) => {
+            window.stopVoice();
+            audioElement = new Audio(relativePath);
+            audioElement.crossOrigin = "anonymous";
+
+            if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+
+            analyser = audioCtx.createAnalyser();
+            analyser.fftSize = 512;
+            analyser.smoothingTimeConstant = 0.3; // 降低硬件平滑，交给我们手动计算
+            
+            audioSource = audioCtx.createMediaElementSource(audioElement);
+            audioSource.connect(analyser);
+            analyser.connect(audioCtx.destination);
+
+            audioElement.play().catch(e => console.error(e));
+            
+            // 肥牛模型推荐动作
+            if(model) {
+                // 随机播放一个动作，让它动起来
+                const randomMotion = 'Hiyori_m0' + (Math.floor(Math.random() * 8) + 1);
+                try { model.motion(randomMotion); } catch(e) { model.motion('TapBody'); }
+            }
+
+            audioElement.onended = () => {
+                if(model) model.motion('Idle'); // 回到待机
+                resetMouth();
+            };
+        };
+
+        window.stopVoice = () => {
+            if (audioElement) {
+                audioElement.pause();
+                audioElement = null;
+            }
+            resetMouth();
+        };
+
+        function resetMouth() {
+            currentOpenY = 0;
+            currentForm = 0;
+            lastVolume = 0; // 重置音量记录
+            setMouthValue(model, 0);
+        }
+        
+        window.playMotion = (group) => { if(model) model.motion(group); };
+    </script>
+</body>
+</html>
