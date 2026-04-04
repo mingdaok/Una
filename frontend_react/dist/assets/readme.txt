@@ -1,0 +1,1 @@
+请把你原来的 bg_living_room.png 等图片复制到这个文件夹，并重命名为 bg_living.jpg 和 bg_study.jpg

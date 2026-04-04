@@ -1,0 +1,57 @@
+{
+	"Version": 3,
+	"FileReferences": {
+		"Moc": "panda_cake.moc3",
+		"Textures": [
+			"panda_cake_4096/texture_00.png",
+			"panda_cake_4096/texture_01.png",
+			"panda_cake_4096/texture_02.png",
+			"panda_cake_4096/texture_03.png",
+			"panda_cake_4096/texture_04.png",
+			"panda_cake_4096/texture_05.png",
+			"panda_cake_4096/texture_06.png",
+			"panda_cake_4096/texture_07.png"
+		],
+		"Physics": "panda_cake.physics3.json",
+		"DisplayInfo": "panda_cake.cdi3.json",
+		"Motions": {
+			"Idle": [
+				{ "File": "idle.motion3.json", "FadeInTime": 0.5, "FadeOutTime": 0.5 }
+			],
+			"Walk": [
+				{ "File": "walk.motion3.json", "FadeInTime": 0.3, "FadeOutTime": 0.3 }
+			],
+			"Sleepy": [
+				{ "File": "sleepy.motion3.json", "FadeInTime": 0.8, "FadeOutTime": 0.8 }
+			]
+		},
+		"Expressions": [
+			{ "Name": "blush",      "File": "blush.exp3.json" },
+			{ "Name": "tears",      "File": "tears.exp3.json" },
+			{ "Name": "heart_eyes", "File": "heart_eyes.exp3.json" },
+			{ "Name": "star_eyes",  "File": "star_eyes.exp3.json" },
+			{ "Name": "dark_face",  "File": "dark_face.exp3.json" },
+			{ "Name": "dizzy_eyes", "File": "dizzy_eyes.exp3.json" },
+			{ "Name": "poke_face",  "File": "poke_face.exp3.json" },
+			{ "Name": "panda_pillow", "File": "panda_pillow.exp3.json" },
+			{ "Name": "shrink",     "File": "shrink.exp3.json" },
+			{ "Name": "tongue",     "File": "tongue.exp3.json" },
+			{ "Name": "icecream",   "File": "icecream.exp3.json" }
+		]
+	},
+	"Groups": [
+		{
+			"Target": "Parameter",
+			"Name": "LipSync",
+			"Ids": []
+		},
+		{
+			"Target": "Parameter",
+			"Name": "EyeBlink",
+			"Ids": [
+				"ParamEyeLOpen",
+				"ParamEyeROpen"
+			]
+		}
+	]
+}

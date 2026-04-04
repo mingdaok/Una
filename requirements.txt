@@ -1,22 +1,44 @@
-# --- 核心框架 ---
+# ==================================
+# Una AI Server - Requirements
+# ==================================
+
+# --- 核心 Web 框架 ---
 fastapi>=0.95.0
 uvicorn>=0.22.0
-PyQt5>=5.15.9
-PyQtWebEngine>=5.15.6
+python-multipart>=0.0.6  # FastAPI 接收音频/文件上传必须
+websockets>=11.0.0       # 后端 WebSocket 协议必须
+apscheduler>=3.10.0      # 定时任务 (晚上自动写日记)
 
-# --- AI 与 网络 ---
-openai>=1.0.0
+# --- AI 大脑与网络 ---
+openai>=1.0.0            # 兼容所有类 OpenAI API (DeepSeek/SiliconFlow)
 requests>=2.31.0
 pydantic>=2.0.0
 
-# --- 语音与多媒体 ---
-edge-tts>=6.1.9
-# pyaudio>=0.2.13  # 如果开启语音识别需要取消注释
+# --- 数据库与记忆管理 ---
+chromadb>=0.4.0          # 核心记忆向量数据库 (如果不装会报记忆模块错误)
 
-# --- 工具与配置 ---
-PyYAML>=6.0
-matplotlib>=3.7.0  # 用于生成情绪图表
+# --- 语音识别 (ASR) 与处理 ---
+funasr>=1.0.0            # 本地 SenseVoice 语音识别核心库
+modelscope>=1.10.0       # FunASR 模型下载依赖
+torchaudio>=2.0.0        # 音频处理依赖
 
-# --- 阿里云语音识别 (可选，如果启用了 voice_recognizer.py) ---
-# aliyun-python-sdk-core
-# aliyun-python-sdk-nls
+# --- 语音合成 (TTS) ---
+edge-tts>=6.1.9          # 兜底使用的 Edge TTS
+
+# --- 工具与辅助系统 ---
+PyYAML>=6.0              # 读取 config.yaml 必须
+matplotlib>=3.7.0        # 读取情绪绘图必须
+
+# ==================================
+# 部署服务器 特别注意事项：
+# ==================================
+# 1. 如果你在云端租用的是 【PyTorch 镜像】，它系统里自带了 PyTorch, torchvision, torchaudio。
+#    因此你直接 pip install -r requirements.txt 即可，不要在这里写 torch 以免发生冲突！
+#
+# 2. 如果是用空的纯净系统或者 Miniconda，你需要手动安装 GPU 版 PyTorch，命令如下：
+#    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+#
+# 3. 本项目依赖 FFmpeg，必须在 Linux 系统层安装：
+#    Ubuntu/Debian 系统执行: apt-get update && apt-get install ffmpeg -y
+#
+# 4. 如果使用 GPT-SoVITS 语音合成，请保持你的 GPT-SoVITS 服务独立运行。

@@ -1,0 +1,44 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 全局样式 */
+body { 
+    margin: 0; 
+    background-color: #000; 
+    overflow: hidden; 
+    font-family: 'Noto Sans SC', sans-serif;
+}
+
+/* 3D 翻转效果所需的工具类 */
+.perspective-1000 { 
+    perspective: 1000px; 
+}
+
+.preserve-3d { 
+    transform-style: preserve-3d; 
+}
+
+/* 隐藏背面 */
+.backface-hidden {
+    backface-visibility: hidden;
+    -webkit-backface-visibility: hidden;
+}
+
+/* 自定义滚动条 (用于日记背面) */
+.custom-scrollbar::-webkit-scrollbar { 
+    width: 4px; 
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb { 
+    background: rgba(139, 94, 60, 0.3); 
+    border-radius: 4px; 
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover { 
+    background: rgba(139, 94, 60, 0.5); 
+}

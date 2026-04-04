@@ -1,0 +1,22 @@
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+export default defineConfig({
+  plugins: [react()],
+  base: './',  // <--- 关键修复：指定部署的基础路径
+  build: {
+    outDir: 'dist',
+    assetsDir: 'assets',
+  },
+  server: {
+    host: '0.0.0.0',
+    proxy: {
+      '/chat': 'http://127.0.0.1:8000',
+      '/history': 'http://127.0.0.1:8000',
+      '/ws': {
+        target: 'ws://127.0.0.1:8000',
+        ws: true
+      }
+    }
+  }
+})

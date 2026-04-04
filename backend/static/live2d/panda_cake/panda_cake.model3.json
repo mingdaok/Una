@@ -1,0 +1,33 @@
+{
+	"Version": 3,
+	"FileReferences": {
+		"Moc": "panda_cake.moc3",
+		"Textures": [
+			"panda_cake_4096/texture_00.png",
+			"panda_cake_4096/texture_01.png",
+			"panda_cake_4096/texture_02.png",
+			"panda_cake_4096/texture_03.png",
+			"panda_cake_4096/texture_04.png",
+			"panda_cake_4096/texture_05.png",
+			"panda_cake_4096/texture_06.png",
+			"panda_cake_4096/texture_07.png"
+		],
+		"Physics": "panda_cake.physics3.json",
+		"DisplayInfo": "panda_cake.cdi3.json"
+	},
+	"Groups": [
+		{
+			"Target": "Parameter",
+			"Name": "LipSync",
+			"Ids": []
+		},
+		{
+			"Target": "Parameter",
+			"Name": "EyeBlink",
+			"Ids": [
+				"ParamEyeLOpen",
+				"ParamEyeROpen"
+			]
+		}
+	]
+}

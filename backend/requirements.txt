@@ -1,0 +1,28 @@
+# --- 核心框架 ---
+fastapi>=0.95.0
+uvicorn>=0.22.0
+python-multipart>=0.0.6  # 必加！否则无法接收上传的文件
+
+# --- AI 与 网络 ---
+openai>=1.0.0
+requests>=2.31.0
+pydantic>=2.0.0
+
+# --- 数据库与记忆 (核心缺失) ---
+chromadb>=0.4.0  # 必加！否则记忆功能报错
+
+# --- 语音与多媒体 ---
+edge-tts>=6.1.9
+funasr>=1.0.0    # 必加！本地语音识别模型依赖
+modelscope>=1.10.0 # funasr 的依赖库
+
+# --- 工具与配置 ---
+PyYAML>=6.0
+matplotlib>=3.7.0
+apscheduler>=3.10.0  # 定时任务（日记生成）
+
+# --- 注意事项 ---
+# 1. 这是一个纯后端清单，已移除 PyQt5 等桌面库，适合云服务器部署。
+# 2. 部署时还需要在系统层面安装 ffmpeg (sudo apt install ffmpeg)。
+# 3. torch (PyTorch) 建议单独安装 CPU 版以节省服务器空间，不要直接写在这里以免下载成庞大的 GPU 版。
+#    命令: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
