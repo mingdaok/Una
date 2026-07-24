@@ -3,14 +3,17 @@ social_db.py — UNA 朋友圈数据库操作层
 使用原生 sqlite3，与现有 database.py 保持一致的风格。
 三张核心表：una_posts (动态) / una_comments (评论) / una_post_likes (点赞)
 """
+from __future__ import annotations
+
 import os
 import json
 import sqlite3
 import datetime
+from settings import settings
 
 # 复用与 database.py 相同的 DB 路径配置
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(CURRENT_DIR, "una_memory.db")
+DB_PATH = settings.database_path or os.path.join(CURRENT_DIR, "una_memory.db")
 
 
 # ====================================================

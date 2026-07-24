@@ -7,6 +7,8 @@ python-multipart>=0.0.6  # 必加！否则无法接收上传的文件
 openai>=1.0.0
 requests>=2.31.0
 pydantic>=2.0.0
+PyJWT>=2.10.0
+pwdlib[argon2]>=0.2.0
 aiohttp>=3.8.0           # 必加！GPT-SoVITS 异步请求必须
 
 # --- 数据库与记忆 (核心缺失) ---

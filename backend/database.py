@@ -2,10 +2,11 @@ import sqlite3
 import os
 import hashlib
 import datetime
+from settings import settings
 
 # 🔥 核心修复：确保路径绝对正确，防止 nohup 启动时找不到 DB
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(CURRENT_DIR, "una_memory.db")
+DB_PATH = settings.database_path or os.path.join(CURRENT_DIR, "una_memory.db")
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -31,6 +32,32 @@ def init_db():
             password_hash TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
+    """)
+
+    # 公网多用户账号与可撤销刷新会话。保留上方 legacy users 表，避免影响历史本地数据。
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS app_users (
+            id TEXT PRIMARY KEY,
+            username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+            password_hash TEXT NOT NULL,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS auth_refresh_sessions (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            token_hash TEXT NOT NULL UNIQUE,
+            expires_at TEXT NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            revoked_at TEXT,
+            FOREIGN KEY (user_id) REFERENCES app_users(id)
+        )
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_auth_refresh_sessions_user_id
+        ON auth_refresh_sessions(user_id)
     """)
     
     # 🔥 自动迁移：检查旧表是否缺少 mood_score 或 audio_path 字段
@@ -87,6 +114,91 @@ def login_user(username, password):
 # ==========================================
 # 💬 消息记录模块
 # ==========================================
+def create_app_user(user_id, username, password_hash):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO app_users (id, username, password_hash) VALUES (?, ?, ?)",
+            (user_id, username, password_hash),
+        )
+        conn.commit()
+        return get_app_user_by_id(user_id)
+    except sqlite3.IntegrityError:
+        return None
+    finally:
+        if 'conn' in locals():
+            conn.close()
+
+
+def get_app_user_by_id(user_id):
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT id, username, password_hash, is_active, created_at FROM app_users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_app_user_by_username(username):
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT id, username, password_hash, is_active, created_at FROM app_users WHERE username = ?",
+            (username,),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_password_hash(user_id):
+    user = get_app_user_by_id(user_id)
+    return user["password_hash"] if user else None
+
+
+def create_refresh_session(session_id, user_id, token_hash, expires_at):
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute(
+            "INSERT INTO auth_refresh_sessions (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)",
+            (session_id, user_id, token_hash, expires_at),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def consume_refresh_session(token_hash, revoked_at):
+    """原子地撤销一个仍有效的刷新令牌，并返回其所属用户。"""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """
+            SELECT id, user_id FROM auth_refresh_sessions
+            WHERE token_hash = ? AND revoked_at IS NULL AND expires_at > ?
+            """,
+            (token_hash, revoked_at),
+        ).fetchone()
+        if not row:
+            conn.rollback()
+            return None
+        conn.execute(
+            "UPDATE auth_refresh_sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
+            (revoked_at, row[0]),
+        )
+        conn.commit()
+        return row[1]
+    finally:
+        conn.close()
+
+
 def add_message(user_id, role, content, mood_score=0, audio_path=None):
     try:
         conn = sqlite3.connect(DB_PATH)

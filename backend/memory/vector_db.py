@@ -1,14 +1,16 @@
 import os
-import chromadb
-from chromadb.utils import embedding_functions
+from settings import settings
 
 # 获取数据库存储路径
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 BACKEND_DIR = os.path.dirname(CURRENT_DIR)
-DB_PERSIST_PATH = os.path.join(BACKEND_DIR, "data", "chroma_db")
+DB_PERSIST_PATH = settings.chroma_path or os.path.join(BACKEND_DIR, "data", "chroma_db")
 
 class MemoryStorage:
     def __init__(self):
+        import chromadb
+        from chromadb.utils import embedding_functions
+
         print("🧠 [VectorDB] 正在连接多用户记忆库 (Smart Recall版)...")
         
         if not os.path.exists(DB_PERSIST_PATH):
