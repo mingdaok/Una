@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 import social_db
+from auth_api import get_current_user
 import database  # 🔥 引入消息记录模块，用于文本聊天记忆持久化
 
 brain_instance = None  # 由 main_server.py 初始化后注入
@@ -209,16 +210,17 @@ ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic"}
 # 单张图片大小限制（10 MB）
 MAX_IMG_SIZE = 10 * 1024 * 1024
 
-router = APIRouter(prefix="/api/social", tags=["社交朋友圈"])
+router = APIRouter(
+    prefix="/api/social",
+    tags=["社交朋友圈"],
+    dependencies=[Depends(get_current_user)],
+)
 
 
 # ====================================================
 # 📦 Pydantic 请求体
 # ====================================================
 class CreatePostBody(BaseModel):
-    owner_user_id: str
-    author_id: str
-    author_name: str = ""
     author_type: str = "user"   # "user" 或 "ai"
     author_avatar: str = ""     # 发布者头像 URL
     content: str = ""
@@ -230,23 +232,20 @@ class CreatePostBody(BaseModel):
 
 
 class LikeBody(BaseModel):
-    user_id: str
-    user_name: str = ""
+    pass
 
 
 class CommentBody(BaseModel):
-    user_id: str
-    user_name: str = ""
     content: str
     reply_to_id: Optional[int] = None
 
 
 class DeleteCommentBody(BaseModel):
-    user_id: str
+    pass
 
 
 class DeletePostBody(BaseModel):
-    author_id: str
+    pass
 
 
 # ====================================================
@@ -298,19 +297,23 @@ async def upload_images(files: List[UploadFile] = File(...)):
 # 📝 发布动态
 # ====================================================
 @router.post("/post", summary="发布新动态")
-async def create_post(body: CreatePostBody, background_tasks: BackgroundTasks):
+async def create_post(
+    body: CreatePostBody,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user),
+):
     if not body.content.strip() and not body.image_urls:
         raise HTTPException(status_code=400, detail="动态内容和图片不能同时为空")
 
     post = social_db.create_post(
-        owner_user_id=body.owner_user_id,
-        author_id=body.author_id,
+        owner_user_id=current_user["id"],
+        author_id=current_user["id"],
         content=body.content.strip(),
         images=body.image_urls,
         location=body.location,
-        author_name=body.author_name,
-        author_type=body.author_type,
-        author_avatar=body.author_avatar,
+        author_name=current_user["username"],
+        author_type="user",
+        author_avatar="",
         emoji_pack_ids=body.emoji_pack_ids,
         post_type=body.post_type,
         visibility=body.visibility,
@@ -319,7 +322,7 @@ async def create_post(body: CreatePostBody, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=500, detail="动态发布失败，请稍后重试")
 
     # 🔥 用户发朋友圈时，AI 自动评论（仅对非 AI 发布的动态生效）
-    if body.author_type != "ai" and body.author_id != "ai_una" and post:
+    if post:
         background_tasks.add_task(auto_comment_on_post, post["id"])
 
     return {"status": "ok", "post": post}
@@ -329,8 +332,11 @@ async def create_post(body: CreatePostBody, background_tasks: BackgroundTasks):
 # 🗑️ 删除动态
 # ====================================================
 @router.delete("/post/{post_id}", summary="删除自己的动态")
-async def delete_post(post_id: int, body: DeletePostBody):
-    success = social_db.delete_post(post_id, body.author_id)
+async def delete_post(post_id: int, body: DeletePostBody, current_user: dict = Depends(get_current_user)):
+    post = social_db.get_post_by_id(post_id)
+    if not post or post.get("owner_user_id") != current_user["id"]:
+        raise HTTPException(status_code=403, detail="无权删除该动态")
+    success = social_db.delete_post(post_id, current_user["id"])
     if not success:
         raise HTTPException(status_code=403, detail="动态不存在或无权删除")
     return {"status": "ok"}
@@ -341,16 +347,16 @@ async def delete_post(post_id: int, body: DeletePostBody):
 # ====================================================
 @router.get("/feed", summary="分页获取朋友圈动态列表")
 async def get_feed(
-    owner_user_id: str = Query(..., description="所属的用户（用于租户隔离）"),
     page: int = Query(default=1, ge=1, description="页码，从 1 开始"),
     page_size: int = Query(default=20, ge=1, le=50, description="每页条数（最大 50）"),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     返回按时间倒序分页的动态列表，每条动态内嵌：
     - likes: 点赞用户列表
     - comments: 树状评论（顶层 comments 下含 replies 子列表）
     """
-    result = social_db.get_feed(owner_user_id=owner_user_id, page=page, page_size=page_size)
+    result = social_db.get_feed(owner_user_id=current_user["id"], page=page, page_size=page_size)
     return result
 
 
@@ -358,14 +364,15 @@ async def get_feed(
 # ❤️ 点赞 / 取消点赞
 # ====================================================
 @router.post("/post/{post_id}/like", summary="点赞或取消点赞")
-async def toggle_like(post_id: int, body: LikeBody):
-    if not body.user_id:
-        raise HTTPException(status_code=400, detail="user_id 不能为空")
+async def toggle_like(post_id: int, body: LikeBody, current_user: dict = Depends(get_current_user)):
+    post = social_db.get_post_by_id(post_id)
+    if not post or post.get("owner_user_id") != current_user["id"]:
+        raise HTTPException(status_code=404, detail="动态不存在")
 
     result = social_db.toggle_like(
         post_id=post_id,
-        user_id=body.user_id,
-        user_name=body.user_name,
+        user_id=current_user["id"],
+        user_name=current_user["username"],
     )
     if result["action"] == "error":
         raise HTTPException(status_code=500, detail="操作失败，请稍后重试")
@@ -377,24 +384,30 @@ async def toggle_like(post_id: int, body: LikeBody):
 # 💬 发表评论 / 楼中楼回复
 # ====================================================
 @router.post("/post/{post_id}/comment", summary="发表评论或楼中楼回复")
-async def add_comment(post_id: int, body: CommentBody, background_tasks: BackgroundTasks):
+async def add_comment(
+    post_id: int,
+    body: CommentBody,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user),
+):
     if not body.content.strip():
         raise HTTPException(status_code=400, detail="评论内容不能为空")
-    if not body.user_id:
-        raise HTTPException(status_code=400, detail="user_id 不能为空")
+    post = social_db.get_post_by_id(post_id)
+    if not post or post.get("owner_user_id") != current_user["id"]:
+        raise HTTPException(status_code=404, detail="动态不存在")
 
     comment = social_db.add_comment(
         post_id=post_id,
-        user_id=body.user_id,
+        user_id=current_user["id"],
         content=body.content.strip(),
         reply_to_id=body.reply_to_id,
-        user_name=body.user_name,
+        user_name=current_user["username"],
     )
     if comment is None:
         raise HTTPException(status_code=500, detail="评论发布失败，请稍后重试")
 
     # 🔥 放宽 AI 自动回复触发条件
-    if body.user_id != "ai_una":
+    if current_user["id"] != "ai_una":
         should_ai_reply = False
         post = social_db.get_post_by_id(post_id)
 
@@ -476,8 +489,18 @@ async def ai_reply_comment(post_id: int, comment_id: int):
 # 🗑️ 删除评论
 # ====================================================
 @router.delete("/comment/{comment_id}", summary="删除自己的评论")
-async def delete_comment(comment_id: int, body: DeleteCommentBody):
-    success = social_db.delete_comment(comment_id, body.user_id)
+async def delete_comment(
+    comment_id: int,
+    body: DeleteCommentBody,
+    current_user: dict = Depends(get_current_user),
+):
+    comment = social_db.get_comment_by_id(comment_id)
+    if not comment or comment.get("user_id") != current_user["id"]:
+        raise HTTPException(status_code=403, detail="评论不存在或无权删除")
+    post = social_db.get_post_by_id(comment["post_id"])
+    if not post or post.get("owner_user_id") != current_user["id"]:
+        raise HTTPException(status_code=403, detail="评论不存在或无权删除")
+    success = social_db.delete_comment(comment_id, current_user["id"])
     if not success:
         raise HTTPException(status_code=403, detail="评论不存在或无权删除")
     return {"status": "ok"}
@@ -702,9 +725,11 @@ async def get_friend_relationship(user_id: str = Query(...), friend_id: str = Qu
 # 👤 用户档案 API
 # ====================================================
 @router.get("/user/{user_id}/profile", summary="获取用户档案")
-async def get_user_profile(user_id: str):
+async def get_user_profile(user_id: str, current_user: dict = Depends(get_current_user)):
     """获取用户的头像、封面等档案信息"""
-    profile = social_db.get_or_create_user_profile(user_id)
+    if user_id != current_user["id"]:
+        raise HTTPException(status_code=403, detail="无权读取其他用户资料")
+    profile = social_db.get_or_create_user_profile(current_user["id"])
     if profile is None:
         raise HTTPException(status_code=500, detail="档案获取失败")
     return {"status": "ok", "profile": profile}
@@ -716,11 +741,14 @@ async def update_user_profile(
     avatar_url: str = Query(default=None, description="头像 URL"),
     cover_url: str = Query(default=None, description="封面 URL"),
     nickname: str = Query(default=None, description="昵称"),
-    bio: str = Query(default=None, description="个人简介")
+    bio: str = Query(default=None, description="个人简介"),
+    current_user: dict = Depends(get_current_user),
 ):
     """更新用户的头像、封面、昵称、简介等"""
+    if user_id != current_user["id"]:
+        raise HTTPException(status_code=403, detail="无权修改其他用户资料")
     profile = social_db.update_user_profile(
-        user_id=user_id,
+        user_id=current_user["id"],
         avatar_url=avatar_url,
         cover_url=cover_url,
         nickname=nickname,
@@ -732,8 +760,14 @@ async def update_user_profile(
 
 
 @router.post("/user/{user_id}/avatar", summary="上传用户头像")
-async def upload_avatar(user_id: str, file: UploadFile = File(...)):
+async def upload_avatar(
+    user_id: str,
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+):
     """上传用户头像（单文件）"""
+    if user_id != current_user["id"]:
+        raise HTTPException(status_code=403, detail="无权修改其他用户资料")
     _, ext = os.path.splitext(file.filename or "")
     ext = ext.lower()
     if ext not in ALLOWED_EXTS:
@@ -761,8 +795,14 @@ async def upload_avatar(user_id: str, file: UploadFile = File(...)):
 
 
 @router.post("/user/{user_id}/cover", summary="上传用户封面")
-async def upload_cover(user_id: str, file: UploadFile = File(...)):
+async def upload_cover(
+    user_id: str,
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+):
     """上传用户朋友圈封面（单文件）"""
+    if user_id != current_user["id"]:
+        raise HTTPException(status_code=403, detail="无权修改其他用户资料")
     _, ext = os.path.splitext(file.filename or "")
     ext = ext.lower()
     if ext not in ALLOWED_EXTS:
@@ -793,19 +833,15 @@ async def upload_cover(user_id: str, file: UploadFile = File(...)):
 # 💬 聊天 API
 # ====================================================
 class ChatRequestBody(BaseModel):
-    user_id: str
     message: str
     context: str = ""  # 上下文，如 "wechat_chat"
 
 @router.post("/chat", summary="与 UNA 聊天")
-async def chat_with_una_api(body: ChatRequestBody):
+async def chat_with_una_api(body: ChatRequestBody, current_user: dict = Depends(get_current_user)):
     if not body.message.strip():
         raise HTTPException(status_code=400, detail="消息不能为空")
-    if not body.user_id:
-        raise HTTPException(status_code=400, detail="user_id 不能为空")
-
     try:
-        response = await chat_with_una(body.message.strip(), body.user_id, body.context)
+        response = await chat_with_una(body.message.strip(), current_user["id"], body.context)
         return {"status": "ok", "response": response}
     except Exception as e:
         print(f"❌ [Chat API] 聊天异常: {e}")
@@ -817,13 +853,14 @@ async def chat_with_una_api(body: ChatRequestBody):
 # ====================================================
 @router.get("/chat/history", summary="获取与好友的聊天历史")
 async def get_chat_history(
-    user_id: str = Query(..., description="当前用户 ID"),
     friend_id: str = Query(default="ai_una", description="好友 ID"),
-    limit: int = Query(default=50, ge=1, le=200, description="最大条数")
+    limit: int = Query(default=50, ge=1, le=200, description="最大条数"),
+    current_user: dict = Depends(get_current_user),
 ):
     """获取某用户与好友的聊天历史记录"""
     try:
         # 从 database.py 获取该用户的对话历史
+        user_id = current_user["id"]
         history = database.get_recent_history(user_id, limit=limit)
         # 转换格式：将 role (user/ai) 映射为 sender ID
         messages = []

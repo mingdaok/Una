@@ -6,6 +6,8 @@ import datetime as dt
 import hashlib
 import re
 import secrets
+import threading
+import time
 import uuid
 
 import jwt
@@ -17,6 +19,7 @@ from settings import settings
 
 USERNAME_PATTERN = re.compile(r"^[a-z0-9_]{3,32}$")
 JWT_ISSUER = "una"
+WS_TICKET_SECONDS = 60
 
 
 class AuthService:
@@ -24,6 +27,8 @@ class AuthService:
         if settings.environment == "production" and settings.jwt_secret.startswith("una-local-"):
             raise RuntimeError("生产环境必须设置 UNA_JWT_SECRET")
         self.password_hash = PasswordHash.recommended()
+        self._ws_tickets = {}
+        self._ws_tickets_lock = threading.Lock()
 
     @staticmethod
     def _normalize_username(username: str) -> str:
@@ -114,6 +119,31 @@ class AuthService:
         if not account or not account["is_active"]:
             return None
         return self._public_account(account)
+
+    def create_ws_ticket(self, user_id: str) -> str:
+        account = database.get_app_user_by_id(user_id)
+        if not account or not account["is_active"]:
+            raise ValueError("账号不存在或已停用")
+        ticket = secrets.token_urlsafe(32)
+        expires_at = time.time() + WS_TICKET_SECONDS
+        with self._ws_tickets_lock:
+            now = time.time()
+            self._ws_tickets = {
+                value: record
+                for value, record in self._ws_tickets.items()
+                if record[1] > now
+            }
+            self._ws_tickets[ticket] = (user_id, expires_at)
+        return ticket
+
+    def consume_ws_ticket(self, ticket: str) -> str | None:
+        if not ticket:
+            return None
+        with self._ws_tickets_lock:
+            record = self._ws_tickets.pop(ticket, None)
+        if not record or record[1] <= time.time():
+            return None
+        return record[0]
 
     @staticmethod
     def _hash_refresh_token(refresh_token: str) -> str:

@@ -275,7 +275,7 @@ def get_recent_mood_scores(user_id, limit=5):
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT mood_score FROM chat_history WHERE user_id = ? AND role = 'user' ORDER BY id DESC LIMIT ?",
+            "SELECT mood_score FROM chat_history WHERE user_id = ? AND role = 'ai' ORDER BY id DESC LIMIT ?",
             (user_id, limit)
         )
         rows = cursor.fetchall()

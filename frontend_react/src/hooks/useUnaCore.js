@@ -1,15 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { API_HOST } from '../config';
+import { getApiBase, getWebSocketBase } from '../config';
+import { authFetch, createWebSocketTicket } from '../auth/session';
 
-// 🛠️ 工具：获取后端基准地址
-const getApiBase = () => {
-    const ENV_HOST = API_HOST;
-    let cleanHost = ENV_HOST.replace(/^https?:\/\//, '').replace(/\/$/, '');
-    const isPlus = window.plus || navigator.userAgent.indexOf("Html5Plus") > -1 || window.location.protocol === 'file:';
-    return isPlus ? `http://${cleanHost}` : "";
-};
-
-export function useUnaCore(userId) {
+export function useUnaCore(authenticated) {
     const [messages, setMessages] = useState([]);
     const [connectionStatus, setConnectionStatus] = useState("CONNECTING");
     const [lipValue, setLipValue] = useState({ openY: 0, form: 0, volume: 0 });
@@ -55,12 +48,11 @@ export function useUnaCore(userId) {
 
     // --- 1. 初始化：同步历史记录 ---
     useEffect(() => {
-        if (!userId) return;
+        if (!authenticated) return;
         const fetchHistory = async () => {
             try {
-                const apiBase = getApiBase();
-                const url = apiBase ? `${apiBase}/history?user_id=${userId}` : `/history?user_id=${userId}`;
-                const res = await fetch(url);
+                const res = await authFetch('/history');
+                if (!res.ok) throw new Error('无法获取聊天记录');
                 const data = await res.json();
 
                 if (Array.isArray(data)) {
@@ -78,22 +70,18 @@ export function useUnaCore(userId) {
             } catch (e) { console.error("❌ 获取历史失败:", e); }
         };
         fetchHistory();
-    }, [userId]);
+    }, [authenticated]);
 
     // --- 2. WebSocket 连接 (含心跳 & 重连) ---
-    const connectWebSocket = useCallback(() => {
-        if (!userId || isConnecting.current) return;
+    const connectWebSocket = useCallback(async () => {
+        if (!authenticated || isConnecting.current) return;
         isConnecting.current = true;
         setConnectionStatus("CONNECTING");
 
-        const apiBase = getApiBase();
-        let wsHost = apiBase.replace("http://", "").replace("https://", "");
-        if (!wsHost) wsHost = window.location.host;
-
-        const wsUrl = `ws://${wsHost}/ws/chat/${userId}`;
-        console.log("🔌 [WS] 准备连接:", wsUrl);
-
         try {
+            const ticket = await createWebSocketTicket();
+            const wsUrl = `${getWebSocketBase()}/ws/chat?ticket=${encodeURIComponent(ticket)}`;
+            console.log("🔌 [WS] 准备连接");
             const ws = new WebSocket(wsUrl);
 
             ws.onopen = () => {
@@ -116,12 +104,18 @@ export function useUnaCore(userId) {
 
                     // 收到语音识别同步
                     if (data.type === 'user_sync') {
-                        setMessages(prev => [...prev, {
-                            role: 'user',
-                            text: data.text,
-                            content: data.text,
-                            date: new Date()
-                        }]);
+                        setMessages(prev => {
+                            if (data.client_message_id && prev.some(message => message.clientMessageId === data.client_message_id)) {
+                                return prev;
+                            }
+                            return [...prev, {
+                                role: 'user',
+                                text: data.text,
+                                content: data.text,
+                                clientMessageId: data.client_message_id,
+                                date: new Date()
+                            }];
+                        });
                         return;
                     }
 
@@ -265,7 +259,7 @@ export function useUnaCore(userId) {
             isConnecting.current = false;
             reconnectTimeoutRef.current = setTimeout(connectWebSocket, 5000);
         }
-    }, [userId]);
+    }, [authenticated]);
 
     useEffect(() => {
         connectWebSocket();
@@ -291,8 +285,9 @@ export function useUnaCore(userId) {
     // 发送文字
     const sendMessage = (text) => {
         if (websocketRef.current?.readyState === WebSocket.OPEN) {
-            setMessages(prev => [...prev, { role: 'user', text, content: text, date: new Date() }]);
-            websocketRef.current.send(JSON.stringify({ type: 'text', content: text }));
+            const clientMessageId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+            setMessages(prev => [...prev, { role: 'user', text, content: text, clientMessageId, date: new Date() }]);
+            websocketRef.current.send(JSON.stringify({ type: 'text', content: text, client_message_id: clientMessageId }));
         } else {
             // 尝试重连
             if (connectionStatus === "CLOSED") connectWebSocket();

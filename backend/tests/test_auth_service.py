@@ -46,3 +46,12 @@ def test_refresh_token_can_only_be_used_once(auth_service):
     assert rotated
     assert auth_service.rotate_refresh(session["refresh_token"]) is None
     assert auth_service.verify_access(rotated["access_token"])["id"] == account["id"]
+
+
+def test_websocket_ticket_can_only_be_consumed_once(auth_service):
+    account = auth_service.register("ticket_user", "correct-horse-battery")
+
+    ticket = auth_service.create_ws_ticket(account["id"])
+
+    assert auth_service.consume_ws_ticket(ticket) == account["id"]
+    assert auth_service.consume_ws_ticket(ticket) is None

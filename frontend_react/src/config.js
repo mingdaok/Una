@@ -14,8 +14,19 @@ const TEST_IP = "192.168.0.110:8000";
 // 2️⃣ 正式环境 IP (云服务器公网 IP)
 const PUBLIC_IP = "39.102.147.7:8081";
 
-// 最终使用的基础 API HOST
-const API_HOST_BASE = IS_TESTING ? TEST_IP : PUBLIC_IP;
+const configuredApiBase = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
+const fallbackHost = IS_TESTING ? TEST_IP : PUBLIC_IP;
 
-// 导出最终 HOST (无视 Vite 环境变量，强行采用本文件的开关)
-export const API_HOST = API_HOST_BASE;
+export const API_HOST = fallbackHost;
+
+export function getApiBase() {
+  const isPlus = window.plus || navigator.userAgent.includes('Html5Plus') || window.location.protocol === 'file:';
+  if (configuredApiBase) return configuredApiBase;
+  return isPlus ? `http://${fallbackHost}` : '';
+}
+
+export function getWebSocketBase() {
+  const apiBase = getApiBase();
+  if (apiBase) return apiBase.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:');
+  return `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`;
+}

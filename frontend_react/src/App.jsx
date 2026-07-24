@@ -1,5 +1,5 @@
 import WallGallery from './components/WallGallery';
-import { useState, useRef } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Mic, Send, LogIn, ArrowLeft, Volume2, Wifi, WifiOff, FastForward, Camera, Users } from 'lucide-react';
 import DiaryBook from './components/DiaryBook';
@@ -10,22 +10,23 @@ import WeChatContacts from './components/social/WeChatContacts';
 import { useUnaCore } from './hooks/useUnaCore';
 import { useVision } from './hooks/useVision';
 import { useAudioRecorder } from './hooks/useAudioRecorder';
-import { API_HOST } from './config';
+import { getApiBase } from './config';
+import { authFetch, authenticate, clearSession, getSession, refreshSession } from './auth/session';
 
 export default function App() {
   // 🌍 动态获取 API 地址
   const isPlus = window.plus || navigator.userAgent.indexOf("Html5Plus") > -1 || window.location.protocol === 'file:';
-  const ENV_HOST = API_HOST;
-  // 仅定义变量，方便 fetch 使用
-  const apiBase = isPlus ? `http://${ENV_HOST}` : "";
+  const apiBase = getApiBase();
 
   // 🔥 修复 2: 定义资源基础路径 (解决视频/图片引用报错)
   const baseUrl = import.meta.env.BASE_URL || "./";
 
-  const [userId, setUserId] = useState(localStorage.getItem("una_user") || "");
-  const [isLoggedIn, setIsLoggedIn] = useState(!!localStorage.getItem("una_user"));
+  const [user, setUser] = useState(getSession()?.user || null);
+  const [isLoggedIn, setIsLoggedIn] = useState(!!getSession()?.access_token);
   const [inputUser, setInputUser] = useState("");
   const [inputPwd, setInputPwd] = useState("");
+  const [isRegisterMode, setIsRegisterMode] = useState(false);
+  const [authError, setAuthError] = useState("");
 
   const [scene, setScene] = useState('living');
   const [isBookTransitioning, setIsBookTransitioning] = useState(false);
@@ -40,7 +41,7 @@ export default function App() {
     messages, setMessages, sendMessage, sendAudioData, sendImage,
     lipValue, interrupt, playAudio, connectionStatus, replayChunks,
     sendStopSignal, actionOverride
-  } = useUnaCore(isLoggedIn ? userId : null);
+  } = useUnaCore(isLoggedIn);
 
   // 第二个参数 sendStopSignal：录音停止并发送完音频后，自动向后端发 stop 触发识别
   const { isRecording, startRecording, stopRecording } = useAudioRecorder(sendAudioData, sendStopSignal);
@@ -62,7 +63,7 @@ export default function App() {
 
     console.log("📤 [Frontend] 正在发送视觉请求...");
     try {
-      const res = await fetch(`${apiBase}/api/vision_chat`, {
+      const res = await authFetch('/api/vision_chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ image: base64Image, text: "" })
@@ -71,28 +72,7 @@ export default function App() {
       const data = await res.json();
       console.log("📥 [Frontend] 收到视觉回复:", data);
 
-      if (data.reply) {
-        // 🔥 补全音频地址（App 环境下相对路径无法播放）
-        const fullAudioUrl = formatAudioUrl(data.audio_url);
-
-        // 构造 AI 回复消息
-        const newMessage = {
-          role: 'ai',
-          text: data.reply,
-          audio_url: fullAudioUrl,
-          isAI: true,
-          emotion: data.emotion || 'happy',
-          date: new Date()
-        };
-
-        // 强制上屏
-        setMessages(prev => [...prev, newMessage]);
-
-        // 立即播放语音（使用补全后的完整地址）
-        if (fullAudioUrl && typeof playAudio === 'function') {
-          playAudio(fullAudioUrl, data.visemes || []);
-        }
-      }
+      if (!res.ok) throw new Error(data.detail || '视觉请求失败');
     } catch (e) {
       console.error("❌ 视觉请求失败:", e);
       setMessages(prev => [...prev, {
@@ -106,17 +86,36 @@ export default function App() {
 
   const isStudy = scene === 'study';
 
-  const handleLogin = () => {
-    if (!inputUser.trim()) return alert("请输入账号");
-    localStorage.setItem("una_user", inputUser);
-    setUserId(inputUser);
-    setIsLoggedIn(true);
+  useEffect(() => {
+    if (!getSession()?.refresh_token) return;
+    refreshSession().then(next => {
+      if (next) {
+        setUser(next.user);
+        setIsLoggedIn(true);
+      }
+    });
+  }, []);
+
+  const handleLogin = async () => {
+    if (!inputUser.trim() || !inputPwd) {
+      setAuthError("请输入账号和密码");
+      return;
+    }
+    try {
+      setAuthError("");
+      const next = await authenticate(inputUser, inputPwd, isRegisterMode);
+      setUser(next.user);
+      setIsLoggedIn(true);
+    } catch (error) {
+      setAuthError(error.message || "认证失败");
+    }
   };
 
   const handleLogout = () => {
-    localStorage.removeItem("una_user");
+    clearSession();
     setIsLoggedIn(false);
-    setUserId("");
+    setUser(null);
+    setMessages([]);
   };
 
   const handleMicStart = () => {
@@ -159,10 +158,15 @@ export default function App() {
         <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
         <div className="relative z-10 bg-white/10 p-8 rounded-2xl border border-white/20 shadow-2xl w-[80%] max-w-[320px] backdrop-blur-md">
           <h1 className="text-3xl text-white font-serif text-center mb-2">Una</h1>
+          <p className="text-center text-white/60 text-sm mb-5">{isRegisterMode ? '创建你的私有 UNA' : '登录你的私有 UNA'}</p>
           <div className="space-y-4">
             <input value={inputUser} onChange={e => setInputUser(e.target.value)} placeholder="账号" className="w-full bg-black/30 border border-white/10 rounded-lg px-4 py-3 text-white outline-none" />
             <input type="password" value={inputPwd} onChange={e => setInputPwd(e.target.value)} placeholder="密码" className="w-full bg-black/30 border border-white/10 rounded-lg px-4 py-3 text-white outline-none" />
-            <button onClick={handleLogin} className="w-full bg-gradient-to-r from-[#8d6e63] to-[#5d4037] text-white font-bold py-3 rounded-lg flex items-center justify-center gap-2"><LogIn size={18} /> 进入</button>
+            {authError && <p className="text-red-200 text-sm text-center">{authError}</p>}
+            <button onClick={handleLogin} className="w-full bg-gradient-to-r from-[#8d6e63] to-[#5d4037] text-white font-bold py-3 rounded-lg flex items-center justify-center gap-2"><LogIn size={18} /> {isRegisterMode ? '注册并进入' : '登录'}</button>
+            <button onClick={() => { setIsRegisterMode(value => !value); setAuthError(''); }} className="w-full text-white/70 text-sm py-1">
+              {isRegisterMode ? '已有账号？去登录' : '没有账号？立即注册'}
+            </button>
           </div>
         </div>
       </div>
@@ -267,7 +271,7 @@ export default function App() {
           }}
         >
           <div className="fixed inset-0 bg-cover bg-center" style={{ backgroundImage: `url(${baseUrl}assets/bg_study.jpg)` }} />
-          <WallGallery isStudy={true} userId={userId} />
+          <WallGallery isStudy={true} userId={user?.id} />
 
           {!isBookOpen && !isBookTransitioning && (
             <button onClick={() => setScene('living')} className="absolute top-6 left-6 z-50 bg-black/40 text-white px-4 py-2 rounded-full flex items-center gap-2 backdrop-blur-sm border border-white/10">
@@ -335,8 +339,8 @@ export default function App() {
             className="fixed inset-0 z-[100]"
           >
             <SocialFeed
-              currentUserId={userId}
-              currentUserName={userId}
+              currentUserId={user?.id}
+              currentUserName={user?.username}
               apiBase={apiBase}
               onClose={() => setShowSocial(false)}
             />
@@ -356,8 +360,8 @@ export default function App() {
             className="fixed inset-0 z-[100]"
           >
             <WeChatContacts
-              currentUserId={userId}
-              currentUserName={userId}
+              currentUserId={user?.id}
+              currentUserName={user?.username}
               apiBase={apiBase}
               onClose={() => setShowChat(false)}
             />

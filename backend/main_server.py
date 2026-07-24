@@ -12,7 +12,7 @@ import time  # 新增：用于心跳计时
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from concurrent.futures import ThreadPoolExecutor
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -87,6 +87,8 @@ except ImportError:
         social_router = None
         social_api_module = None
 
+from auth_api import auth_service, get_current_user, router as auth_router
+
 # === 加载配置 ===
 if os.path.exists(CONFIG_PATH):
     with open(CONFIG_PATH, 'r', encoding='utf-8') as f: config = yaml.safe_load(f)
@@ -117,6 +119,7 @@ except ImportError as e:
 # === 初始化 FastAPI ===
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_origin_regex=".*", allow_methods=["*"], allow_headers=["*"])
+app.include_router(auth_router)
 
 if not os.path.exists(AUDIO_DIR): os.makedirs(AUDIO_DIR)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -382,15 +385,15 @@ async def send_mood_chart(user_id):
 
 class ChatRequest(BaseModel):
     text: str
-    user_id: str
 
 @app.post("/chat")
-async def chat_endpoint(request: ChatRequest):
-    await global_manager.handle_input(request.text, user_id=request.user_id)
+async def chat_endpoint(request: ChatRequest, current_user: dict = Depends(get_current_user)):
+    await global_manager.handle_input(request.text, user_id=current_user["id"])
     return {"status": "buffered"}
 
 @app.get("/history")
-async def get_history(user_id: str): return database.get_recent_history(user_id, 50)
+async def get_history(current_user: dict = Depends(get_current_user)):
+    return database.get_recent_history(current_user["id"], 50)
 
 def convert_audio_to_wav(input_path, output_path):
     try:
@@ -398,8 +401,12 @@ def convert_audio_to_wav(input_path, output_path):
         return True
     except: return False
 
-@app.websocket("/ws/chat/{user_id}")
-async def websocket_endpoint(websocket: WebSocket, user_id: str):
+@app.websocket("/ws/chat")
+async def websocket_endpoint(websocket: WebSocket, ticket: str):
+    user_id = auth_service.consume_ws_ticket(ticket)
+    if not user_id:
+        await websocket.close(code=1008)
+        return
     await ws_manager.connect(websocket, user_id)
     temp_audio = os.path.join(CURRENT_DIR, f"temp_{user_id}.wav")
     converted_audio = os.path.join(CURRENT_DIR, f"temp_{user_id}_16k.wav")
@@ -424,10 +431,11 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                         # 🔥🔥🔥 [优化] 文字消息：绕过 3s 防抖池，即发即答 🔥🔥🔥
                         if msg_type == "text":
                             content = data.get("content", "")
+                            client_message_id = data.get("client_message_id")
                             if content:
                                 print(f"📩 收到文字消息: '{content}' (长度:{len(content)})")
                                 # 同步文本给前端显示
-                                await ws_manager.broadcast_to_user(user_id, {"type": "user_sync", "text": content})
+                                await ws_manager.broadcast_to_user(user_id, {"type": "user_sync", "text": content, "client_message_id": client_message_id})
                                 # 直通车：绕过防抖等待池，瞬间起跑
                                 asyncio.create_task(process_and_push_response(content, user_id))
 
@@ -504,32 +512,31 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
         ws_manager.disconnect(websocket, user_id)
 
 @app.get("/diaries")
-async def get_diaries_endpoint(user_id: str = "default"):
-    return database.get_diaries(user_id, limit=20)
+async def get_diaries_endpoint(current_user: dict = Depends(get_current_user)):
+    return database.get_diaries(current_user["id"], limit=20)
 
 @app.get("/api/diary")
-async def get_diary_api(user_id: str):
+async def get_diary_api(current_user: dict = Depends(get_current_user)):
     """获取指定用户的日记列表"""
-    return diary_service.get_all_memories(user_id)
+    return diary_service.get_all_memories(current_user["id"])
 
 @app.get("/api/memories")
-async def get_memories_api(user_id: str = "default"):
+async def get_memories_api(current_user: dict = Depends(get_current_user)):
     """兼容旧端点，带 user_id 过滤"""
-    return diary_service.get_all_memories(user_id)
+    return diary_service.get_all_memories(current_user["id"])
 
 class DiaryContent(BaseModel):
     content: str
-    user_id: str = "default"
 
 @app.post("/api/generate")
-async def generate_diary_api(req: DiaryContent):
+async def generate_diary_api(req: DiaryContent, current_user: dict = Depends(get_current_user)):
     """兼容旧端点：手动触发日记生成"""
-    return await diary_service.generate_diary(req.user_id)
+    return await diary_service.generate_diary(current_user["id"])
 
 @app.post("/api/diary/generate")
-async def generate_diary_new_api(req: DiaryContent):
+async def generate_diary_new_api(req: DiaryContent, current_user: dict = Depends(get_current_user)):
     """新端点：手动触发今日日记生成"""
-    result = await diary_service.generate_diary(req.user_id, force=True)
+    result = await diary_service.generate_diary(current_user["id"], force=True)
     if result:
         return {"status": "ok", "diary": result}
     return {"status": "skipped", "msg": "今日日记已存在"}
@@ -540,14 +547,13 @@ async def generate_diary_new_api(req: DiaryContent):
 class PhotoRequest(BaseModel):
     image: str
     text: str = ""
-    user_id: str = "mobile_user"
 
 @app.post("/api/vision_chat")
-async def vision_chat_api(req: PhotoRequest):
+async def vision_chat_api(req: PhotoRequest, current_user: dict = Depends(get_current_user)):
     if not vision_service:
         return {"reply": "我的视觉模块好像没装好...", "emotion": "sad", "audio": None}
 
-    user_id = req.user_id or "mobile_user"
+    user_id = current_user["id"]
 
     # 1. 识别 (VisionService 会自动处理 base64 前缀问题)
     reply_text = vision_service.see_and_reply(req.image, req.text)
@@ -584,14 +590,8 @@ async def vision_chat_api(req: PhotoRequest):
     # 启动异步推送任务，不阻塞 HTTP 响应
     asyncio.create_task(_push_vision_audio())
 
-    # 3. HTTP 立即返回文字（前端不再需要等音频）
-    return {
-        "status": "ok",
-        "reply": reply_text,
-        "emotion": "happy",
-        "audio_url": None,
-        "visemes": []
-    }
+    # HTTP 只确认已受理；回复统一通过 WebSocket 发送，避免前端重复上屏与播放。
+    return {"status": "accepted"}
 
 
 # =========================================================================
@@ -602,15 +602,15 @@ import base64 as base64_lib
 
 class VoiceInputRequest(BaseModel):
     audio_base64: str       # 纯 base64 编码的 WAV 音频
-    user_id: str = "mobile_user"
 
 @app.post("/api/voice_input")
-async def voice_input_api(req: VoiceInputRequest):
+async def voice_input_api(req: VoiceInputRequest, current_user: dict = Depends(get_current_user)):
     """
     手机录音 -> base64 -> HTTP POST -> 这里
     后端解码 -> 保存 -> ASR -> WebSocket 推送 AI 回复
     """
-    print(f"🎙️ [VoiceInput] 收到语音请求，用户: {req.user_id}")
+    user_id = current_user["id"]
+    print(f"🎙️ [VoiceInput] 收到语音请求，用户: {user_id}")
 
     # 1. 解码 base64
     try:
@@ -624,8 +624,8 @@ async def voice_input_api(req: VoiceInputRequest):
         return {"status": "too_short"}
 
     # 2. 保存临时文件
-    temp_audio = os.path.join(CURRENT_DIR, f"temp_{req.user_id}.wav")
-    converted_audio = os.path.join(CURRENT_DIR, f"temp_{req.user_id}_16k.wav")
+    temp_audio = os.path.join(CURRENT_DIR, f"temp_{user_id}.wav")
+    converted_audio = os.path.join(CURRENT_DIR, f"temp_{user_id}_16k.wav")
     with open(temp_audio, "wb") as f:
         f.write(audio_bytes)
     print(f"💾 [VoiceInput] 已保存: {len(audio_bytes)} bytes")
@@ -642,7 +642,7 @@ async def voice_input_api(req: VoiceInputRequest):
 
     # 4. 识别成功则走正常对话，AI 回复会通过 WebSocket 推给前端
     if text:
-        await global_manager.handle_input(text, emotion=emotion, user_id=req.user_id)
+        await global_manager.handle_input(text, emotion=emotion, user_id=user_id)
         return {"status": "ok", "text": text}
 
     print("⚠️ [VoiceInput] 未识别到语音")
