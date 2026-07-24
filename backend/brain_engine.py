@@ -3,6 +3,7 @@ import datetime
 import random
 from openai import AsyncOpenAI
 import database
+from live2d_action import parse_action_plan
 
 class UnaBrain:
     def __init__(self, api_key, base_url, model):
@@ -234,10 +235,10 @@ class UnaBrain:
             f"【长期记忆】:\n{long_term_memory}\n"
             f"【近期对话】:\n{hist_str}\n\n"
             f"回复要求（极其重要！必须严格遵守！）：\n"
-            f"1. 必须且只能按照以下格式输出你的第一行（不要有任何多余字符），从第二行开始写正文回复。\n"
-            f"2. 后续每句话（或几句话）前面可以加动作标签（可选），如：[动作:惊讶, 头左偏] 哇！你来了！\n"
-            f"   - 动作维度：惊讶/开心/难过/害羞/思考/生气/困惑/期待\n"
-            f"   - 头部身体：头左偏/头右偏/头低下/头抬起/身体左倾/身体右倾/身体前倾\n"
+            f"1. 第一行必须为 EMOTION 控制行；第二行必须为 ACTION 控制行；从第三行开始写正文回复。\n"
+            f"2. ACTION 行只能输出 JSON 或 null，格式为：ACTION: {{\"intent\": \"thinking\", \"intensity\": 0.3, \"expression\": \"subtle\", \"timing\": \"after_sentence\", \"duration_ms\": 900, \"variation_seed\": 1}}。\n"
+            f"   - intent 仅可使用 warm_listening/thinking/shy_happy/happy_surprise/gentle_comfort/sad_support/encouraging/curious_question。\n"
+            f"   - 普通聊天优先 ACTION: null 或 subtle；仅明确的惊喜、安慰、低落陪伴使用 expressive。\n"
             f"3. 你的回复要显得自然随性，内容丰满些（大约 80-150 字），但绝不要长篇大论。遵循以下口语铁律：\n"
             f"   - 句子长短结合散落分布！可以有两三个字的极短短语（真的吗？太好了！），也可以有十几字的正常交流，绝不要每句字数一样像排比句。\n"
             f"   - 强制多用句号（。）、叹号（！）、问号（？）作为断句结尾。尽量少用逗号（，）连篇结牍！\n"
@@ -260,6 +261,7 @@ class UnaBrain:
 
             buffer = ""
             is_first_line_parsed = False
+            is_action_line_parsed = False
             yielded_chunks = 0
             import re
             
@@ -327,7 +329,28 @@ class UnaBrain:
                             is_first_line_parsed = True
 
                     # 动作截取阶段
-                    if is_first_line_parsed:
+                    if is_first_line_parsed and not is_action_line_parsed:
+                        if buffer.lstrip().startswith("[动作:"):
+                            is_action_line_parsed = True
+                        elif "\n" in buffer:
+                            action_line, buffer = buffer.split("\n", 1)
+                            if action_line.strip().upper().startswith("ACTION:"):
+                                raw_action = action_line.split(":", 1)[1].strip()
+                                if raw_action.lower() != "null":
+                                    try:
+                                        plan = parse_action_plan(json.loads(raw_action))
+                                    except (TypeError, ValueError, json.JSONDecodeError):
+                                        plan = None
+                                    if plan is not None:
+                                        yield {"type": "live2d_action_candidate", "plan": plan}
+                            else:
+                                buffer = action_line + "\n" + buffer
+                            is_action_line_parsed = True
+
+                    if is_first_line_parsed and not is_action_line_parsed:
+                        continue
+
+                    if is_first_line_parsed and is_action_line_parsed:
                         action_match = re.search(r'\[动作:([^\]]+)\]', buffer)
                         if action_match:
                             try:

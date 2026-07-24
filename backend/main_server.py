@@ -90,6 +90,7 @@ except ImportError:
 from auth_api import auth_service, get_current_user, router as auth_router
 from media_service import register_media, media_url, router as media_router
 from settings import settings
+from live2d_action import ActionDirector
 
 # === 加载配置 ===
 if os.path.exists(CONFIG_PATH):
@@ -181,6 +182,7 @@ brain = UnaBrain(
 asr = SenseVoiceASR()
 memory_service = MemoryService()
 emotion_mapper = Live2DEmotionMapper()
+action_director = ActionDirector()
 # 将 brain 实例注入 DiaryService
 diary_service = DiaryService(brain=brain)
 vision_service = VisionService() if 'VisionService' in globals() and VisionService else None
@@ -360,6 +362,10 @@ async def process_and_push_response(user_text, user_id):
                     "type": "final_reply", "text": "", "audio_url": None, 
                     "motion_file": emotion_mapper.get_motion_file(current_emotion)
                 })
+            elif item["type"] == "live2d_action_candidate":
+                event = action_director.decide(user_id, item.get("plan"))
+                if event is not None:
+                    await ws_manager.broadcast_to_user(user_id, event)
             elif item["type"] == "sentence":
                 text_chunk = item.get("text", "")
                 full_reply_text += text_chunk
