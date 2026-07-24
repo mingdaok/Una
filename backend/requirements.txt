@@ -5,6 +5,7 @@ python-multipart>=0.0.6  # 必加！否则无法接收上传的文件
 
 # --- AI 与 网络 ---
 openai>=1.0.0
+pytest-asyncio>=0.23.0
 requests>=2.31.0
 pydantic>=2.0.0
 PyJWT>=2.10.0

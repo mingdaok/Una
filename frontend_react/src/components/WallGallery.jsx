@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Sparkles, Smile, ChevronLeft, ChevronRight, Search, Feather, Loader2 } from 'lucide-react';
-import { API_HOST } from '../config';
+import { authFetch } from '../auth/session';
 
 export default function WallGallery({ isStudy, userId }) {
     const [memories, setMemories] = useState([]);
@@ -14,16 +14,7 @@ export default function WallGallery({ isStudy, userId }) {
     if (!isStudy) return null;
 
     useEffect(() => {
-        // 动态获取后端地址 (带容错)
-        const isPlus = window.plus || navigator.userAgent.indexOf("Html5Plus") > -1 || window.location.protocol === 'file:';
-        const RAW_HOST = API_HOST.replace(/^https?:\/\//, '');
-        const API_BASE = isPlus ? `http://${RAW_HOST}` : "";
-
-        // 携带 userId 参数，实现用户隔离
-        const url = `${API_BASE}/api/diary?user_id=${encodeURIComponent(userId || 'default')}`;
-        console.log("🖼️ [Gallery] Loading:", url);
-
-        fetch(url)
+        authFetch('/api/diary')
             .then(res => res.json())
             .then(data => {
                 if (!Array.isArray(data)) {
@@ -39,8 +30,6 @@ export default function WallGallery({ isStudy, userId }) {
                     if (imgUrl && !imgUrl.startsWith('http')) {
                         // 补全 /static 前面的 slash
                         if (!imgUrl.startsWith('/')) imgUrl = '/' + imgUrl;
-                        // App 环境拼全路径，Web 环境如果 API_BASE 为空则保持相对路径
-                        if (API_BASE) imgUrl = `${API_BASE}${imgUrl}`;
                     }
 
                     // 🔥 3. 日期格式化修复 (强力容错版)

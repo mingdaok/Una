@@ -4,6 +4,7 @@
  */
 import { useState } from "react";
 import { Heart, MessageCircle, Send } from "lucide-react";
+import { authFetch } from "../../auth/session";
 
 export default function CommentSection({
   postId,
@@ -25,10 +26,10 @@ export default function CommentSection({
   // -------- 点赞 / 取消点赞 --------
   const handleLike = async () => {
     try {
-      const res = await fetch(`${apiBase}/api/social/post/${postId}/like`, {
+      const res = await authFetch(`/api/social/post/${postId}/like`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id: currentUserId, user_name: currentUserName }),
+        body: JSON.stringify({}),
       });
       const data = await res.json();
       if (data.status === "ok") {
@@ -45,12 +46,10 @@ export default function CommentSection({
     if (!inputText.trim()) return;
     setSubmitting(true);
     try {
-      const res = await fetch(`${apiBase}/api/social/post/${postId}/comment`, {
+      const res = await authFetch(`/api/social/post/${postId}/comment`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          user_id: currentUserId,
-          user_name: currentUserName,
           content: inputText.trim(),
           reply_to_id: replyTo?.id || null,
         }),

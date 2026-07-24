@@ -15,6 +15,7 @@ class Settings:
     access_token_seconds: int
     refresh_token_days: int
     environment: str
+    cors_origins: tuple[str, ...]
 
 
 def load_settings() -> Settings:
@@ -25,6 +26,13 @@ def load_settings() -> Settings:
         access_token_seconds=int(os.getenv("UNA_ACCESS_TOKEN_SECONDS", "900")),
         refresh_token_days=int(os.getenv("UNA_REFRESH_TOKEN_DAYS", "30")),
         environment=os.getenv("UNA_ENV", "development").lower(),
+        cors_origins=tuple(
+            origin.strip()
+            for origin in os.getenv(
+                "UNA_CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
+            ).split(",")
+            if origin.strip()
+        ),
     )
 
 

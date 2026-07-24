@@ -8,6 +8,7 @@ import { ArrowLeft, PlusCircle, RefreshCw, Loader2, Camera, Upload } from "lucid
 import PostCard from "./PostCard";
 import PublishPost from "./PublishPost";
 import Lightbox from "./Lightbox";
+import { authFetch } from "../../auth/session";
 
 const PAGE_SIZE = 10;
 
@@ -35,9 +36,7 @@ export default function SocialFeed({
     setLoading(true);
     setError("");
     try {
-      const res = await fetch(
-        `${apiBase}/api/social/feed?owner_user_id=${currentUserId}&page=${targetPage}&page_size=${PAGE_SIZE}`
-      );
+      const res = await authFetch(`/api/social/feed?page=${targetPage}&page_size=${PAGE_SIZE}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setPosts((prev) => append ? [...prev, ...data.items] : data.items);
@@ -62,7 +61,7 @@ export default function SocialFeed({
     if (!currentUserId) return;
     const loadProfile = async () => {
       try {
-        const res = await fetch(`${apiBase}/api/social/user/${currentUserId}/profile`);
+        const res = await authFetch(`/api/social/user/${currentUserId}/profile`);
         if (!res.ok) throw new Error();
         const data = await res.json();
         setUserProfile(data.profile || null);
@@ -102,7 +101,7 @@ export default function SocialFeed({
     try {
       const formData = new FormData();
       formData.append("file", file);
-      const res = await fetch(`${apiBase}/api/social/user/${currentUserId}/cover`, {
+      const res = await authFetch(`/api/social/user/${currentUserId}/cover`, {
         method: "POST",
         body: formData,
       });
@@ -123,7 +122,7 @@ export default function SocialFeed({
     try {
       const formData = new FormData();
       formData.append("file", file);
-      const res = await fetch(`${apiBase}/api/social/user/${currentUserId}/avatar`, {
+      const res = await authFetch(`/api/social/user/${currentUserId}/avatar`, {
         method: "POST",
         body: formData,
       });

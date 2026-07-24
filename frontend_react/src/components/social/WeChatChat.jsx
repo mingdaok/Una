@@ -5,6 +5,7 @@
  */
 import { useState, useEffect, useRef } from "react";
 import { ArrowLeft, Send, Smile } from "lucide-react";
+import { authFetch } from "../../auth/session";
 
 export default function WeChatChat({
   currentUserId,
@@ -33,9 +34,7 @@ export default function WeChatChat({
   useEffect(() => {
     const loadHistory = async () => {
       try {
-        const res = await fetch(
-          `${apiBase}/api/social/chat/history?user_id=${currentUserId}&friend_id=${friendId}&limit=50`
-        );
+        const res = await authFetch(`/api/social/chat/history?friend_id=${friendId}&limit=50`);
         if (!res.ok) throw new Error("拉取历史失败");
         const data = await res.json();
 
@@ -103,11 +102,10 @@ export default function WeChatChat({
 
     try {
       // 调用 AI 对话 API（社交接口）
-      const res = await fetch(`${apiBase}/api/social/chat`, {
+      const res = await authFetch('/api/social/chat', {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          user_id: currentUserId,
           message: userMessage.content,
           context: "wechat_chat"
         })

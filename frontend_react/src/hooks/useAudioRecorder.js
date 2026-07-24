@@ -1,13 +1,5 @@
 import { useState, useRef } from 'react';
-import { API_HOST } from '../config';
-
-// 获取后端地址（与 useUnaCore 保持一致）
-const getApiBase = () => {
-  const ENV_HOST = API_HOST;
-  let cleanHost = ENV_HOST.replace(/^https?:\/\//, '').replace(/\/$/, '');
-  const isPlus = window.plus || navigator.userAgent.indexOf("Html5Plus") > -1 || window.location.protocol === 'file:';
-  return isPlus ? `http://${cleanHost}` : "";
-};
+import { authFetch } from '../auth/session';
 
 // onStopSignal 保留参数签名兼容性，但现在使用 HTTP POST 发送音频，不再需要它
 export function useAudioRecorder(onAudioData, onStopSignal) {
@@ -131,18 +123,13 @@ export function useAudioRecorder(onAudioData, onStopSignal) {
             ? base64DataUrl.split(',')[1]
             : base64DataUrl;
 
-          // 获取 user_id（从 localStorage 读取，与 App.jsx 保持一致）
-          const userId = localStorage.getItem("una_user") || "mobile_user";
-          const apiBase = getApiBase();
-
           try {
             console.log("📤 [App] 上传音频到后端...");
-            const res = await fetch(`${apiBase}/api/voice_input`, {
+            const res = await authFetch('/api/voice_input', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                audio_base64: base64Audio,
-                user_id: userId
+                audio_base64: base64Audio
               })
             });
 

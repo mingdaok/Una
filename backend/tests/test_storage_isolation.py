@@ -55,3 +55,13 @@ def test_chroma_path_uses_test_environment(monkeypatch, tmp_path):
     importlib.reload(vector_db)
 
     assert vector_db.DB_PERSIST_PATH == str(test_chroma_path)
+
+
+def test_cors_origins_are_loaded_from_explicit_environment_config(monkeypatch):
+    monkeypatch.setenv("UNA_CORS_ORIGINS", "https://app.example.com,https://admin.example.com")
+
+    import settings
+
+    importlib.reload(settings)
+
+    assert settings.settings.cors_origins == ("https://app.example.com", "https://admin.example.com")

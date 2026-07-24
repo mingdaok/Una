@@ -59,6 +59,20 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_auth_refresh_sessions_user_id
         ON auth_refresh_sessions(user_id)
     """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS private_media (
+            id TEXT PRIMARY KEY,
+            owner_user_id TEXT NOT NULL,
+            media_type TEXT NOT NULL,
+            storage_path TEXT NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (owner_user_id) REFERENCES app_users(id)
+        )
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_private_media_owner
+        ON private_media(owner_user_id)
+    """)
     
     # 🔥 自动迁移：检查旧表是否缺少 mood_score 或 audio_path 字段
     try:
@@ -199,6 +213,34 @@ def consume_refresh_session(token_hash, revoked_at):
         conn.close()
 
 
+def create_private_media(media_id, owner_user_id, media_type, storage_path):
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute(
+            """INSERT INTO private_media (id, owner_user_id, media_type, storage_path)
+               VALUES (?, ?, ?, ?)""",
+            (media_id, owner_user_id, media_type, storage_path),
+        )
+        conn.commit()
+        return get_private_media(media_id)
+    finally:
+        conn.close()
+
+
+def get_private_media(media_id):
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            """SELECT id, owner_user_id, media_type, storage_path, created_at
+               FROM private_media WHERE id = ?""",
+            (media_id,),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
 def add_message(user_id, role, content, mood_score=0, audio_path=None):
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -231,7 +273,10 @@ def get_recent_history(user_id, limit=50):
                 "role": r[0], 
                 "text": r[1],
                 "content": r[1], # 兼容旧版前端
-                "audio_path": f"/voice/{os.path.basename(r[2])}" if r[2] else None, # 修正路径
+                "audio_path": (
+                    r[2] if r[2] and str(r[2]).startswith("/api/media/")
+                    else f"/voice/{os.path.basename(r[2])}" if r[2] else None
+                ),
                 "timestamp": r[3],
                 "mood_score": r[4] or 0
             }

@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 import social_db
+import media_service
 from auth_api import get_current_user
 import database  # 🔥 引入消息记录模块，用于文本聊天记忆持久化
 
@@ -252,7 +253,10 @@ class DeletePostBody(BaseModel):
 # 🖼️ 图片上传
 # ====================================================
 @router.post("/upload", summary="上传图片（支持多文件）")
-async def upload_images(files: List[UploadFile] = File(...)):
+async def upload_images(
+    files: List[UploadFile] = File(...),
+    current_user: dict = Depends(get_current_user),
+):
     """
     接收 1~9 张图片，保存到 static/social_images 目录，
     返回可通过 /static/social_images/xxx 访问的 URL 列表。
@@ -286,9 +290,8 @@ async def upload_images(files: List[UploadFile] = File(...)):
         with open(filepath, "wb") as f:
             f.write(content)
 
-        # 返回可访问的静态 URL
-        url = f"/static/social_images/{filename}"
-        urls.append(url)
+        media = media_service.register_media(current_user["id"], "social_image", filepath)
+        urls.append(media_service.media_url(media["id"], current_user["id"]))
 
     return {"status": "ok", "urls": urls, "count": len(urls)}
 
@@ -309,7 +312,11 @@ async def create_post(
         owner_user_id=current_user["id"],
         author_id=current_user["id"],
         content=body.content.strip(),
-        images=body.image_urls,
+        images=[
+            media_service.media_url(media_id, current_user["id"])
+            if (media_id := media_service.media_id_from_url(url)) else url
+            for url in body.image_urls
+        ],
         location=body.location,
         author_name=current_user["username"],
         author_type="user",
@@ -357,6 +364,12 @@ async def get_feed(
     - comments: 树状评论（顶层 comments 下含 replies 子列表）
     """
     result = social_db.get_feed(owner_user_id=current_user["id"], page=page, page_size=page_size)
+    for post in result.get("items", []):
+        post["images"] = [
+            media_service.media_url(media_id, current_user["id"])
+            if (media_id := media_service.media_id_from_url(url)) else url
+            for url in post.get("images", [])
+        ]
     return result
 
 
@@ -508,78 +521,62 @@ async def delete_comment(
 # ====================================================
 # 😄 表情包管理 API
 # ====================================================
-@router.post("/emoji-packs", summary="创建新的表情包")
+def get_current_users_emoji_pack(pack_id: int, current_user: dict) -> dict:
+    """只允许用户读取和操作自己的表情包。"""
+    pack = social_db.get_emoji_pack_by_id(pack_id)
+    if not pack or pack.get("owner_type") != "user" or pack.get("owner_id") != current_user["id"]:
+        raise HTTPException(status_code=404, detail="表情包不存在")
+    return pack
+
+
+@router.post("/emoji-packs", summary="创建自己的表情包")
 async def create_emoji_pack(
-    owner_type: str = Query(..., description="'ai' 或 'user'"),
-    owner_id: str = Query(..., description="所有者 ID"),
     name: str = Query(..., description="表情包名称"),
-    description: str = Query(default="", description="表情包描述")
+    description: str = Query(default="", description="表情包描述"),
+    current_user: dict = Depends(get_current_user),
 ):
-    """创建新的表情包"""
-    if owner_type not in ["ai", "user"]:
-        raise HTTPException(status_code=400, detail="owner_type 必须是 'ai' 或 'user'")
-    
     pack = social_db.create_emoji_pack(
-        owner_type=owner_type,
-        owner_id=owner_id,
-        name=name,
-        description=description
+        owner_type="user", owner_id=current_user["id"], name=name, description=description
     )
     if pack is None:
         raise HTTPException(status_code=500, detail="表情包创建失败")
-    
     return {"status": "ok", "pack": pack}
 
 
-@router.get("/emoji-packs", summary="获取用户的所有表情包")
-async def get_emoji_packs(
-    owner_type: str = Query(..., description="'ai' 或 'user'"),
-    owner_id: str = Query(..., description="所有者 ID")
-):
-    """获取某个所有者的所有表情包（简略版，不含子项目）"""
-    packs = social_db.get_emoji_packs_by_owner(owner_type, owner_id)
+@router.get("/emoji-packs", summary="获取自己的表情包")
+async def get_emoji_packs(current_user: dict = Depends(get_current_user)):
+    packs = social_db.get_emoji_packs_by_owner("user", current_user["id"])
     return {"status": "ok", "packs": packs}
 
 
 @router.get("/emoji-packs/{pack_id}", summary="获取表情包的详细信息")
-async def get_emoji_pack(pack_id: int):
-    """获取表情包及其包含的所有表情项目"""
-    pack = social_db.get_emoji_pack_by_id(pack_id)
-    if pack is None:
-        raise HTTPException(status_code=404, detail="表情包不存在")
-    return {"status": "ok", "pack": pack}
+async def get_emoji_pack(pack_id: int, current_user: dict = Depends(get_current_user)):
+    return {"status": "ok", "pack": get_current_users_emoji_pack(pack_id, current_user)}
 
 
 @router.put("/emoji-packs/{pack_id}", summary="更新表情包信息")
 async def update_emoji_pack(
     pack_id: int,
-    owner_id: str = Query(..., description="所有者 ID（用于权限校验）"),
     name: str = Query(default=None, description="新的表情包名称"),
     description: str = Query(default=None, description="新的表情包描述"),
-    is_enabled: bool = Query(default=None, description="是否启用")
+    is_enabled: bool = Query(default=None, description="是否启用"),
+    current_user: dict = Depends(get_current_user),
 ):
-    """更新表情包的元数据"""
+    get_current_users_emoji_pack(pack_id, current_user)
     pack = social_db.update_emoji_pack(
-        pack_id=pack_id,
-        owner_id=owner_id,
-        name=name,
-        description=description,
-        is_enabled=is_enabled
+        pack_id=pack_id, owner_id=current_user["id"], name=name,
+        description=description, is_enabled=is_enabled
     )
     if pack is None:
-        raise HTTPException(status_code=403, detail="表情包不存在或无权修改")
+        raise HTTPException(status_code=404, detail="表情包不存在")
     return {"status": "ok", "pack": pack}
 
 
 @router.delete("/emoji-packs/{pack_id}", summary="删除表情包")
-async def delete_emoji_pack(
-    pack_id: int,
-    owner_id: str = Query(..., description="所有者 ID（用于权限校验）")
-):
-    """删除某个表情包及其所有项目"""
-    success = social_db.delete_emoji_pack(pack_id, owner_id)
-    if not success:
-        raise HTTPException(status_code=403, detail="表情包不存在或无权删除")
+async def delete_emoji_pack(pack_id: int, current_user: dict = Depends(get_current_user)):
+    get_current_users_emoji_pack(pack_id, current_user)
+    if not social_db.delete_emoji_pack(pack_id, current_user["id"]):
+        raise HTTPException(status_code=404, detail="表情包不存在")
     return {"status": "ok"}
 
 
@@ -589,7 +586,8 @@ async def add_emoji_to_pack(
     files: List[UploadFile] = File(default=[]),
     emoji_texts: str = Query(..., description="emoji 文本列表（逗号分隔）"),
     tags_list: str = Query(default="", description="标签列表（逗号分隔）"),
-    keywords_list: str = Query(default="", description="关键词列表（逗号分隔）")
+    keywords_list: str = Query(default="", description="关键词列表（逗号分隔）"),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     向表情包批量添加表情项（支持上传对应的图片）。
@@ -597,6 +595,7 @@ async def add_emoji_to_pack(
     tags_list: 逗号分隔的标签（如 "快乐,开心,笑脸"）
     keywords_list: 逗号分隔的关键词（如 "happy,joy,smile"）
     """
+    get_current_users_emoji_pack(pack_id, current_user)
     emoji_list = [e.strip() for e in emoji_texts.split(",") if e.strip()]
     if not emoji_list:
         raise HTTPException(status_code=400, detail="emoji_texts 不能为空")
@@ -654,20 +653,15 @@ async def add_emoji_to_pack(
 
 
 @router.get("/emoji-packs/{pack_id}/items", summary="获取表情包的所有表情项")
-async def get_emoji_items(pack_id: int):
-    """获取某个表情包下的所有表情项"""
-    pack = social_db.get_emoji_pack_by_id(pack_id)
-    if pack is None:
-        raise HTTPException(status_code=404, detail="表情包不存在")
+async def get_emoji_items(pack_id: int, current_user: dict = Depends(get_current_user)):
+    pack = get_current_users_emoji_pack(pack_id, current_user)
     return {"status": "ok", "items": pack.get("items", [])}
 
 
 @router.delete("/emoji-packs/{pack_id}/items/{item_id}", summary="删除表情项")
-async def delete_emoji_item(pack_id: int, item_id: int, owner_id: str = Query(...)):
+async def delete_emoji_item(pack_id: int, item_id: int, current_user: dict = Depends(get_current_user)):
     """删除表情包中的某个表情项（需校验权限）"""
-    pack = social_db.get_emoji_pack_by_id(pack_id)
-    if pack is None or pack.get("owner_id") != owner_id:
-        raise HTTPException(status_code=403, detail="表情包不存在或无权修改")
+    get_current_users_emoji_pack(pack_id, current_user)
     
     try:
         conn = sqlite3.connect(social_db.DB_PATH)
@@ -688,37 +682,15 @@ async def delete_emoji_item(pack_id: int, item_id: int, owner_id: str = Query(..
 # ====================================================
 # 🤝 好友系统 API
 # ====================================================
-@router.post("/friends/request", summary="发起好友申请")
-async def create_friend_request(user_id: str = Query(...), friend_id: str = Query(...), note: str = Query(default=""), background_tasks: BackgroundTasks = None):
-    rel = social_db.create_friend_request(user_id, friend_id, note)
-    if rel is None:
-        raise HTTPException(status_code=500, detail="好友申请失败")
-
-    # 如果是向 ai_una 发送好友请求，则自动接受
-    if friend_id == "ai_una" and background_tasks:
-        background_tasks.add_task(auto_accept_friend_request, user_id, friend_id)
-
-    return {"status": "ok", "friend": rel}
-
-
-@router.post("/friends/accept", summary="接受好友申请")
-async def accept_friend_request(user_id: str = Query(...), friend_id: str = Query(...)):
-    ok = social_db.accept_friend_request(user_id, friend_id)
-    if not ok:
-        raise HTTPException(status_code=500, detail="好友接受失败")
-    return {"status": "ok"}
+@router.post("/friends/request", summary="初始化专属 UNA 联系人")
+async def create_friend_request(current_user: dict = Depends(get_current_user)):
+    """公网版不提供真人好友；UNA 是当前账号的唯一联系人。"""
+    return {"status": "ok", "friend": {"id": "ai_una", "name": "UNA", "type": "ai"}}
 
 
 @router.get("/friends", summary="获取好友列表")
-async def get_friends(user_id: str = Query(...), status: str = Query(default='accepted')):
-    friends = social_db.get_friends(user_id, status)
-    return {"status": "ok", "friends": friends}
-
-
-@router.get("/friends/relationship", summary="获取好友关系")
-async def get_friend_relationship(user_id: str = Query(...), friend_id: str = Query(...)):
-    rel = social_db.get_friend_relationship(user_id, friend_id)
-    return {"status": "ok", "relationship": rel}
+async def get_friends(current_user: dict = Depends(get_current_user)):
+    return {"status": "ok", "friends": [{"id": "ai_una", "name": "UNA", "type": "ai"}]}
 
 
 # ====================================================
@@ -787,7 +759,8 @@ async def upload_avatar(
     with open(filepath, "wb") as f:
         f.write(content)
     
-    avatar_url = f"/static/social_images/avatars/{user_id}/{filename}"
+    media = media_service.register_media(current_user["id"], "avatar", filepath)
+    avatar_url = media_service.media_url(media["id"], current_user["id"])
     
     # 更新档案
     profile = social_db.update_user_profile(user_id=user_id, avatar_url=avatar_url)
@@ -822,7 +795,8 @@ async def upload_cover(
     with open(filepath, "wb") as f:
         f.write(content)
     
-    cover_url = f"/static/social_images/covers/{user_id}/{filename}"
+    media = media_service.register_media(current_user["id"], "cover", filepath)
+    cover_url = media_service.media_url(media["id"], current_user["id"])
     
     # 更新档案
     profile = social_db.update_user_profile(user_id=user_id, cover_url=cover_url)

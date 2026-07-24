@@ -5,6 +5,7 @@
  */
 import { useState, useRef, useEffect } from "react";
 import { X, ImagePlus, Loader2, Send } from "lucide-react";
+import { authFetch } from "../../auth/session";
 
 export default function PublishPost({
   currentUserId,
@@ -29,7 +30,7 @@ export default function PublishPost({
     const loadEmojiPacks = async () => {
       if (!currentUserId) return;
       try {
-        const res = await fetch(`${apiBase}/api/social/emoji-packs?owner_type=user&owner_id=${currentUserId}`);
+        const res = await authFetch('/api/social/emoji-packs');
         if (!res.ok) return;
         const data = await res.json();
         setEmojiPacks(data.packs || []);
@@ -81,7 +82,7 @@ export default function PublishPost({
         setUploading(true);
         const formData = new FormData();
         previewImages.forEach(({ file }) => formData.append("files", file));
-        const uploadRes = await fetch(`${apiBase}/api/social/upload`, {
+        const uploadRes = await authFetch('/api/social/upload', {
           method: "POST",
           body: formData,
         });
@@ -92,14 +93,10 @@ export default function PublishPost({
       }
 
       // 2. 发布动态
-      const postRes = await fetch(`${apiBase}/api/social/post`, {
+      const postRes = await authFetch('/api/social/post', {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          owner_user_id: currentUserId,
-          author_id: currentUserId,
-          author_name: currentUserName || currentUserId,
-          author_type: authorType,
           content: text.trim(),
           image_urls: imageUrls,
           location: location.trim(),

@@ -88,6 +88,8 @@ except ImportError:
         social_api_module = None
 
 from auth_api import auth_service, get_current_user, router as auth_router
+from media_service import register_media, media_url, router as media_router
+from settings import settings
 
 # === 加载配置 ===
 if os.path.exists(CONFIG_PATH):
@@ -104,9 +106,18 @@ def make_absolute_audio_url(path: str) -> str:
     path = path.strip()
     if not path:
         return path
-    if path.startswith("http://") or path.startswith("https://"):
-        return path
-    return f"{AUDIO_BASE_URL}/{path.lstrip('/')}"
+    return path
+
+
+def protect_generated_audio(user_id: str, generated_path: str | None) -> str | None:
+    """登记 TTS 文件并返回私有媒体 URL，避免对外泄露静态文件路径。"""
+    if not generated_path or generated_path.startswith("/api/media/"):
+        return generated_path
+    filepath = os.path.join(AUDIO_DIR, os.path.basename(generated_path))
+    if not os.path.isfile(filepath):
+        return None
+    media = register_media(user_id, "audio", filepath)
+    return media_url(media["id"], user_id)
 
 try:
     from brain_engine import UnaBrain
@@ -118,12 +129,16 @@ except ImportError as e:
 
 # === 初始化 FastAPI ===
 app = FastAPI()
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_origin_regex=".*", allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=list(settings.cors_origins),
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
+)
 app.include_router(auth_router)
+app.include_router(media_router)
 
 if not os.path.exists(AUDIO_DIR): os.makedirs(AUDIO_DIR)
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-app.mount("/voice", StaticFiles(directory=AUDIO_DIR), name="voice")
 # 挂载 /assets 和 /libs 路径，让前端相对路径资源能正确访问
 MOBILE_DIR = os.path.join(STATIC_DIR, "mobile")
 ASSETS_DIR = os.path.join(MOBILE_DIR, "assets")
@@ -135,6 +150,9 @@ if os.path.exists(ASSETS_DIR):
 if os.path.exists(LIBS_DIR):
     app.mount("/libs", StaticFiles(directory=LIBS_DIR), name="libs")
     print("✅ [Static] /libs 目录已挂载")
+
+if os.path.exists(MOBILE_DIR):
+    app.mount("/static/mobile", StaticFiles(directory=MOBILE_DIR), name="mobile-static")
 
 # 挂载朋友圈图片目录（social_api.py 上传后存放于此）
 SOCIAL_IMG_DIR = os.path.join(STATIC_DIR, "social_images")
@@ -212,6 +230,7 @@ class ConnectionManager:
     async def send_ai_reply(self, reply_text, emotion, user_id, mood_score=0, is_proactive=False, audio_url=None, visemes=None):
         if not audio_url or visemes is None:
             audio_url, visemes = await generate_audio_file(reply_text, emotion)
+        audio_url = protect_generated_audio(user_id, audio_url)
 
         if not is_proactive:
             database.add_message(user_id, "ai", reply_text, mood_score, audio_url)
@@ -226,6 +245,7 @@ class ConnectionManager:
     async def send_ai_reply_chunk(self, reply_text, emotion, user_id, chunk_index):
         print(f"🎵 [Chunk] 开始生成碎片 {chunk_index}: '{reply_text}'")
         audio_url, visemes = await generate_audio_file(reply_text, emotion)
+        audio_url = protect_generated_audio(user_id, audio_url)
         if not audio_url:
             print(f"❌ [Chunk] 音频生成失败，跳过碎片 {chunk_index}: '{reply_text}'")
             return
@@ -393,7 +413,12 @@ async def chat_endpoint(request: ChatRequest, current_user: dict = Depends(get_c
 
 @app.get("/history")
 async def get_history(current_user: dict = Depends(get_current_user)):
-    return database.get_recent_history(current_user["id"], 50)
+    history = database.get_recent_history(current_user["id"], 50)
+    for item in history:
+        media_id = item.get("audio_path", "").split("?", 1)[0].rsplit("/", 1)[-1]
+        if item.get("audio_path", "").startswith("/api/media/"):
+            item["audio_path"] = media_url(media_id, current_user["id"])
+    return history
 
 def convert_audio_to_wav(input_path, output_path):
     try:

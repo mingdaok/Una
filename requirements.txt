@@ -11,6 +11,7 @@ apscheduler>=3.10.0      # 定时任务 (晚上自动写日记)
 
 # --- AI 大脑与网络 ---
 openai>=1.0.0            # 兼容所有类 OpenAI API (DeepSeek/SiliconFlow)
+pytest-asyncio>=0.23.0  # 异步脑引擎回归测试
 requests>=2.31.0
 pydantic>=2.0.0
 PyJWT>=2.10.0

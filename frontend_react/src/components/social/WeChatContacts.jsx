@@ -3,7 +3,7 @@
  * 微信风格好友列表页面
  * 点击好友进入聊天页面，第一条固定为 AI 伙伴 UNA
  */
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { ArrowLeft, Search, MessageCircle, UserPlus } from "lucide-react";
 import WeChatChat from "./WeChatChat";
 
@@ -13,33 +13,10 @@ export default function WeChatContacts({
   apiBase = "",
   onClose,
 }) {
-  const [friends, setFriends] = useState([]);
-  const [loading, setLoading] = useState(false);
   const [chatTarget, setChatTarget] = useState(null); // { id, name } 或 null
   const [searchText, setSearchText] = useState("");
 
-  // 加载好友列表
-  useEffect(() => {
-    const loadFriends = async () => {
-      setLoading(true);
-      try {
-        const res = await fetch(
-          `${apiBase}/api/social/friends?user_id=${currentUserId}&status=accepted`
-        );
-        if (res.ok) {
-          const data = await res.json();
-          setFriends(data.friends || []);
-        }
-      } catch (e) {
-        console.error("加载好友列表失败:", e);
-      } finally {
-        setLoading(false);
-      }
-    };
-    loadFriends();
-  }, [apiBase, currentUserId]);
-
-  // 构建展示列表：UNA 永远在最前面
+  // P0 公网版只提供用户自己的 UNA，不暴露真人好友关系。
   const contactList = [
     {
       id: "ai_una",
@@ -48,15 +25,6 @@ export default function WeChatContacts({
       isAI: true,
       avatarColor: "#ec4899", // pink-500
     },
-    ...friends
-      .filter((f) => f.friend_id !== "ai_una") // 排除重复的 AI
-      .map((f) => ({
-        id: f.friend_id,
-        name: f.friend_id,
-        subtitle: "好友",
-        isAI: false,
-        avatarColor: "#3b82f6", // blue-500
-      })),
   ];
 
   // 搜索过滤
@@ -112,11 +80,7 @@ export default function WeChatContacts({
 
       {/* 好友列表 */}
       <div className="flex-1 overflow-y-auto">
-        {loading ? (
-          <div className="flex items-center justify-center py-20 text-gray-400 text-sm">
-            加载中...
-          </div>
-        ) : filteredList.length === 0 ? (
+        {filteredList.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20 text-gray-400">
             <UserPlus size={40} className="mb-3 opacity-50" />
             <p className="text-sm">暂无好友</p>
