@@ -7,22 +7,27 @@ python-multipart>=0.0.6  # 必加！否则无法接收上传的文件
 openai>=1.0.0
 requests>=2.31.0
 pydantic>=2.0.0
+aiohttp>=3.8.0           # 必加！GPT-SoVITS 异步请求必须
 
 # --- 数据库与记忆 (核心缺失) ---
-chromadb>=0.4.0  # 必加！否则记忆功能报错
+chromadb>=0.4.0              # 必加！否则记忆功能报错
+sentence-transformers>=2.2.2 # 必加！ChromaDB 句子嵌入依赖
 
 # --- 语音与多媒体 ---
 edge-tts>=6.1.9
-funasr>=1.0.0    # 必加！本地语音识别模型依赖
-modelscope>=1.10.0 # funasr 的依赖库
+funasr>=1.0.0            # 必加！本地语音识别模型依赖
+modelscope>=1.10.0       # funasr 的依赖库
+numpy>=1.24.0            # 必加！语音与矩阵运算依赖
 
 # --- 工具与配置 ---
 PyYAML>=6.0
 matplotlib>=3.7.0
-apscheduler>=3.10.0  # 定时任务（日记生成）
+apscheduler>=3.10.0      # 定时任务（日记生成）
+python-dotenv>=1.0.0     # 环境变量管理
 
 # --- 注意事项 ---
 # 1. 这是一个纯后端清单，已移除 PyQt5 等桌面库，适合云服务器部署。
 # 2. 部署时还需要在系统层面安装 ffmpeg (sudo apt install ffmpeg)。
-# 3. torch (PyTorch) 建议单独安装 CPU 版以节省服务器空间，不要直接写在这里以免下载成庞大的 GPU 版。
-#    命令: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+# 3. 部署在拥有 GPU 的服务器上时，请使用以下命令单独安装配套的 GPU 版 PyTorch（如 cu118/cu121）。
+#    请务必【先】执行该命令，然后再运行 pip install -r requirements.txt，以免 pip 默认下载成 CPU 版：
+#    命令: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118

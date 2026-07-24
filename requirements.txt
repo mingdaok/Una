@@ -13,30 +13,37 @@ apscheduler>=3.10.0      # 定时任务 (晚上自动写日记)
 openai>=1.0.0            # 兼容所有类 OpenAI API (DeepSeek/SiliconFlow)
 requests>=2.31.0
 pydantic>=2.0.0
+aiohttp>=3.8.0           # GPT-SoVITS 异步请求必须
 
 # --- 数据库与记忆管理 ---
-chromadb>=0.4.0          # 核心记忆向量数据库 (如果不装会报记忆模块错误)
+chromadb>=0.4.0          # 核心记忆向量数据库
+sentence-transformers>=2.2.2 # ChromaDB 句子嵌入模型依赖
 
 # --- 语音识别 (ASR) 与处理 ---
 funasr>=1.0.0            # 本地 SenseVoice 语音识别核心库
 modelscope>=1.10.0       # FunASR 模型下载依赖
-torchaudio>=2.0.0        # 音频处理依赖
+# torchaudio>=2.0.0        # (已注释) 必须通过官方命令与 torch 一同安装，防止默认下载成 CPU 版
+numpy>=1.24.0            # 语音与矩阵运算依赖
 
 # --- 语音合成 (TTS) ---
 edge-tts>=6.1.9          # 兜底使用的 Edge TTS
+# nltk>=3.8.0              # GPT-SoVITS 可能需要的自然语言处理库 (已禁用)
 
 # --- 工具与辅助系统 ---
 PyYAML>=6.0              # 读取 config.yaml 必须
 matplotlib>=3.7.0        # 读取情绪绘图必须
+python-dotenv>=1.0.0     # 环境变量管理 (备用配置方式)
 
 # ==================================
 # 部署服务器 特别注意事项：
 # ==================================
-# 1. 如果你在云端租用的是 【PyTorch 镜像】，它系统里自带了 PyTorch, torchvision, torchaudio。
-#    因此你直接 pip install -r requirements.txt 即可，不要在这里写 torch 以免发生冲突！
-#
-# 2. 如果是用空的纯净系统或者 Miniconda，你需要手动安装 GPU 版 PyTorch，命令如下：
+# 1. 部署在拥有 GPU 的系统（纯净系统/Miniconda）上时，请务必【优先】单独安装 GPU 版 PyTorch（如 cu118）：
 #    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+#
+#    安装完成后，再执行环境清单安装：
+#    pip install -r requirements.txt
+#
+# 2. 如果你的云端镜像自带了 GPU PyTorch 环境，那你可以直接跳过步骤1。
 #
 # 3. 本项目依赖 FFmpeg，必须在 Linux 系统层安装：
 #    Ubuntu/Debian 系统执行: apt-get update && apt-get install ffmpeg -y

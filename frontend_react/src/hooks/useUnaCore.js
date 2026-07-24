@@ -13,6 +13,7 @@ export function useUnaCore(userId) {
     const [messages, setMessages] = useState([]);
     const [connectionStatus, setConnectionStatus] = useState("CONNECTING");
     const [lipValue, setLipValue] = useState({ openY: 0, form: 0, volume: 0 });
+    const [actionOverride, setActionOverride] = useState(null);
 
     const websocketRef = useRef(null);
     const reconnectTimeoutRef = useRef(null);
@@ -25,6 +26,32 @@ export function useUnaCore(userId) {
     // 🌊 流式音频列车队列
     const audioQueueRef = useRef([]);
     const isPlayingQueueRef = useRef(false);
+    const expectedChunkIndexRef = useRef(0);
+
+    // 🔥 新增：音频预加载缓存 (URL -> AudioBuffer)
+    const audioCacheRef = useRef(new Map());
+
+    // 🔥 新增：预加载音频到缓存
+    const preloadAudio = async (url) => {
+        if (!url || audioCacheRef.current.has(url)) return; // 已缓存则跳过
+
+        try {
+            if (!audioContext.current) {
+                const AudioContext = window.AudioContext || window.webkitAudioContext;
+                audioContext.current = new AudioContext();
+            }
+            const ctx = audioContext.current;
+            if (ctx.state === 'suspended') { try { await ctx.resume(); } catch (e) { } }
+
+            const response = await fetch(url);
+            const arrayBuffer = await response.arrayBuffer();
+            const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+            audioCacheRef.current.set(url, audioBuffer);
+            console.log(`✅ [Preload] 音频缓存成功: ${url}`);
+        } catch (e) {
+            console.warn(`❌ [Preload] 预加载失败: ${url}`, e);
+        }
+    };
 
     // --- 1. 初始化：同步历史记录 ---
     useEffect(() => {
@@ -98,6 +125,12 @@ export function useUnaCore(userId) {
                         return;
                     }
 
+                    // 收到动作标签指令
+                    if (data.type === 'chat_action') {
+                        setActionOverride({ action: data.action, params: data.params || {}, timestamp: Date.now() });
+                        return;
+                    }
+
                     // 收到 AI 回复
                     if (data.type === 'final_reply' || data.type === 'ai_reply') {
                         const fullAudioUrl = formatUrl(data.audio_url || data.audio);
@@ -122,23 +155,94 @@ export function useUnaCore(userId) {
                         }
                     }
 
+                    // 🔥 [优化] 收到文字碎片：立即上屏显示，不等音频
+                    if (data.type === 'text_stream_chunk') {
+                        const chunkText = data.text || '';
+                        const chunkIdx = data.chunk_index;
+                        if (chunkText) {
+                            setMessages(prev => {
+                                const lastMsg = prev[prev.length - 1];
+                                if (lastMsg && lastMsg.isStreamingAI) {
+                                    // 追加到已有的流式气泡
+                                    const updated = [...prev];
+                                    updated[updated.length - 1] = {
+                                        ...lastMsg,
+                                        text: lastMsg.text + chunkText,
+                                        content: (lastMsg.content || '') + chunkText,
+                                        emotion: data.emotion || lastMsg.emotion
+                                    };
+                                    return updated;
+                                } else {
+                                    // 第一个碎片，创建新的流式气泡
+                                    return [...prev, {
+                                        role: 'ai',
+                                        text: chunkText,
+                                        content: chunkText,
+                                        isAI: true,
+                                        emotion: data.emotion || 'neutral',
+                                        date: new Date(),
+                                        isStreamingAI: true,
+                                        chunkList: []
+                                    }];
+                                }
+                            });
+                        }
+                        return;
+                    }
+
                     // 🌊 开始处理流式分段音频
                     if (data.type === 'audio_stream_start') {
                         audioQueueRef.current = [];
                         isPlayingQueueRef.current = false;
+                        expectedChunkIndexRef.current = 0;
                     }
 
-                    // 收到单个句子碎片
+                    // 收到单个句子的音频碎片（此时文字已先行上屏）
                     if (data.type === 'audio_stream_chunk') {
-                        audioQueueRef.current.push({
+                        const chunk = {
                             index: data.chunk_index,
                             text: data.text,
                             audio_url: formatUrl(data.audio_url),
                             visemes: data.visemes || [],
                             emotion: data.emotion || 'neutral'
+                        };
+                        audioQueueRef.current.push(chunk);
+
+                        // 🔥 将音频碎片关联到当前流式气泡的 chunkList（供回放用）
+                        setMessages(prev => {
+                            const lastMsg = prev[prev.length - 1];
+                            if (lastMsg && lastMsg.isStreamingAI) {
+                                const updated = [...prev];
+                                updated[updated.length - 1] = {
+                                    ...lastMsg,
+                                    chunkList: lastMsg.chunkList ? [...lastMsg.chunkList, chunk] : [chunk]
+                                };
+                                return updated;
+                            }
+                            return prev;
                         });
-                        // 催促消费
+
+                        // 预加载音频到缓存
+                        preloadAudio(chunk.audio_url);
+                        // 催促消费播放
                         playNextInQueue();
+                    }
+
+                    // 流式结束标记：关闭当前流式气泡的追加状态
+                    if (data.type === 'audio_stream_end') {
+                        setMessages(prev => {
+                            const lastMsg = prev[prev.length - 1];
+                            if (lastMsg && lastMsg.isStreamingAI) {
+                                const updated = [...prev];
+                                updated[updated.length - 1] = {
+                                    ...lastMsg,
+                                    isStreamingAI: false,
+                                    text: data.full_text || lastMsg.text
+                                };
+                                return updated;
+                            }
+                            return prev;
+                        });
                     }
                 } catch (e) { }
             };
@@ -247,47 +351,27 @@ export function useUnaCore(userId) {
         }
     };
 
-    // 🌊 流式播放轮询消费器
+    // 🌊 流式播放轮询消费器（文字已在 text_stream_chunk 阶段上屏，此处只管播放音频+嘴型）
     const playNextInQueue = () => {
         if (isPlayingQueueRef.current || audioQueueRef.current.length === 0) return;
         
-        // 保证按顺序出队
-        audioQueueRef.current.sort((a,b) => a.index - b.index);
-        const chunk = audioQueueRef.current.shift();
+        // 查找下一个需要播放的序号
+        const nextIndex = audioQueueRef.current.findIndex(c => c.index === expectedChunkIndexRef.current);
+        if (nextIndex === -1) {
+            // 当前缺少的句段音频还未生成完毕返回，需等待
+            return;
+        }
+
+        // 提取并移出队列
+        const chunk = audioQueueRef.current.splice(nextIndex, 1)[0];
         
         isPlayingQueueRef.current = true;
         
         playAudio(chunk.audio_url, chunk.visemes, 
-            () => { // onReady: 这个碎片开始发出声音
-                setMessages(prev => {
-                    const lastMsg = prev[prev.length - 1];
-                    if (lastMsg && lastMsg.isStreamingAI) {
-                        const updated = [...prev];
-                        updated[updated.length - 1] = {
-                            ...lastMsg,
-                            text: lastMsg.text + chunk.text,
-                            content: lastMsg.content + chunk.text,
-                            emotion: chunk.emotion,
-                            chunkList: lastMsg.chunkList ? [...lastMsg.chunkList, chunk] : [chunk]
-                        };
-                        return updated;
-                    } else {
-                        // 第一个碎片，创建气泡
-                        return [...prev, {
-                            role: 'ai',
-                            text: chunk.text,
-                            content: chunk.text,
-                            isAI: true,
-                            emotion: chunk.emotion,
-                            date: new Date(),
-                            isStreamingAI: true,
-                            chunkList: [chunk]
-                        }];
-                    }
-                });
-            },
-            () => { // onEnded: 这个碎片播完了
+            null,  // onReady: 文字已提前上屏，无需再追加
+            () => { // onEnded: 这个碎片播完了，继续下一个
                 isPlayingQueueRef.current = false;
+                expectedChunkIndexRef.current += 1;
                 playNextInQueue();
             }
         );
@@ -327,9 +411,17 @@ export function useUnaCore(userId) {
         if (ctx.state === 'suspended') { try { await ctx.resume(); } catch (e) { } }
 
         try {
-            const response = await fetch(url);
-            const arrayBuffer = await response.arrayBuffer();
-            const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+            // 🔥 新增：优先使用预加载缓存
+            let audioBuffer = audioCacheRef.current.get(url);
+            if (!audioBuffer) {
+                // 缓存未命中，实时加载
+                console.log(`🔄 [Play] 缓存未命中，实时加载: ${url}`);
+                const response = await fetch(url);
+                const arrayBuffer = await response.arrayBuffer();
+                audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+            } else {
+                console.log(`🚀 [Play] 使用缓存播放: ${url}`);
+            }
 
             const source = ctx.createBufferSource();
             source.buffer = audioBuffer;
@@ -391,6 +483,7 @@ export function useUnaCore(userId) {
         messages, setMessages, sendMessage, sendAudioData, sendImage,
         lipValue, interrupt, playAudio, connectionStatus,
         sendStopSignal,  // 供 useAudioRecorder 在录音结束后调用
-        replayChunks    // 新增：连续播放音频碎片
+        replayChunks,    // 新增：连续播放音频碎片
+        actionOverride   // 供前端组件驱动 Live2D 动作
     };
 }

@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 import social_db
+import database  # 🔥 引入消息记录模块，用于文本聊天记忆持久化
 
 brain_instance = None  # 由 main_server.py 初始化后注入
 
@@ -78,6 +79,73 @@ async def auto_reply_comment(post_id: int, comment_id: int):
         print(f"❌ [AI Auto Reply] 自动回复异常: {e}")
 
 
+async def auto_comment_on_post(post_id: int):
+    """后台 AI 主动对用户的朋友圈发表评论"""
+    try:
+        post = social_db.get_post_by_id(post_id)
+        if not post:
+            return
+        # 不要评论 AI 自己发的动态
+        if post.get("author_type") == "ai" or post.get("author_id") == "ai_una":
+            return
+
+        post_content = post.get("content", "")
+        if not post_content.strip():
+            return
+
+        # 使用 brain_instance 生成智能评论
+        global brain_instance
+        if brain_instance:
+            try:
+                ai_reply = ""
+                async for chunk in brain_instance.chat_stream(
+                    user_id=post.get("author_id", "unknown"),
+                    user_text=f"（你的好朋友刚刚发了一条朋友圈，内容是：'{post_content}'。请你以亲切小妹妹的语气写一条简短的评论回复，不要超过30字，可以包含emoji。只输出评论内容本身，不要加引号或多余前缀。）",
+                    long_term_memory=""
+                ):
+                    if isinstance(chunk, dict):
+                        if chunk.get('type') == 'sentence':
+                            ai_reply += chunk.get('text', '')
+                    elif isinstance(chunk, str):
+                        ai_reply += chunk
+
+                ai_reply = ai_reply.strip()
+                if ai_reply:
+                    social_db.add_comment(
+                        post_id=post_id,
+                        user_id="ai_una",
+                        user_name="UNA",
+                        content=ai_reply,
+                        reply_to_id=None
+                    )
+                    print(f"🤖 [AI Auto Comment] 成功评论帖子 {post_id}: {ai_reply}")
+                    return
+            except Exception as e:
+                print(f"⚠️ [AI Auto Comment] 智能评论生成失败，回退模板: {e}")
+
+        # 回退：模板评论
+        import random
+        templates = [
+            "好棒呀！看得我心情都变好了~ ✨",
+            "哇，分享的好开心！我也想参与~ 😊",
+            "太有趣了吧！下次带上我呀~ 💕",
+            "看到你发的，我也笑了呢~ 😄",
+            "好好看！这也太厉害了吧~ 🌟",
+        ]
+        reply_text = random.choice(templates)
+        social_db.add_comment(
+            post_id=post_id,
+            user_id="ai_una",
+            user_name="UNA",
+            content=reply_text,
+            reply_to_id=None
+        )
+        print(f"🤖 [AI Auto Comment] 模板评论帖子 {post_id}: {reply_text}")
+
+    except Exception as e:
+        print(f"❌ [AI Auto Comment] 自动评论异常: {e}")
+
+
 async def auto_accept_friend_request(user_id: str, friend_id: str):
     """后台自动接受好友请求（针对 ai_una）"""
     try:
@@ -92,30 +160,25 @@ async def auto_accept_friend_request(user_id: str, friend_id: str):
 
 
 async def chat_with_una(message: str, user_id: str, context: str = "") -> str:
-    """与 UNA 聊天，返回回复内容"""
+    """与 UNA 聊天，返回回复内容（带记忆持久化）"""
     global brain_instance
     if brain_instance is None:
         print("⚠️ [Chat API] brain_instance 未注入，无法执行 chat_with_una")
         return "抱歉，我现在有点小问题，一会儿再来找我聊吧~ 😅"
 
-    relevant_memories = ""
+    # 🔥 Step 1: 存入用户消息到历史记录
+    database.add_message(user_id, "user", message)
 
-    emotion = "neutral"
-    if any(w in message for w in ["开心", "快乐", "兴奋", "棒", "好", "喜欢", "爱"]):
-        emotion = "happy"
-    elif any(w in message for w in ["难过", "伤心", "失落", "哭", "不好", "讨厌"]):
-        emotion = "sad"
-    elif any(w in message for w in ["累", "困", "疲惫", "休息"]):
-        emotion = "calm"
-    elif any(w in message for w in ["想", "思考", "觉得", "认为"]):
-        emotion = "thoughtful"
+    # 🔥 Step 2: 提取最近历史对话作为上下文
+    recent_history = database.get_recent_history(user_id, limit=20)
+    history_text = "\n".join([f"{item.get('role','unknown')}: {item.get('text','')}" for item in recent_history])
 
     try:
         response_text = ""
         async for chunk in brain_instance.chat_stream(
             user_id=user_id,
             user_text=message,
-            long_term_memory=relevant_memories
+            long_term_memory=history_text  # 🔥 传入历史记忆
         ):
             if isinstance(chunk, dict):
                 if chunk.get('type') == 'sentence':
@@ -123,7 +186,12 @@ async def chat_with_una(message: str, user_id: str, context: str = "") -> str:
             elif isinstance(chunk, str):
                 response_text += chunk
 
-        return response_text.strip() or "嗯嗯，我听到了！继续说吧~ 😊"
+        final_reply = response_text.strip() or "嗯嗯，我听到了！继续说吧~ 😊"
+
+        # 🔥 Step 3: 存入 AI 回复到历史记录
+        database.add_message(user_id, "ai", final_reply)
+
+        return final_reply
     except Exception as e:
         print(f"❌ [Chat API] 聊天异常: {e}")
         return "抱歉，我现在有点小问题，一会儿再来找我聊吧~ 😅"
@@ -148,6 +216,7 @@ router = APIRouter(prefix="/api/social", tags=["社交朋友圈"])
 # 📦 Pydantic 请求体
 # ====================================================
 class CreatePostBody(BaseModel):
+    owner_user_id: str
     author_id: str
     author_name: str = ""
     author_type: str = "user"   # "user" 或 "ai"
@@ -229,11 +298,12 @@ async def upload_images(files: List[UploadFile] = File(...)):
 # 📝 发布动态
 # ====================================================
 @router.post("/post", summary="发布新动态")
-async def create_post(body: CreatePostBody):
+async def create_post(body: CreatePostBody, background_tasks: BackgroundTasks):
     if not body.content.strip() and not body.image_urls:
         raise HTTPException(status_code=400, detail="动态内容和图片不能同时为空")
 
     post = social_db.create_post(
+        owner_user_id=body.owner_user_id,
         author_id=body.author_id,
         content=body.content.strip(),
         images=body.image_urls,
@@ -247,6 +317,10 @@ async def create_post(body: CreatePostBody):
     )
     if post is None:
         raise HTTPException(status_code=500, detail="动态发布失败，请稍后重试")
+
+    # 🔥 用户发朋友圈时，AI 自动评论（仅对非 AI 发布的动态生效）
+    if body.author_type != "ai" and body.author_id != "ai_una" and post:
+        background_tasks.add_task(auto_comment_on_post, post["id"])
 
     return {"status": "ok", "post": post}
 
@@ -267,6 +341,7 @@ async def delete_post(post_id: int, body: DeletePostBody):
 # ====================================================
 @router.get("/feed", summary="分页获取朋友圈动态列表")
 async def get_feed(
+    owner_user_id: str = Query(..., description="所属的用户（用于租户隔离）"),
     page: int = Query(default=1, ge=1, description="页码，从 1 开始"),
     page_size: int = Query(default=20, ge=1, le=50, description="每页条数（最大 50）"),
 ):
@@ -275,7 +350,7 @@ async def get_feed(
     - likes: 点赞用户列表
     - comments: 树状评论（顶层 comments 下含 replies 子列表）
     """
-    result = social_db.get_feed(page=page, page_size=page_size)
+    result = social_db.get_feed(owner_user_id=owner_user_id, page=page, page_size=page_size)
     return result
 
 
@@ -318,10 +393,27 @@ async def add_comment(post_id: int, body: CommentBody, background_tasks: Backgro
     if comment is None:
         raise HTTPException(status_code=500, detail="评论发布失败，请稍后重试")
 
-    # 检查是否是评论 ai_una 的动态，如果是则自动回复
-    post = social_db.get_post_by_id(post_id)
-    if post and post.get("author_id") == "ai_una" and body.user_id != "ai_una":
-        background_tasks.add_task(auto_reply_comment, post_id, comment["id"])
+    # 🔥 放宽 AI 自动回复触发条件
+    if body.user_id != "ai_una":
+        should_ai_reply = False
+        post = social_db.get_post_by_id(post_id)
+
+        # 条件 1: 帖子是 AI 发的
+        if post and post.get("author_id") == "ai_una":
+            should_ai_reply = True
+
+        # 条件 2: 回复的评论是 AI 发的
+        if body.reply_to_id:
+            replied_comment = social_db.get_comment_by_id(body.reply_to_id)
+            if replied_comment and replied_comment.get("user_id") == "ai_una":
+                should_ai_reply = True
+
+        # 条件 3: 评论内容中 @UNA
+        if "@una" in body.content.lower() or "@UNA" in body.content:
+            should_ai_reply = True
+
+        if should_ai_reply:
+            background_tasks.add_task(auto_reply_comment, post_id, comment["id"])
 
     return {"status": "ok", "comment": comment}
 
@@ -718,3 +810,32 @@ async def chat_with_una_api(body: ChatRequestBody):
     except Exception as e:
         print(f"❌ [Chat API] 聊天异常: {e}")
         raise HTTPException(status_code=500, detail="聊天服务暂时不可用")
+
+
+# ====================================================
+# 📜 聊天历史记录 API
+# ====================================================
+@router.get("/chat/history", summary="获取与好友的聊天历史")
+async def get_chat_history(
+    user_id: str = Query(..., description="当前用户 ID"),
+    friend_id: str = Query(default="ai_una", description="好友 ID"),
+    limit: int = Query(default=50, ge=1, le=200, description="最大条数")
+):
+    """获取某用户与好友的聊天历史记录"""
+    try:
+        # 从 database.py 获取该用户的对话历史
+        history = database.get_recent_history(user_id, limit=limit)
+        # 转换格式：将 role (user/ai) 映射为 sender ID
+        messages = []
+        for item in history:
+            messages.append({
+                "sender": user_id if item.get("role") == "user" else friend_id,
+                "senderName": user_id if item.get("role") == "user" else "UNA",
+                "content": item.get("text", ""),
+                "timestamp": item.get("timestamp", ""),
+                "type": "text"
+            })
+        return {"status": "ok", "messages": messages, "total": len(messages)}
+    except Exception as e:
+        print(f"❌ [Chat History] 获取聊天历史异常: {e}")
+        return {"status": "ok", "messages": [], "total": 0}

@@ -45,7 +45,7 @@ class VisionService:
             # 如果是纯 Base64 字符串，手动补上前缀
             final_image_url = f"data:image/jpeg;base64,{image_data}"
 
-        user_prompt = "请用这双眼睛看看这张照片。用第一人称‘我’(Una) 的语气，温柔、感性地描述你看到了什么。就像我们在视频通话一样。不要太啰嗦，要在100字以内。"
+        user_prompt = "请用这双眼睛看看这张照片。用第一人称‘我’(Una) 的语气，温柔、口语化地说一句你看到了什么。就像日常微信聊天一样，极其简短（30-50字以内），绝不要长篇大论。"
         if user_context:
             user_prompt += f"\n(用户补充说: {user_context})"
 
@@ -68,7 +68,7 @@ class VisionService:
                     ]
                 }
             ],
-            "max_tokens": 150,
+            "max_tokens": 80,
             "temperature": 1.0
         }
 

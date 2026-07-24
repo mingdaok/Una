@@ -20,7 +20,7 @@ import { useEffect, useRef } from 'react';
 // @param {string|null} emotion                 - 情感字符串，来自后端 WS data.emotion
 // @param {{ openY: number, form: number }} lipValue - 口型数据，来自 useUnaCore 的 FFT 分析
 // ============================================================
-export function useLive2DController(appRef, modelRef, currentModel, emotion, lipValue) {
+export function useLive2DController(appRef, modelRef, currentModel, emotion, lipValue, actionOverride) {
 
   // --- 参数白名单 (在模型加载后填充) ---
   const validParamsRef = useRef(new Set());
@@ -68,6 +68,20 @@ export function useLive2DController(appRef, modelRef, currentModel, emotion, lip
 
   // --- 当前情感强度（用于身体控制权移交判断）---
   const emotionIntensityRef = useRef(0.0);
+
+  // --- 动作覆写通道 (Action Override) ---
+  const actionOverrideRef = useRef(null);
+
+  useEffect(() => {
+    if (actionOverride && actionOverride.action) {
+      actionOverrideRef.current = {
+        action: actionOverride.action,
+        params: actionOverride.params || {},
+        startTime: Date.now(),
+        duration: 800 // 800ms 内完成
+      };
+    }
+  }, [actionOverride]);
 
   // ============================================================
   // 情感字符串 → 5个目标参数的映射表
@@ -346,6 +360,57 @@ export function useLive2DController(appRef, modelRef, currentModel, emotion, lip
       const breathValue = (Math.sin(breath.phase) + 1) / 2; // 映射到 0~1
 
       // ============================================================
+      // Layer 2.5: 动作覆写层 (Action Override)
+      // ============================================================
+      let isActionOverridingMouth = false;
+      let overrideMouthOpenY = 0;
+      
+      const ao = actionOverrideRef.current;
+      if (ao) {
+        const elapsed = Date.now() - ao.startTime;
+        if (elapsed > ao.duration + 1000) {
+          // 动作结束一段时间后自动清理
+          actionOverrideRef.current = null;
+        } else {
+          let progress = Math.min(1.0, Math.max(0, elapsed / ao.duration));
+          // easeOutCubic 缓动
+          progress = 1 - Math.pow(1 - progress, 3);
+          
+          // 如果超过 duration，开始衰减 (再给 1000ms 衰减)
+          if (elapsed > ao.duration) {
+            const fadeOut = 1.0 - (elapsed - ao.duration) / 1000.0;
+            progress = Math.max(0, fadeOut);
+          }
+
+          if (progress > 0) {
+            if (ao.action === "惊讶") {
+              cf.eyeOpen = lerp(cf.eyeOpen, 1.0, progress);
+              cb.headAngleY = lerp(cb.headAngleY, -5, progress);
+              isActionOverridingMouth = true;
+              overrideMouthOpenY = 0.6 * progress;
+            } else if (ao.action === "开心") {
+              cf.smile = lerp(cf.smile, 1.0, progress);
+              cf.mouthForm = lerp(cf.mouthForm, 0.4, progress);
+              cb.bodyAngleZ = lerp(cb.bodyAngleZ, Math.sin(Date.now() / 200) * 5, progress);
+            } else if (ao.action === "害羞") {
+              cf.cheek = lerp(cf.cheek, 0.7, progress);
+              cb.headAngleY = lerp(cb.headAngleY, -3, progress);
+            }
+
+            // 处理附带的身体和头部方向参数
+            const dir = ao.params.direction || ao.params.head_tilt;
+            if (dir === "头左偏" || dir === "left") {
+              cb.bodyAngleZ = lerp(cb.bodyAngleZ, 8, progress);
+            } else if (dir === "头右偏" || dir === "right") {
+              cb.bodyAngleZ = lerp(cb.bodyAngleZ, -8, progress);
+            } else if (dir === "头低下") {
+              cb.headAngleY = lerp(cb.headAngleY, -10, progress);
+            }
+          }
+        }
+      }
+
+      // ============================================================
       // Layer 4: 参数写入层 - 身体 + 呼吸（受 Motion 影响，允许覆盖）
       // 当 Motion 播放时，这些参数控制权会被 Motion 的关键帧接管
       // 但我们仍然持续写入，形成柔和叠加（pixi-live2d-display 通常按最后写入覆盖）
@@ -419,6 +484,11 @@ export function useLive2DController(appRef, modelRef, currentModel, emotion, lip
         case 'H': targetOpenY = 0.3; targetForm = 0.0; break; // L, 微张
         case 'X': 
         default:  targetOpenY = 0.0; targetForm = 0.0; break; // 闭嘴
+      }
+
+      // 如果当前不说话且有动作覆写口型（如惊讶）
+      if (r === 'X' && isActionOverridingMouth) {
+          targetOpenY = Math.max(targetOpenY, overrideMouthOpenY);
       }
 
       // 阻尼缓冲平滑处理，防止音素切换时突变跳帧

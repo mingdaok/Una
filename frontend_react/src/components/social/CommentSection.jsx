@@ -75,32 +75,51 @@ export default function CommentSection({
   };
 
   // -------- 渲染单条评论 --------
-  const renderComment = (c, isReply = false) => (
-    <div key={c.id} className={`text-[13px] leading-snug ${isReply ? "mt-1 ml-3" : "mt-1"}`}>
-      <span className="text-blue-500 font-medium mr-1">
-        {c.user_name || c.user_id}
-      </span>
-      {c.reply_to_id && c.replies_to_name && (
-        <>
-          <span className="text-gray-400 text-xs">回复</span>
-          <span className="text-blue-500 font-medium mx-1">{c.replies_to_name}</span>
-        </>
-      )}
-      <span className="text-gray-700">{c.content}</span>
-      <button
-        className="ml-2 text-gray-400 text-xs active:text-blue-400"
-        onClick={() => startReply(c)}
-      >
-        回复
-      </button>
-      {/* 子回复 */}
-      {c.replies && c.replies.length > 0 && (
-        <div className="border-l-2 border-gray-200 pl-2 mt-1 space-y-1">
-          {c.replies.map((r) => renderComment(r, true))}
+  const renderComment = (c, isReply = false) => {
+    const commentAvatarUrl = c.user_avatar
+      ? (c.user_avatar.startsWith("http") ? c.user_avatar : `${apiBase}${c.user_avatar}`)
+      : null;
+    const commentInitial = (c.user_name || c.user_id || "?").slice(0, 1).toUpperCase();
+
+    return (
+      <div key={c.id} className={`flex gap-1.5 text-[13px] leading-snug ${isReply ? "mt-1.5 ml-3" : "mt-1.5"}`}>
+        {/* 评论头像 */}
+        <div className="shrink-0 mt-0.5">
+          {commentAvatarUrl ? (
+            <img src={commentAvatarUrl} alt="" className="w-5 h-5 rounded-sm object-cover" />
+          ) : (
+            <div className="w-5 h-5 rounded-sm bg-blue-100 flex items-center justify-center text-[10px] font-bold text-blue-500">
+              {commentInitial}
+            </div>
+          )}
         </div>
-      )}
-    </div>
-  );
+        <div className="flex-1 min-w-0">
+          <span className="text-blue-500 font-medium mr-1">
+            {c.user_name || c.user_id}
+          </span>
+          {c.reply_to_id && c.replies_to_name && (
+            <>
+              <span className="text-gray-400 text-xs">回复</span>
+              <span className="text-blue-500 font-medium mx-1">{c.replies_to_name}</span>
+            </>
+          )}
+          <span className="text-gray-700">{c.content}</span>
+          <button
+            className="ml-2 text-gray-400 text-xs active:text-blue-400"
+            onClick={() => startReply(c)}
+          >
+            回复
+          </button>
+          {/* 子回复 */}
+          {c.replies && c.replies.length > 0 && (
+            <div className="border-l-2 border-gray-200 pl-2 mt-1 space-y-1">
+              {c.replies.map((r) => renderComment(r, true))}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="mt-2">

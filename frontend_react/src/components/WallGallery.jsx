@@ -80,6 +80,7 @@ export default function WallGallery({ isStudy, userId }) {
                         img: imgUrl,
                         date: isoDate, // 更新为标准格式以便日历查找
                         displayDate: displayDate,
+                        summary: item.content, // 🔥 修复：将后端的 content 映射为前端使用的 summary
                         // 随机位置 (如果后端没给的话)
                         x_offset: item.x_offset || (Math.random() * 10 - 5),
                         y_offset: item.y_offset || (Math.random() * 10 - 5),

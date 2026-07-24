@@ -25,6 +25,7 @@ def init_social_tables():
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS una_posts (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_user_id   TEXT    NOT NULL,
             author_id       TEXT    NOT NULL,
             author_name     TEXT    DEFAULT '',
             author_type     TEXT    DEFAULT 'user',
@@ -134,12 +135,13 @@ init_social_tables()
 # ====================================================
 # 📝 动态操作
 # ====================================================
-def create_post(author_id: str, content: str, images: list = None,
+def create_post(owner_user_id: str, author_id: str, content: str, images: list = None,
                 location: str = "", author_name: str = "", author_type: str = "user",
                 author_avatar: str = "", emoji_pack_ids: list = None, 
                 post_type: str = "text", visibility: str = "public") -> dict | None:
     """
     发布一条新动态。
+    :param owner_user_id:   所属的用户（租户隔离）
     :param author_id:       发布者 ID（用户账号或 AI 名字）
     :param content:         正文文本
     :param images:          图片 URL 列表（可为空）
@@ -159,10 +161,10 @@ def create_post(author_id: str, content: str, images: list = None,
         cursor = conn.cursor()
         cursor.execute(
             """INSERT INTO una_posts
-               (author_id, author_name, author_type, author_avatar, content, images, 
+               (owner_user_id, author_id, author_name, author_type, author_avatar, content, images, 
                 location, emoji_pack_ids, post_type, visibility)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (author_id, author_name, author_type, author_avatar, content, images_json, 
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (owner_user_id, author_id, author_name, author_type, author_avatar, content, images_json, 
              location, emoji_ids_json, post_type, visibility)
         )
         post_id = cursor.lastrowid
@@ -187,9 +189,10 @@ def get_post_by_id(post_id: int) -> dict | None:
     return _build_post_dict(dict(row))
 
 
-def get_feed(page: int = 1, page_size: int = 20) -> dict:
+def get_feed(owner_user_id: str, page: int = 1, page_size: int = 20) -> dict:
     """
     分页获取朋友圈列表（倒序），并附带每条动态的点赞列表和树状评论。
+    :param owner_user_id: 所属的用户（租户隔离）
     :param page:      页码（从 1 开始）
     :param page_size: 每页条数
     :return:          {"total": int, "page": int, "items": [post_dict, ...]}
@@ -200,19 +203,33 @@ def get_feed(page: int = 1, page_size: int = 20) -> dict:
     cursor = conn.cursor()
 
     # 总数
-    cursor.execute("SELECT COUNT(*) FROM una_posts")
+    cursor.execute("SELECT COUNT(*) FROM una_posts WHERE owner_user_id = ?", (owner_user_id,))
     total = cursor.fetchone()[0]
 
     # 分页查询动态列表（倒序）
     cursor.execute(
-        "SELECT * FROM una_posts ORDER BY timestamp DESC LIMIT ? OFFSET ?",
-        (page_size, offset)
+        "SELECT * FROM una_posts WHERE owner_user_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+        (owner_user_id, page_size, offset)
     )
     rows = cursor.fetchall()
     conn.close()
 
     items = [_build_post_dict(dict(r)) for r in rows]
     return {"total": total, "page": page, "page_size": page_size, "items": items}
+
+
+def _get_user_avatar(user_id: str) -> str:
+    """内部工具：根据 user_id 从 user_profiles 表获取最新头像 URL"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT avatar_url FROM user_profiles WHERE user_id = ?", (user_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return row["avatar_url"] if row and row["avatar_url"] else ""
+    except Exception:
+        return ""
 
 
 def _build_post_dict(post: dict) -> dict:
@@ -230,8 +247,22 @@ def _build_post_dict(post: dict) -> dict:
     except Exception:
         post["emoji_pack_ids"] = []
 
+    # 🔥 实时关联最新头像：覆盖发布时保存的旧头像
+    latest_avatar = _get_user_avatar(post.get("author_id", ""))
+    if latest_avatar:
+        post["author_avatar"] = latest_avatar
+
     post["likes"] = get_likes_by_post(post_id)
     post["comments"] = get_comment_tree(post_id)
+
+    # 🔥 为每条评论附加最新头像
+    def _attach_avatar_to_comments(comment_list):
+        for c in comment_list:
+            c["user_avatar"] = _get_user_avatar(c.get("user_id", ""))
+            if c.get("replies"):
+                _attach_avatar_to_comments(c["replies"])
+
+    _attach_avatar_to_comments(post["comments"])
     return post
 
 

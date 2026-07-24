@@ -3,7 +3,7 @@ import { Settings } from 'lucide-react';
 import { API_HOST } from '../config';
 import { useLive2DController } from '../hooks/useLive2DController';
 
-export default function Live2DViewer({ lipValue, emotion }) {
+export default function Live2DViewer({ lipValue, emotion, actionOverride }) {
   // 接入 Live2D 高级控制层 (情感驱动 + 口型同步 + 参数冲突调度)
   // 注意：appRef 和 modelRef 在下方 useEffect 中创建，传入 Hook 后 Hook 内部会等待它们就绪
   const canvasRef = useRef(null);
@@ -12,6 +12,7 @@ export default function Live2DViewer({ lipValue, emotion }) {
   const [isLoaded, setIsLoaded] = useState(false);
   const [currentModel, setCurrentModel] = useState(() => localStorage.getItem('live2d_model') || 'panda_cake'); // 默认加载粉色熊猫模型
   const [showSettings, setShowSettings] = useState(false); // 控制设置面板显示
+
 
   // 位置与缩放状态
   const [modelScale, setModelScale] = useState(() => parseFloat(localStorage.getItem('live2d_scale')) || 0.17);
@@ -264,7 +265,7 @@ export default function Live2DViewer({ lipValue, emotion }) {
   //   - 自动眨眼周期控制
   //   - panda_cake 特有参数（JAW, ParamMouthOpenY4, 红晕）兼容
   // ============================================================
-  useLive2DController(appRef, modelRef, currentModel, emotion, lipValue);
+  useLive2DController(appRef, modelRef, currentModel, emotion, lipValue, actionOverride);
 
   // 口型同步和参数覆写已完全迁移至 useLive2DController，
   // 此处不再有任何 lipValue useEffect 或 Ticker，避免双重驱动冲突。

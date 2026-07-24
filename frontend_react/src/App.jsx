@@ -5,7 +5,7 @@ import { Mic, Send, LogIn, ArrowLeft, Volume2, Wifi, WifiOff, FastForward, Camer
 import DiaryBook from './components/DiaryBook';
 import Live2DViewer from './components/Live2DViewer';
 import SocialFeed from './components/social/SocialFeed';
-import WeChatChat from './components/social/WeChatChat';
+import WeChatContacts from './components/social/WeChatContacts';
 // 🔥 修复 1: 引用合并后的正确文件 (去掉 Fixed)
 import { useUnaCore } from './hooks/useUnaCore';
 import { useVision } from './hooks/useVision';
@@ -39,7 +39,7 @@ export default function App() {
   const {
     messages, setMessages, sendMessage, sendAudioData, sendImage,
     lipValue, interrupt, playAudio, connectionStatus, replayChunks,
-    sendStopSignal  // 录音结束后通知后端触发 ASR
+    sendStopSignal, actionOverride
   } = useUnaCore(isLoggedIn ? userId : null);
 
   // 第二个参数 sendStopSignal：录音停止并发送完音频后，自动向后端发 stop 触发识别
@@ -73,7 +73,7 @@ export default function App() {
 
       if (data.reply) {
         // 🔥 补全音频地址（App 环境下相对路径无法播放）
-        const fullAudioUrl = formatAudioUrl(data.audio);
+        const fullAudioUrl = formatAudioUrl(data.audio_url);
 
         // 构造 AI 回复消息
         const newMessage = {
@@ -90,7 +90,7 @@ export default function App() {
 
         // 立即播放语音（使用补全后的完整地址）
         if (fullAudioUrl && typeof playAudio === 'function') {
-          playAudio(fullAudioUrl);
+          playAudio(fullAudioUrl, data.visemes || []);
         }
       }
     } catch (e) {
@@ -181,7 +181,7 @@ export default function App() {
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
           >
             <div className="fixed inset-0 bg-cover bg-center z-0 pointer-events-none" style={{ backgroundImage: `url(${baseUrl}assets/bg_living.jpg)` }} />
-            <Live2DViewer lipValue={lipValue} emotion={[...messages].reverse().find(m => m.isAI)?.emotion} />
+            <Live2DViewer lipValue={lipValue} emotion={[...messages].reverse().find(m => m.isAI)?.emotion} actionOverride={actionOverride} />
 
             <div className="absolute top-4 right-4 z-50">
               {connectionStatus === 'OPEN' ? <Wifi size={16} className="text-green-400/50" /> : <WifiOff size={16} className="text-red-500" />}
@@ -355,7 +355,7 @@ export default function App() {
             transition={{ type: 'tween', duration: 0.28 }}
             className="fixed inset-0 z-[100]"
           >
-            <WeChatChat
+            <WeChatContacts
               currentUserId={userId}
               currentUserName={userId}
               apiBase={apiBase}

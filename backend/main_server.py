@@ -18,6 +18,22 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+# === 下载必要的 NLTK 数据 (已禁用) ===
+# try:
+#     import nltk
+#     try:
+#         nltk.data.find('tokenizers/punkt')
+#     except LookupError:
+#         print("📥 下载 NLTK punkt 数据...")
+#         nltk.download('punkt')
+#     try:
+#         nltk.data.find('taggers/averaged_perceptron_tagger')
+#     except LookupError:
+#         print("📥 下载 NLTK averaged_perceptron_tagger 数据...")
+#         nltk.download('averaged_perceptron_tagger')
+# except ImportError:
+#     print("⚠️ NLTK 未安装，跳过数据下载")
+
 # === 路径设定 ===
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(CURRENT_DIR)
@@ -76,11 +92,27 @@ if os.path.exists(CONFIG_PATH):
     with open(CONFIG_PATH, 'r', encoding='utf-8') as f: config = yaml.safe_load(f)
 else: config = {'apis': {'silicon_base': {'api_key': '', 'base_url': '', 'model': ''}}}
 
+AUDIO_BASE_URL = config.get('app', {}).get('audio_base_url', '').strip() or "http://127.0.0.1:8000"
+if AUDIO_BASE_URL.endswith('/'):
+    AUDIO_BASE_URL = AUDIO_BASE_URL[:-1]
+
+def make_absolute_audio_url(path: str) -> str:
+    if not path or not isinstance(path, str):
+        return path
+    path = path.strip()
+    if not path:
+        return path
+    if path.startswith("http://") or path.startswith("https://"):
+        return path
+    return f"{AUDIO_BASE_URL}/{path.lstrip('/')}"
+
 try:
     from brain_engine import UnaBrain
     from asr_engine import SenseVoiceASR
     from tts_service import generate_audio_gsv as generate_audio_file  # GPT-SoVITS
-except ImportError: sys.exit(1)
+except ImportError as e:
+    print(f"❌ 导入失败: {e}")
+    sys.exit(1)
 
 # === 初始化 FastAPI ===
 app = FastAPI()
@@ -157,46 +189,54 @@ class ConnectionManager:
         if user_id not in self.active_connections:
             self.active_connections[user_id] = []
         self.active_connections[user_id].append(websocket)
-        print(f"🔌 用户[{user_id}] 已连接")
+        print(f"🔌 用户[{user_id}] 已连接, 当前连接数: {len(self.active_connections[user_id])}")
         asyncio.create_task(self.trigger_welcome_back(user_id))
 
     def disconnect(self, websocket: WebSocket, user_id: str):
         if user_id in self.active_connections:
             if websocket in self.active_connections[user_id]:
                 self.active_connections[user_id].remove(websocket)
+                print(f"🔌 用户[{user_id}] 断开连接, 剩余连接数: {len(self.active_connections[user_id])}")
 
     async def broadcast_to_user(self, user_id: str, message: dict):
         if user_id in self.active_connections:
+            if isinstance(message, dict) and message.get('audio_url'):
+                message['audio_url'] = make_absolute_audio_url(message['audio_url'])
             for connection in list(self.active_connections[user_id]):
                 try: await connection.send_json(message)
                 except: self.disconnect(connection, user_id)
     
-    async def send_ai_reply(self, reply_text, emotion, user_id, mood_score=0, is_proactive=False):
-        # 复用上面的函数
-        audio_url, visemes = await generate_audio_file(reply_text, emotion)
-        
+    async def send_ai_reply(self, reply_text, emotion, user_id, mood_score=0, is_proactive=False, audio_url=None, visemes=None):
+        if not audio_url or visemes is None:
+            audio_url, visemes = await generate_audio_file(reply_text, emotion)
+
         if not is_proactive:
             database.add_message(user_id, "ai", reply_text, mood_score, audio_url)
         
         await self.broadcast_to_user(user_id, {
             "type": "final_reply", "text": reply_text, "audio_url": audio_url,
-            "visemes": visemes,
+            "visemes": visemes or [],
             "motion_file": emotion_mapper.get_motion_file(emotion), "crisis_level": "NORMAL"
         })
 
     # 🔥 新增：用于单独发送一小段语音碎片的通道
     async def send_ai_reply_chunk(self, reply_text, emotion, user_id, chunk_index):
+        print(f"🎵 [Chunk] 开始生成碎片 {chunk_index}: '{reply_text}'")
         audio_url, visemes = await generate_audio_file(reply_text, emotion)
-        if not audio_url: return
+        if not audio_url:
+            print(f"❌ [Chunk] 音频生成失败，跳过碎片 {chunk_index}: '{reply_text}'")
+            return
         
-        await self.broadcast_to_user(user_id, {
+        message = {
             "type": "audio_stream_chunk", 
             "chunk_index": chunk_index,
             "text": reply_text, 
             "audio_url": audio_url,
-            "visemes": visemes,
+            "visemes": visemes or [],
             "emotion": emotion
-        })
+        }
+        print(f"📤 [Chunk] 发送音频碎片 {chunk_index} 给用户 {user_id}: {audio_url}")
+        await self.broadcast_to_user(user_id, message)
 
     async def trigger_welcome_back(self, user_id: str):
         last_time, last_content, last_mood = database.get_last_interaction(user_id)
@@ -257,14 +297,25 @@ global_manager = AsyncInteractionManager(wait_interval=3.0)
 async def process_and_push_response(user_text, user_id):
     await ws_manager.broadcast_to_user(user_id, {"type": "typing_status", "status": "thinking"})
     search_query = user_text
-    if len(user_text) < 5: search_query += " 开心 快乐 成功"
-    search_query = await brain.rewrite_search_query(user_id, search_query)
-    relevant_memories = memory_service.recall(user_id, search_query)
+    if len(user_text) < 5:
+        search_query += " 开心 快乐 成功"
+
+    loop = asyncio.get_running_loop()
+    recall_task = loop.run_in_executor(None, memory_service.recall, user_id, search_query)
+    asyncio.create_task(brain.update_profile_task(user_id, user_text))
+
     recent_moods = database.get_recent_mood_scores(user_id, 5)
     negative_count = len([m for m in recent_moods if m <= -2])
     
     # 将用户最新消息写入数据库
     database.add_message(user_id, "user", user_text, 0, None)
+
+    # 🔥 [优化] RAG 超时熔断：最多等 1.0 秒，超时则放弃长期记忆，不阻塞大模型
+    try:
+        relevant_memories = await asyncio.wait_for(recall_task, timeout=1.0)
+    except asyncio.TimeoutError:
+        print("⚠️ [RAG] 记忆检索超时(>1.0s)，跳过长期记忆，直接启动 LLM")
+        relevant_memories = ""
 
     # 🌊 开始启动流式迭代
     full_reply_text = ""
@@ -273,6 +324,7 @@ async def process_and_push_response(user_text, user_id):
     chunk_index = 0
     
     await ws_manager.broadcast_to_user(user_id, {"type": "audio_stream_start"})
+    print(f"🎬 [Stream] 开始流式音频给用户 {user_id}")
 
     try:
         # 使用流式接口获取片段
@@ -289,7 +341,16 @@ async def process_and_push_response(user_text, user_id):
                 text_chunk = item.get("text", "")
                 full_reply_text += text_chunk
                 
-                # 为该句起一个后台合成任务（并发发往 TTS 引擎）
+                # 🔥 [优化] 文字先出：立即推送文字碎片给前端显示，不等 TTS
+                await ws_manager.broadcast_to_user(user_id, {
+                    "type": "text_stream_chunk",
+                    "chunk_index": chunk_index,
+                    "text": text_chunk,
+                    "emotion": current_emotion
+                })
+                print(f"📝 [Stream] 发送文字碎片 {chunk_index} 给用户 {user_id}: '{text_chunk[:30]}...'")
+                
+                # 🔥 [优化] 音频异步跟上：后台启动 TTS + Rhubarb，完成后自动推音频
                 asyncio.create_task(
                     ws_manager.send_ai_reply_chunk(text_chunk, current_emotion, user_id, chunk_index)
                 )
@@ -305,6 +366,7 @@ async def process_and_push_response(user_text, user_id):
         "type": "audio_stream_end", 
         "full_text": full_reply_text
     })
+    print(f"🏁 [Stream] 流式音频结束给用户 {user_id}, 总文本长度: {len(full_reply_text)}")
 
     asyncio.create_task(brain.update_profile_task(user_id, user_text))
     threading.Thread(target=memory_service.remember, args=(user_id, user_text, full_reply_text, current_emotion)).start()
@@ -359,12 +421,15 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                         data = json.loads(msg["text"])
                         msg_type = data.get("type")
                         
-                        # 🔥🔥🔥 [修复] 核心逻辑：添加对普通文字消息的处理 🔥🔥🔥
+                        # 🔥🔥🔥 [优化] 文字消息：绕过 3s 防抖池，即发即答 🔥🔥🔥
                         if msg_type == "text":
                             content = data.get("content", "")
                             if content:
-                                print(f"📩 收到文字: {content}")
-                                await global_manager.handle_input(content, user_id=user_id)
+                                print(f"📩 收到文字消息: '{content}' (长度:{len(content)})")
+                                # 同步文本给前端显示
+                                await ws_manager.broadcast_to_user(user_id, {"type": "user_sync", "text": content})
+                                # 直通车：绕过防抖等待池，瞬间起跑
+                                asyncio.create_task(process_and_push_response(content, user_id))
 
                         # 处理客户端心跳响应
                         elif msg_type == "pong":
@@ -475,22 +540,57 @@ async def generate_diary_new_api(req: DiaryContent):
 class PhotoRequest(BaseModel):
     image: str
     text: str = ""
+    user_id: str = "mobile_user"
 
 @app.post("/api/vision_chat")
 async def vision_chat_api(req: PhotoRequest):
     if not vision_service:
         return {"reply": "我的视觉模块好像没装好...", "emotion": "sad", "audio": None}
-    
+
+    user_id = req.user_id or "mobile_user"
+
     # 1. 识别 (VisionService 会自动处理 base64 前缀问题)
     reply_text = vision_service.see_and_reply(req.image, req.text)
-    
-    # 2. 生成语音 (现在 generate_audio_file 肯定存在了)
-    audio_url = await generate_audio_file(reply_text, "happy")
-    
+
+    # 2. 🔥 [优化] 通过 WebSocket 流式推送，复用前端已有的音频队列播放逻辑
+    async def _push_vision_audio():
+        try:
+            emotion = "happy"
+            # 发送流式开始标记
+            await ws_manager.broadcast_to_user(user_id, {"type": "audio_stream_start"})
+
+            # 文字先行上屏
+            await ws_manager.broadcast_to_user(user_id, {
+                "type": "text_stream_chunk",
+                "chunk_index": 0,
+                "text": reply_text,
+                "emotion": emotion
+            })
+
+            # 后台合成 TTS + Rhubarb
+            await ws_manager.send_ai_reply_chunk(reply_text, emotion, user_id, 0)
+
+            # 写入数据库
+            database.add_message(user_id, "ai", reply_text, 0, None)
+
+            # 发送流式结束标记
+            await ws_manager.broadcast_to_user(user_id, {
+                "type": "audio_stream_end",
+                "full_text": reply_text
+            })
+        except Exception as e:
+            print(f"❌ [Vision TTS Push] 推送失败: {e}")
+
+    # 启动异步推送任务，不阻塞 HTTP 响应
+    asyncio.create_task(_push_vision_audio())
+
+    # 3. HTTP 立即返回文字（前端不再需要等音频）
     return {
+        "status": "ok",
         "reply": reply_text,
         "emotion": "happy",
-        "audio": audio_url
+        "audio_url": None,
+        "visemes": []
     }
 
 
@@ -604,6 +704,7 @@ async def scheduled_social_post_job():
                 content = f"{content} {extra_emojis}"
 
             social_db.create_post(
+                owner_user_id=uid,
                 author_id='ai_una',
                 author_name='UNA',
                 author_type='ai',

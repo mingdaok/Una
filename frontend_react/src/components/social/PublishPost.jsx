@@ -96,6 +96,7 @@ export default function PublishPost({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          owner_user_id: currentUserId,
           author_id: currentUserId,
           author_name: currentUserName || currentUserId,
           author_type: authorType,

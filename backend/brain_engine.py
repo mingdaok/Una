@@ -1,54 +1,14 @@
 import json
 import datetime
 import random
-from openai import OpenAI
+from openai import AsyncOpenAI
 import database
 
 class UnaBrain:
     def __init__(self, api_key, base_url, model):
-        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
         self.model = model
         self.crisis_keywords = ["自杀", "想死", "不想活了", "结束生命", "离开世界", "割腕", "吃药", "跳楼"]
-
-    # ✅ [Phase 1] 查询重写 (让搜索更精准)
-    async def rewrite_search_query(self, user_id, user_text):
-        # 1. 只有当句子太短或包含代词时才重写 (节省 Token)
-        keywords = ["这", "那", "他", "她", "它", "记得"]
-        if len(user_text) > 15 and not any(k in user_text for k in keywords):
-            return user_text
-
-        # 2. 获取上下文
-        history = database.get_recent_context_text(user_id, limit=3)
-        if not history:
-            return user_text
-
-        # 3. 构建 Prompt
-        context_str = "\n".join([f"{h['role']}: {h['content']}" for h in history])
-        prompt = (
-            f"任务：结合上下文，将用户的最新回复重写为一个包含完整主语和宾语的独立陈述句，以便于数据库搜索。\n"
-            f"上下文：\n{context_str}\n"
-            f"用户最新回复：{user_text}\n"
-            f"要求：\n"
-            f"1. 补全代词（如把'那个'改为具体事物）。\n"
-            f"2. 不要改变原意。\n"
-            f"3. 直接输出重写后的句子，不要解释。\n"
-            f"重写结果："
-        )
-
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.1 # 低温度，保证准确
-            )
-            rewritten = response.choices[0].message.content.strip()
-            # 简单清洗：去掉引号等
-            rewritten = rewritten.replace('"', '').replace("'", "")
-            print(f"🔍 [Query Rewrite] 原句: '{user_text}' -> 重写: '{rewritten}'")
-            return rewritten
-        except Exception as e:
-            print(f"⚠️ Rewrite Failed: {e}")
-            return user_text
 
     # ✅ [Phase 2] 画像更新任务 (后台运行)
     async def update_profile_task(self, user_id, user_text):
@@ -73,7 +33,7 @@ class UnaBrain:
         )
 
         try:
-            response = self.client.chat.completions.create(
+            response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1
@@ -110,7 +70,7 @@ class UnaBrain:
                 f"4. 返回 JSON: {{'content': '日记正文', 'mood': '心情标签(happy/lonely/peaceful/hopeful)'}}\n"
             )
 
-            response = self.client.chat.completions.create(
+            response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 response_format={"type": "json_object"},
@@ -161,7 +121,7 @@ class UnaBrain:
         )
 
         try:
-            response = self.client.chat.completions.create(
+            response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 response_format={"type": "json_object"},
@@ -228,7 +188,7 @@ class UnaBrain:
         )
         
         try:
-            response = self.client.chat.completions.create(
+            response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_text}],
                 response_format={"type": "json_object"}
@@ -273,16 +233,25 @@ class UnaBrain:
             f"🎯 核心原则: 共情接纳，CBT引导，回归现实。\n"
             f"【长期记忆】:\n{long_term_memory}\n"
             f"【近期对话】:\n{hist_str}\n\n"
-            f"回复要求（极其重要！）：\n"
-            f"必须且只能按照以下格式输出你的第一行（不要有任何多余字符），从第二行开始写正文回复。\n"
-            f"格式：\n"
+            f"回复要求（极其重要！必须严格遵守！）：\n"
+            f"1. 必须且只能按照以下格式输出你的第一行（不要有任何多余字符），从第二行开始写正文回复。\n"
+            f"2. 后续每句话（或几句话）前面可以加动作标签（可选），如：[动作:惊讶, 头左偏] 哇！你来了！\n"
+            f"   - 动作维度：惊讶/开心/难过/害羞/思考/生气/困惑/期待\n"
+            f"   - 头部身体：头左偏/头右偏/头低下/头抬起/身体左倾/身体右倾/身体前倾\n"
+            f"3. 你的回复要显得自然随性，内容丰满些（大约 80-150 字），但绝不要长篇大论。遵循以下口语铁律：\n"
+            f"   - 句子长短结合散落分布！可以有两三个字的极短短语（真的吗？太好了！），也可以有十几字的正常交流，绝不要每句字数一样像排比句。\n"
+            f"   - 强制多用句号（。）、叹号（！）、问号（？）作为断句结尾。尽量少用逗号（，）连篇结牍！\n"
+            f"   - 自然地通过换行分成两三个段落，让排版显透气。\n"
+            f"   - 严禁：列清单、用破折号、从句套从句。\n"
+            f"格式（第一行必须严格如下，不要有多余文字）：\n"
             f"EMOTION: [动作情绪标签(happy/sad/angry/shy/thinking/neutral等)] | MOOD: [心情分(-5到5)]\n"
-            f"我今天很开心！终于看到你来了。"
+            f"示例（从第二行开始的自然风格）：\n"
+            f"[动作:开心, 头左偏] 哇！你来了！\n\n其实我刚才还在偷偷想你呢。今天过得怎样呀？遇到什么好玩的事了吗？\n\n快和我说说，我听着呢！"
         )
 
         try:
             # 开启 stream=True
-            response = self.client.chat.completions.create(
+            response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_text}],
                 stream=True,
@@ -291,62 +260,141 @@ class UnaBrain:
 
             buffer = ""
             is_first_line_parsed = False
+            yielded_chunks = 0
+            import re
+            
+            ACTION_SYNONYMS = {
+                "微笑": "开心", "高兴": "开心", "大笑": "开心", "兴奋": "开心",
+                "伤心": "难过", "落泪": "难过", "哭泣": "难过", "悲伤": "难过",
+                "愤怒": "生气", "发火": "生气",
+                "歪头": "头左偏",
+                "吃惊": "惊讶", "震撼": "惊讶", "震惊": "惊讶",
+                "疑惑": "困惑", "不懂": "困惑", "疑问": "困惑",
+                "向左偏": "头左偏", "向右偏": "头右偏",
+                "低头": "头低下", "抬头": "头抬起"
+            }
 
-            for chunk in response:
+            async for chunk in response:
                 delta = chunk.choices[0].delta.content
                 if delta:
                     buffer += delta
 
                     # 第一阶段：尝试解析首行的 EMOTION: xxx | MOOD: xxx
-                    if not is_first_line_parsed and "\n" in buffer:
-                        lines = buffer.split("\n", 1)
-                        first_line = lines[0]
-                        buffer = lines[1] if len(lines) > 1 else ""
-                        
+                    if not is_first_line_parsed:
                         emotion = "neutral"
                         mood_score = 0
-                        # 粗暴提权解析
-                        if "EMOTION:" in first_line:
-                            try:
-                                e_part = first_line.split("EMOTION:")[1].split("|")[0].strip().lower()
-                                emotion = "".join(filter(str.isalpha, e_part))
-                            except: pass
-                        if "MOOD:" in first_line:
-                            try:
-                                m_part = first_line.split("MOOD:")[1].strip()
-                                import re
-                                num = re.search(r'-?\d+', m_part)
-                                if num: mood_score = int(num.group())
-                            except: pass
-                        
-                        yield {"type": "meta", "emotion": emotion, "mood_score": mood_score}
-                        is_first_line_parsed = True
 
-                    # 第二阶段：标点符号截停分发 (当首行解析完之后)
-                    if is_first_line_parsed:
-                        # 检查有没有完整的句子边界：。 ！ ？ ... \n
-                        import re
-                        # 使用正则切分，保留标点符号
-                        sentences = re.split(r'([。！？\!\?]+[\n]?|\n+)', buffer)
+                        # 判断是否已经生成出包含 EMOTION 和 MOOD 的完整前缀块（无论 AI 是否给了换行）
+                        match = re.search(r'EMOTION:\s*(.+?)\s*\|\s*MOOD:\s*\[?(-?\d+)\]?', buffer, re.IGNORECASE)
                         
-                        # 如果 len(sentences) > 1，说明有被标点截断的句子
-                        # sentences 的结构会是: ['第一句', '。', '第二句半截']
-                        if len(sentences) > 1:
-                            # 弹出最后一个半截的存回 buffer
-                            buffer = sentences.pop()
+                        if match:
+                            try:
+                                e_part = match.group(1).strip()
+                                # 强制只提取英文字母作为可用情绪标签，过滤掉 AI 自己乱加的中文描述
+                                emotion = "".join(re.findall(r'[a-zA-Z]+', e_part)).lower()
+                                if not emotion: emotion = "neutral"
+                                
+                                mood_score = int(match.group(2))
+                            except: pass
+
+                            # 从 buffer 中彻底剔除前面这段匹配到的控制文本
+                            buffer = buffer[match.end():].lstrip()
+                            # 有的 AI 喜欢在心情后加类似 "(低头笑)" 的戏精描述，一并清理避免在前端读出来
+                            buffer = re.sub(r'^\（.*?\）\s*', '', buffer)
+                            buffer = re.sub(r'^\(.*?\)\s*', '', buffer)
                             
-                            # 把成对的句子和标点拼起来 yield 出去
-                            for i in range(0, len(sentences), 2):
-                                sent = sentences[i]
-                                punc = sentences[i+1] if i+1 < len(sentences) else ""
-                                full_sent = (sent + punc).strip()
-                                if len(full_sent) > 0:
-                                    print(f"💦 [流式出核] 产出句段: {full_sent}")
-                                    yield {"type": "sentence", "text": full_sent}
+                            yield {"type": "meta", "emotion": emotion, "mood_score": mood_score}
+                            is_first_line_parsed = True
+
+                        elif "\n" in buffer or len(buffer) > 40:
+                            # 容错：如果产生了换行却没匹配上，或者已经挤了 40 个字了，说明 AI 格式完全坏了
+                            # 暴力清洗掉可能存在的残缺标签，防止前端读出奇怪英文
+                            buffer = re.sub(r'EMOTION:[^\|]+(\|?)', '', buffer, flags=re.IGNORECASE)
+                            buffer = re.sub(r'MOOD:\s*\[?\-?\d+\]?', '', buffer, flags=re.IGNORECASE)
+                            # 额外清洗可能残留的括号和特殊字符
+                            buffer = re.sub(r'^[\[\]【】（）()【】《》<>""''「」『』【】]+', '', buffer)
+                            buffer = buffer.strip()
+                            
+                            # 如果清洗后buffer为空或只剩特殊字符，跳过这次yield
+                            if not buffer or re.match(r'^[^\w\u4e00-\u9fff]*$', buffer):
+                                print(f"⚠️ [流式容错] AI 格式崩坏，清洗后无有效内容，跳过输出")
+                                yield {"type": "meta", "emotion": "neutral", "mood_score": 0}
+                                is_first_line_parsed = True
+                                continue
+                            
+                            print(f"⚠️ [流式容错] AI 格式崩坏，已强制解锁下发并清洗头文本。剩余文本: '{buffer[:50]}...'")
+                            yield {"type": "meta", "emotion": "neutral", "mood_score": 0}
+                            is_first_line_parsed = True
+
+                    # 动作截取阶段
+                    if is_first_line_parsed:
+                        action_match = re.search(r'\[动作:([^\]]+)\]', buffer)
+                        if action_match:
+                            try:
+                                action_text = action_match.group(1).strip()
+                                buffer = buffer[:action_match.start()] + buffer[action_match.end():]
+                                
+                                parts = [p.strip() for p in action_text.split(",") if p.strip()]
+                                main_action = "neutral"
+                                params = {}
+                                
+                                for p in parts:
+                                    mapped_p = ACTION_SYNONYMS.get(p, p)
+                                    if mapped_p in ["惊讶", "开心", "难过", "害羞", "思考", "生气", "困惑", "期待"]:
+                                        main_action = mapped_p
+                                    elif mapped_p in ["头左偏", "头右偏", "头低下", "头抬起", "身体左倾", "身体右倾", "身体前倾"]:
+                                        params["direction"] = mapped_p
+                                        if mapped_p == "头左偏": params["head_tilt"] = "left"
+                                        elif mapped_p == "头右偏": params["head_tilt"] = "right"
+                                        
+                                yield {"type": "chat_action", "action": main_action, "params": params}
+                            except Exception as e:
+                                print(f"Action parse error: {e}")
+
+                    # 第二阶段：智能动态标点截停分发 (消除割裂感)
+                    if is_first_line_parsed:
+                        # 正在接收类似 [动作:xxx] 的标签中，暂停标点截停
+                        if buffer.rfind('[') > buffer.rfind(']'):
+                            continue
+                            
+                        while True:
+                            # 优先寻找强停顿符 (必定切分)
+                            match_strong = re.search(r'([。！？\!\?\n]+)', buffer)
+                            # 寻找弱停顿符 (逗号、顿号等)
+                            match_weak = re.search(r'([，、；\,]+)', buffer)
+                            
+                            split_pos = -1
+                            
+                            if match_strong:
+                                pos = match_strong.end()
+                                # 🔥 后续碎片即使碰到句号，也要积攒到 15 字符以上再切
+                                # 防止碎片太小导致后端 TTS 合成频繁启动，拉高整体可用播放时长
+                                if yielded_chunks == 0 or pos >= 15:
+                                    split_pos = pos
+                            elif match_weak:
+                                pos = match_weak.end()
+                                # 🔥 核心策略（流瀑式兜底）：
+                                # 首个碎片逢逗号大于3字可切；后续碎片逗号大于 25 字才切（被逼无奈的兜底切分）
+                                if (yielded_chunks == 0 and pos >= 3) or (yielded_chunks > 0 and pos >= 25):
+                                    split_pos = pos
+                                    
+                            if split_pos != -1:
+                                sent = buffer[:split_pos].strip()
+                                buffer = buffer[split_pos:]
+                                if len(sent) > 0 and not re.match(r'^[^\w\u4e00-\u9fff]*$', sent):
+                                    print(f"💦 [流式出核] 产出句段: {sent}")
+                                    yield {"type": "sentence", "text": sent}
+                                    yielded_chunks += 1
+                            else:
+                                break
 
             # 生成完毕后，把肚子里剩下没有标点符号的半句话也吐出来
             final_p = buffer.strip()
-            if final_p and is_first_line_parsed:
+            if final_p and not re.match(r'^[^\w\u4e00-\u9fff]*$', final_p):
+                 # 🔥 兜底：如果整段回复都没触发过 is_first_line_parsed（极端情况），在收尾时补发默认 meta
+                 if not is_first_line_parsed:
+                     print(f"⚠️ [流式兜底] 整段回复未解析到情绪标签，补发默认 meta")
+                     yield {"type": "meta", "emotion": "neutral", "mood_score": 0}
                  print(f"💦 [流式收尾] 产出末段: {final_p}")
                  yield {"type": "sentence", "text": final_p}
                  
@@ -378,7 +426,7 @@ class UnaBrain:
         )
 
         try:
-            response = self.client.chat.completions.create(
+            response = await self.client.chat.completions.create(
                 model=self.model, messages=[{"role": "system", "content": system_prompt}],
                 response_format={"type": "json_object"}
             )
@@ -441,7 +489,7 @@ class UnaBrain:
                 f"   }}\n"
             )
             
-            response = self.client.chat.completions.create(
+            response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 response_format={"type": "json_object"},
@@ -517,7 +565,7 @@ class UnaBrain:
             f"返回 JSON: {{'reply': '内容', 'emotion': '动作'}}"
         )
         try:
-            response = self.client.chat.completions.create(
+            response = await self.client.chat.completions.create(
                 model=self.model, messages=[{"role": "system", "content": system_prompt}],
                 response_format={"type": "json_object"}
             )

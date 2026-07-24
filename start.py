@@ -5,6 +5,12 @@ import sys
 import webbrowser
 import platform
 
+# 强制将标准输出和标准错误输出改为 UTF-8 编码，防止 Windows 控制台打印 emoji 崩溃
+if sys.stdout.encoding.lower() != 'utf-8':
+    sys.stdout.reconfigure(encoding='utf-8')
+if sys.stderr.encoding.lower() != 'utf-8':
+    sys.stderr.reconfigure(encoding='utf-8')
+
 def run_project():
     print("🚀 正在启动 UNA 疗愈系统 (APK 最终适配版)...")
     

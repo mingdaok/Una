@@ -36,7 +36,7 @@ export default function SocialFeed({
     setError("");
     try {
       const res = await fetch(
-        `${apiBase}/api/social/feed?page=${targetPage}&page_size=${PAGE_SIZE}`
+        `${apiBase}/api/social/feed?owner_user_id=${currentUserId}&page=${targetPage}&page_size=${PAGE_SIZE}`
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
