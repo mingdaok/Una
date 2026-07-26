@@ -88,7 +88,7 @@ except ImportError:
         social_api_module = None
 
 from auth_api import auth_service, get_current_user, router as auth_router
-from media_service import register_media, media_url, router as media_router
+from media_service import register_media, media_url, router as media_router, sign_history_audio_urls
 from settings import settings
 from live2d_action import ActionDirector
 
@@ -420,11 +420,7 @@ async def chat_endpoint(request: ChatRequest, current_user: dict = Depends(get_c
 @app.get("/history")
 async def get_history(current_user: dict = Depends(get_current_user)):
     history = database.get_recent_history(current_user["id"], 50)
-    for item in history:
-        media_id = item.get("audio_path", "").split("?", 1)[0].rsplit("/", 1)[-1]
-        if item.get("audio_path", "").startswith("/api/media/"):
-            item["audio_path"] = media_url(media_id, current_user["id"])
-    return history
+    return sign_history_audio_urls(history, current_user["id"])
 
 def convert_audio_to_wav(input_path, output_path):
     try:

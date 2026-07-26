@@ -277,7 +277,10 @@ class UnaBrain:
             }
 
             async for chunk in response:
-                delta = chunk.choices[0].delta.content
+                choices = getattr(chunk, "choices", None)
+                if not choices:
+                    continue
+                delta = getattr(getattr(choices[0], "delta", None), "content", None)
                 if delta:
                     buffer += delta
 
@@ -330,10 +333,29 @@ class UnaBrain:
 
                     # 动作截取阶段
                     if is_first_line_parsed and not is_action_line_parsed:
-                        if buffer.lstrip().startswith("[动作:"):
+                        action_buffer = buffer.lstrip()
+                        if action_buffer.startswith("[动作:"):
                             is_action_line_parsed = True
-                        elif "\n" in buffer:
-                            action_line, buffer = buffer.split("\n", 1)
+                        elif action_buffer.upper().startswith("ACTION:"):
+                            raw_action = action_buffer.split(":", 1)[1].lstrip()
+                            if raw_action.lower().startswith("null"):
+                                buffer = raw_action[4:].lstrip()
+                                is_action_line_parsed = True
+                            elif raw_action.startswith("{"):
+                                try:
+                                    action_data, action_end = json.JSONDecoder().raw_decode(raw_action)
+                                except json.JSONDecodeError:
+                                    continue
+                                plan = parse_action_plan(action_data)
+                                buffer = raw_action[action_end:].lstrip()
+                                if plan is not None:
+                                    yield {"type": "live2d_action_candidate", "plan": plan}
+                                is_action_line_parsed = True
+                            elif "\n" in raw_action:
+                                _, buffer = raw_action.split("\n", 1)
+                                is_action_line_parsed = True
+                        elif "\n" in action_buffer:
+                            action_line, buffer = action_buffer.split("\n", 1)
                             if action_line.strip().upper().startswith("ACTION:"):
                                 raw_action = action_line.split(":", 1)[1].strip()
                                 if raw_action.lower() != "null":

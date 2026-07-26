@@ -39,6 +39,16 @@ def media_id_from_url(url: str | None) -> str | None:
     return url.split("?", 1)[0].rsplit("/", 1)[-1]
 
 
+def sign_history_audio_urls(history: list[dict], owner_user_id: str) -> list[dict]:
+    """刷新历史音频的短期票据，并兼容旧记录中的空路径。"""
+    for item in history:
+        audio_path = item.get("audio_path") or ""
+        media_id = media_id_from_url(audio_path)
+        if media_id:
+            item["audio_path"] = media_url(media_id, owner_user_id)
+    return history
+
+
 def register_media(owner_user_id: str, media_type: str, storage_path: str) -> dict:
     """登记已落盘的用户文件；调用方必须已根据认证身份确定 owner。"""
     absolute_path = os.path.abspath(storage_path)

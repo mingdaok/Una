@@ -52,3 +52,16 @@ def test_private_media_is_only_streamed_to_its_owner(media_client):
     assert own_response.content == b"private-audio"
     assert client.get(media_service.media_url(media["id"]), headers=bob_headers).status_code == 404
     assert client.get(media_service.media_url(media["id"])).status_code == 401
+
+
+def test_history_audio_url_signing_accepts_legacy_null_paths(media_client):
+    _, media_service, _ = media_client
+    history = [
+        {"role": "user", "content": "hello", "audio_path": None},
+        {"role": "ai", "content": "hi", "audio_path": ""},
+    ]
+
+    result = media_service.sign_history_audio_urls(history, "legacy-user")
+
+    assert result == history
+    assert result[0]["audio_path"] is None
