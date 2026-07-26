@@ -375,56 +375,68 @@ export function useLive2DController(appRef, modelRef, currentModel, emotion, lip
       
       const ao = actionOverrideRef.current;
       if (ao) {
-        const elapsed = Date.now() - ao.startTime;
-        const duration = ao.durationMs || ao.duration;
-        if (elapsed > duration + 1000) {
-          // 动作结束一段时间后自动清理
-          actionOverrideRef.current = null;
-        } else {
-          let progress = Math.min(1.0, Math.max(0, elapsed / duration));
-          // easeOutCubic 缓动
-          progress = 1 - Math.pow(1 - progress, 3);
+        try {
+          const elapsed = Date.now() - ao.startTime;
+          const durationCandidate = Number(ao.durationMs ?? ao.duration);
+          const duration = Number.isFinite(durationCandidate) && durationCandidate > 0
+            ? durationCandidate
+            : 800;
+          if (elapsed > duration + 1000) {
+            // 动作结束一段时间后自动清理
+            actionOverrideRef.current = null;
+          } else {
+            let progress = Math.min(1.0, Math.max(0, elapsed / duration));
+            // easeOutCubic 缓动
+            progress = 1 - Math.pow(1 - progress, 3);
           
-          // 如果超过 duration，开始衰减 (再给 1000ms 衰减)
-          if (elapsed > duration) {
-            const fadeOut = 1.0 - (elapsed - duration) / 1000.0;
-            progress = Math.max(0, fadeOut);
-          }
-
-          if (progress > 0) {
-            if (ao.sample) {
-              const frame = ao.sample(Math.min(1, elapsed / duration));
-              cb.bodyAngleZ = lerp(cb.bodyAngleZ, frame.bodyAngleZ ?? cb.bodyAngleZ, 1);
-              cb.headAngleX = lerp(cb.headAngleX, frame.headAngleX ?? cb.headAngleX, 1);
-              cb.headAngleY = lerp(cb.headAngleY, frame.headAngleY ?? cb.headAngleY, 1);
-              cf.eyeOpen = lerp(cf.eyeOpen, frame.eyeOpen ?? cf.eyeOpen, 1);
-              cf.cheek = lerp(cf.cheek, frame.cheek ?? cf.cheek, 1);
-              cf.smile = lerp(cf.smile, frame.smile ?? cf.smile, 1);
-              cf.browAngle = lerp(cf.browAngle, frame.browAngle ?? cf.browAngle, 1);
-            } else if (ao.action === "惊讶") {
-              cf.eyeOpen = lerp(cf.eyeOpen, 1.0, progress);
-              cb.headAngleY = lerp(cb.headAngleY, -5, progress);
-              isActionOverridingMouth = true;
-              overrideMouthOpenY = 0.6 * progress;
-            } else if (ao.action === "开心") {
-              cf.smile = lerp(cf.smile, 1.0, progress);
-              cf.mouthForm = lerp(cf.mouthForm, 0.4, progress);
-              cb.bodyAngleZ = lerp(cb.bodyAngleZ, Math.sin(Date.now() / 200) * 5, progress);
-            } else if (ao.action === "害羞") {
-              cf.cheek = lerp(cf.cheek, 0.7, progress);
-              cb.headAngleY = lerp(cb.headAngleY, -3, progress);
+            // 如果超过 duration，开始衰减 (再给 1000ms 衰减)
+            if (elapsed > duration) {
+              const fadeOut = 1.0 - (elapsed - duration) / 1000.0;
+              progress = Math.max(0, fadeOut);
             }
 
-            // 处理附带的身体和头部方向参数
-            const dir = ao.params.direction || ao.params.head_tilt;
-            if (dir === "头左偏" || dir === "left") {
-              cb.bodyAngleZ = lerp(cb.bodyAngleZ, 8, progress);
-            } else if (dir === "头右偏" || dir === "right") {
-              cb.bodyAngleZ = lerp(cb.bodyAngleZ, -8, progress);
-            } else if (dir === "头低下") {
-              cb.headAngleY = lerp(cb.headAngleY, -10, progress);
+            if (progress > 0) {
+              if (typeof ao.sample === 'function') {
+                const frame = ao.sample(Math.min(1, elapsed / duration));
+                cb.bodyAngleZ = lerp(cb.bodyAngleZ, frame.bodyAngleZ ?? cb.bodyAngleZ, 1);
+                cb.headAngleX = lerp(cb.headAngleX, frame.headAngleX ?? cb.headAngleX, 1);
+                cb.headAngleY = lerp(cb.headAngleY, frame.headAngleY ?? cb.headAngleY, 1);
+                cf.eyeOpen = lerp(cf.eyeOpen, frame.eyeOpen ?? cf.eyeOpen, 1);
+                cf.cheek = lerp(cf.cheek, frame.cheek ?? cf.cheek, 1);
+                cf.smile = lerp(cf.smile, frame.smile ?? cf.smile, 1);
+                cf.browAngle = lerp(cf.browAngle, frame.browAngle ?? cf.browAngle, 1);
+              } else {
+                if (ao.action === "惊讶") {
+                  cf.eyeOpen = lerp(cf.eyeOpen, 1.0, progress);
+                  cb.headAngleY = lerp(cb.headAngleY, -5, progress);
+                  isActionOverridingMouth = true;
+                  overrideMouthOpenY = 0.6 * progress;
+                } else if (ao.action === "开心") {
+                  cf.smile = lerp(cf.smile, 1.0, progress);
+                  cf.mouthForm = lerp(cf.mouthForm, 0.4, progress);
+                  cb.bodyAngleZ = lerp(cb.bodyAngleZ, Math.sin(Date.now() / 200) * 5, progress);
+                } else if (ao.action === "害羞") {
+                  cf.cheek = lerp(cf.cheek, 0.7, progress);
+                  cb.headAngleY = lerp(cb.headAngleY, -3, progress);
+                }
+
+                // 旧版动作才读取 params；自由动作由 sample() 直接提供安全参数帧。
+                const params = ao.params ?? {};
+                const dir = params.direction || params.head_tilt;
+                if (dir === "头左偏" || dir === "left") {
+                  cb.bodyAngleZ = lerp(cb.bodyAngleZ, 8, progress);
+                } else if (dir === "头右偏" || dir === "right") {
+                  cb.bodyAngleZ = lerp(cb.bodyAngleZ, -8, progress);
+                } else if (dir === "头低下") {
+                  cb.headAngleY = lerp(cb.headAngleY, -10, progress);
+                }
+              }
             }
           }
+        } catch (error) {
+          // 单个动作帧损坏时只丢弃当前动作，不能中断呼吸、眨眼和口型的 Ticker。
+          actionOverrideRef.current = null;
+          console.warn('⚠️ [Live2DCtrl] 动作覆写帧异常，已丢弃当前动作:', error);
         }
       }
 

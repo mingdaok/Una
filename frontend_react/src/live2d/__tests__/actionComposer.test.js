@@ -34,4 +34,11 @@ describe('compileAction', () => {
     expect(compileAction(shyHappyEvent, 'unknown')).toBeNull();
     expect(compileAction({ ...shyHappyEvent, intent: 'wave_forever' }, 'panda_cake')).toBeNull();
   });
+
+  it('uses an 800ms safe duration when the event duration is missing or invalid', () => {
+    const { duration_ms: _durationMs, ...withoutDuration } = shyHappyEvent;
+
+    expect(compileAction(withoutDuration, 'panda_cake').durationMs).toBe(800);
+    expect(compileAction({ ...shyHappyEvent, duration_ms: -1 }, 'panda_cake').durationMs).toBe(800);
+  });
 });

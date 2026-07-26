@@ -51,7 +51,10 @@ export function compileAction(event, currentModel) {
   const intensity = boundedIntensity(event.intensity);
   const seed = Number.isInteger(event.variation_seed) ? event.variation_seed : 0;
   const target = variants[Math.floor(seededUnit(seed) * variants.length)];
-  const durationMs = Math.max(400, Math.min(2500, Number(event.duration_ms) || 900));
+  const requestedDuration = Number(event.duration_ms);
+  const durationMs = Number.isFinite(requestedDuration) && requestedDuration > 0
+    ? Math.max(400, Math.min(2500, requestedDuration))
+    : 800;
 
   return {
     actionId: event.action_id ?? null,
