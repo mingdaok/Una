@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { compileAction } from '../live2d/actionComposer';
 
 // ============================================================
 // useLive2DController
@@ -73,6 +74,13 @@ export function useLive2DController(appRef, modelRef, currentModel, emotion, lip
   const actionOverrideRef = useRef(null);
 
   useEffect(() => {
+    if (actionOverride?.type === 'live2d_action_v2' || actionOverride?.type === 'local_micro_reaction') {
+      const compiled = compileAction(actionOverride, currentModel);
+      if (compiled) {
+        actionOverrideRef.current = { ...compiled, startTime: Date.now() };
+      }
+      return;
+    }
     if (actionOverride && actionOverride.action) {
       actionOverrideRef.current = {
         action: actionOverride.action,
@@ -368,22 +376,32 @@ export function useLive2DController(appRef, modelRef, currentModel, emotion, lip
       const ao = actionOverrideRef.current;
       if (ao) {
         const elapsed = Date.now() - ao.startTime;
-        if (elapsed > ao.duration + 1000) {
+        const duration = ao.durationMs || ao.duration;
+        if (elapsed > duration + 1000) {
           // 动作结束一段时间后自动清理
           actionOverrideRef.current = null;
         } else {
-          let progress = Math.min(1.0, Math.max(0, elapsed / ao.duration));
+          let progress = Math.min(1.0, Math.max(0, elapsed / duration));
           // easeOutCubic 缓动
           progress = 1 - Math.pow(1 - progress, 3);
           
           // 如果超过 duration，开始衰减 (再给 1000ms 衰减)
-          if (elapsed > ao.duration) {
-            const fadeOut = 1.0 - (elapsed - ao.duration) / 1000.0;
+          if (elapsed > duration) {
+            const fadeOut = 1.0 - (elapsed - duration) / 1000.0;
             progress = Math.max(0, fadeOut);
           }
 
           if (progress > 0) {
-            if (ao.action === "惊讶") {
+            if (ao.sample) {
+              const frame = ao.sample(Math.min(1, elapsed / duration));
+              cb.bodyAngleZ = lerp(cb.bodyAngleZ, frame.bodyAngleZ ?? cb.bodyAngleZ, 1);
+              cb.headAngleX = lerp(cb.headAngleX, frame.headAngleX ?? cb.headAngleX, 1);
+              cb.headAngleY = lerp(cb.headAngleY, frame.headAngleY ?? cb.headAngleY, 1);
+              cf.eyeOpen = lerp(cf.eyeOpen, frame.eyeOpen ?? cf.eyeOpen, 1);
+              cf.cheek = lerp(cf.cheek, frame.cheek ?? cf.cheek, 1);
+              cf.smile = lerp(cf.smile, frame.smile ?? cf.smile, 1);
+              cf.browAngle = lerp(cf.browAngle, frame.browAngle ?? cf.browAngle, 1);
+            } else if (ao.action === "惊讶") {
               cf.eyeOpen = lerp(cf.eyeOpen, 1.0, progress);
               cb.headAngleY = lerp(cb.headAngleY, -5, progress);
               isActionOverridingMouth = true;

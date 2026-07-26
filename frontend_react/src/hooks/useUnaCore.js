@@ -15,6 +15,7 @@ export function useUnaCore(authenticated) {
     const currentAudioRef = useRef(null);
     const currentLipRef = useRef({ openY: 0, form: 0, volume: 0 });
     const isConnecting = useRef(false);
+    const seenActionIdsRef = useRef(new Set());
 
     // 🌊 流式音频列车队列
     const audioQueueRef = useRef([]);
@@ -122,6 +123,14 @@ export function useUnaCore(authenticated) {
                     // 收到动作标签指令
                     if (data.type === 'chat_action') {
                         setActionOverride({ action: data.action, params: data.params || {}, timestamp: Date.now() });
+                        return;
+                    }
+
+                    if (data.type === 'live2d_action_v2') {
+                        if (!data.action_id || seenActionIdsRef.current.has(data.action_id)) return;
+                        if (seenActionIdsRef.current.size >= 100) seenActionIdsRef.current.clear();
+                        seenActionIdsRef.current.add(data.action_id);
+                        setActionOverride({ ...data, timestamp: Date.now() });
                         return;
                     }
 
@@ -287,6 +296,12 @@ export function useUnaCore(authenticated) {
         if (websocketRef.current?.readyState === WebSocket.OPEN) {
             const clientMessageId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
             setMessages(prev => [...prev, { role: 'user', text, content: text, clientMessageId, date: new Date() }]);
+            const timestamp = Date.now();
+            setActionOverride({
+                type: 'local_micro_reaction', intent: 'warm_listening', intensity: 0.18,
+                expression: 'subtle', timing: 'reply_start', duration_ms: 500,
+                variation_seed: timestamp >>> 0, timestamp,
+            });
             websocketRef.current.send(JSON.stringify({ type: 'text', content: text, client_message_id: clientMessageId }));
         } else {
             // 尝试重连
