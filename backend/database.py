@@ -114,6 +114,20 @@ def register_user(username, password):
     except Exception as e:
         return False, str(e)
 
+
+def get_legacy_user_by_username(username):
+    """读取旧版 users 表中的账号，用于一次性迁移到 app_users。"""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT username, password_hash, created_at FROM users WHERE username = ? COLLATE NOCASE",
+            (username,),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
 def login_user(username, password):
     if not username or not password: return False, "请输入账号密码"
     pwd_hash = hashlib.sha256(password.encode()).hexdigest()

@@ -54,6 +54,33 @@ class AuthService:
             raise ValueError("用户名已被使用")
         return self._public_account(account)
 
+    def migrate_legacy_account(self, username: str, password: str) -> dict:
+        """将旧 users 表账号迁移为同 ID 的新版认证账号。"""
+        normalized_username = self._normalize_username(username)
+        if not USERNAME_PATTERN.fullmatch(normalized_username):
+            raise ValueError("用户名必须为 3 至 32 位小写字母、数字或下划线")
+        if len(password) < 8:
+            raise ValueError("密码至少需要 8 位")
+
+        legacy_account = database.get_legacy_user_by_username(normalized_username)
+        if not legacy_account:
+            raise ValueError("旧版账号不存在")
+
+        existing_account = database.get_app_user_by_username(normalized_username)
+        if existing_account:
+            if existing_account["id"] != normalized_username:
+                raise ValueError("同名新版账号已存在，不能安全迁移旧数据")
+            return self._public_account(existing_account)
+
+        account = database.create_app_user(
+            normalized_username,
+            normalized_username,
+            self.password_hash.hash(password),
+        )
+        if not account:
+            raise ValueError("旧版账号迁移失败")
+        return self._public_account(account)
+
     def authenticate(self, username: str, password: str) -> dict | None:
         account = database.get_app_user_by_username(self._normalize_username(username))
         if not account or not account["is_active"]:

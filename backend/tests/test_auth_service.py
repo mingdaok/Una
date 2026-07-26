@@ -37,6 +37,20 @@ def test_authenticate_rejects_wrong_password(auth_service):
     assert auth_service.authenticate("alice", "correct-horse-battery")["username"] == "alice"
 
 
+def test_migrate_legacy_account_reuses_legacy_user_id_and_history(auth_service):
+    import database
+
+    created, _ = database.register_user("mingdaok", "legacy-password")
+    assert created is True
+    database.add_message("mingdaok", "user", "旧聊天记录")
+
+    account = auth_service.migrate_legacy_account("mingdaok", "new-secure-password")
+
+    assert account == {"id": "mingdaok", "username": "mingdaok"}
+    assert auth_service.authenticate("mingdaok", "new-secure-password") == account
+    assert database.get_recent_history(account["id"], limit=1)[0]["content"] == "旧聊天记录"
+
+
 def test_refresh_token_can_only_be_used_once(auth_service):
     account = auth_service.register("alice", "correct-horse-battery")
     session = auth_service.issue_session(account["id"])
