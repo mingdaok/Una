@@ -5,6 +5,36 @@ from openai import AsyncOpenAI
 import database
 from live2d_action import parse_action_plan
 
+
+def _find_json_object_end(text: str):
+    """返回顶层 JSON 对象结束位置；对象尚未闭合时返回 None。"""
+    if not text.startswith("{"):
+        return None
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for index, char in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+    return None
+
+
 class UnaBrain:
     def __init__(self, api_key, base_url, model):
         self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
@@ -342,10 +372,13 @@ class UnaBrain:
                                 buffer = raw_action[4:].lstrip()
                                 is_action_line_parsed = True
                             elif raw_action.startswith("{"):
-                                try:
-                                    action_data, action_end = json.JSONDecoder().raw_decode(raw_action)
-                                except json.JSONDecodeError:
+                                action_end = _find_json_object_end(raw_action)
+                                if action_end is None:
                                     continue
+                                try:
+                                    action_data = json.loads(raw_action[:action_end])
+                                except (TypeError, ValueError, json.JSONDecodeError):
+                                    action_data = None
                                 plan = parse_action_plan(action_data)
                                 buffer = raw_action[action_end:].lstrip()
                                 if plan is not None:
@@ -434,6 +467,11 @@ class UnaBrain:
                                 break
 
             # 生成完毕后，把肚子里剩下没有标点符号的半句话也吐出来
+            if is_first_line_parsed and not is_action_line_parsed:
+                pending_control = buffer.lstrip()
+                if pending_control.upper().startswith("ACTION:") or pending_control.startswith("[动作:"):
+                    buffer = ""
+
             final_p = buffer.strip()
             if final_p and not re.match(r'^[^\w\u4e00-\u9fff]*$', final_p):
                  # 🔥 兜底：如果整段回复都没触发过 is_first_line_parsed（极端情况），在收尾时补发默认 meta
