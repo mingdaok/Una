@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Settings } from 'lucide-react';
 import { API_HOST } from '../config';
 import { useLive2DController } from '../hooks/useLive2DController';
+import { resetLive2DModelState } from '../live2d/modelState';
 
 export default function Live2DViewer({ lipValue, emotion, actionOverride }) {
   // 接入 Live2D 高级控制层 (情感驱动 + 口型同步 + 参数冲突调度)
@@ -164,6 +165,9 @@ export default function Live2DViewer({ lipValue, emotion, actionOverride }) {
         modelRef.current.destroy();
       }
 
+      // 正式释放可能残留的 Expression，并恢复模型默认参数。
+      // 后续聊天动作只允许由 useLive2DController 的参数层接管。
+      resetLive2DModelState(model);
       appRef.current.stage.addChild(model);
       modelRef.current = model;
 
@@ -183,78 +187,6 @@ export default function Live2DViewer({ lipValue, emotion, actionOverride }) {
       isCancelled = true; 
     };
   }, [currentModel]); // currentModel 变化时加载新纸片人
-
-  // 情绪 → 动作/表情 映射（与后端 emotion_mapper 保持一致）
-  const HIYORI_MOTION_MAP = {
-    happy: 'Happy', joy: 'Happy', excited: 'Happy', laugh: 'Happy', smile: 'Happy', funny: 'Happy',
-    thinking: 'Thinking', confused: 'Thinking', doubt: 'Thinking',
-    sad: 'Sad', cry: 'Sad', depressed: 'Sad', sorry: 'Sad', disappointed: 'Sad',
-    angry: 'Angry', mad: 'Angry', annoyed: 'Angry', disgusted: 'Angry',
-    surprised: 'Surprised', shocked: 'Surprised', wow: 'Surprised',
-    shy: 'Shy', blush: 'Shy', cute: 'Shy',
-    uneasy: 'Uneasy', fear: 'Uneasy', nervous: 'Uneasy', worried: 'Uneasy',
-    serious: 'Serious', focus: 'Serious',
-    neutral: 'Neutral', idle: 'Idle',
-  };
-
-  // panda_cake 用 expression 映射情绪
-  const PANDA_EXPR_MAP = {
-    happy: 'heart_eyes', joy: 'heart_eyes', excited: 'star_eyes', laugh: 'heart_eyes', smile: 'heart_eyes', funny: 'heart_eyes',
-    thinking: 'poke_face', confused: 'poke_face', doubt: 'poke_face',
-    sad: 'tears', cry: 'tears', depressed: 'tears', sorry: 'tears', disappointed: 'tears',
-    angry: 'dark_face', mad: 'dark_face', annoyed: 'dark_face',
-    surprised: 'star_eyes', shocked: 'star_eyes', wow: 'star_eyes',
-    shy: 'blush', cute: 'blush',
-    uneasy: 'dizzy_eyes', fear: 'dizzy_eyes', nervous: 'dizzy_eyes', worried: 'dizzy_eyes',
-    serious: 'poke_face', focus: 'poke_face',
-  };
-
-  // ============================================================
-  // 触发 Live2D 预设动作（Motion / Expression）
-  // ============================================================
-  const exprTimerRef = useRef(null);
-
-  const triggerMotion = (model, emotionStr, modelType) => {
-    if (!model) return;
-    try {
-      const tag = (emotionStr || 'neutral').toLowerCase().trim();
-      console.log(`🎬 触发动作: [${tag}] 模型: [${modelType}]`);
-      
-      if (modelType === 'hiyori') {
-        const group = HIYORI_MOTION_MAP[tag] || 'Neutral';
-        if (typeof model.motion === 'function') {
-          model.motion(group, 0, 2);
-        }
-      } else {
-        // panda_cake：触发 expression（包含姿势变化，如戳脸）
-        const exprName = PANDA_EXPR_MAP[tag];
-        if (typeof model.expression === 'function') {
-          exprName ? model.expression(exprName) : model.expression();
-          console.log(`✅ Panda Expression: ${exprName || '(reset)'}`);
-
-          // 对于带有肢体动作的 expression，防止永久卡死，3秒后自动恢复默认，保证动画只是"点缀"
-          if (exprTimerRef.current) clearTimeout(exprTimerRef.current);
-          if (exprName) {
-            exprTimerRef.current = setTimeout(() => {
-              if (modelRef.current && typeof modelRef.current.expression === 'function') {
-                modelRef.current.expression(); // 复位
-                console.log('🔄 Panda Expression: 自动复位 (防止持续卡死)');
-              }
-            }, 3000);
-          }
-        }
-      }
-    } catch (e) {
-      console.warn('❌ 动作执行异常:', e);
-    }
-  };
-
-  // 监听情绪变化，触发对应预设动作
-  useEffect(() => {
-    if (!modelRef.current || !isLoaded) return;
-    const modelType = currentModel === 'hiyori' ? 'hiyori' : 'panda';
-    triggerMotion(modelRef.current, emotion, modelType);
-  }, [emotion, isLoaded, currentModel]);
 
   // ============================================================
   // 接入 Live2D 高级控制层 Hook

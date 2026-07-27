@@ -91,6 +91,7 @@ from auth_api import auth_service, get_current_user, router as auth_router
 from media_service import register_media, media_url, router as media_router, sign_history_audio_urls
 from settings import settings
 from live2d_action import ActionDirector
+from chat_control import ControlPrefixDemux, sanitize_reply_text
 
 # === 加载配置 ===
 if os.path.exists(CONFIG_PATH):
@@ -230,6 +231,9 @@ class ConnectionManager:
                 except: self.disconnect(connection, user_id)
     
     async def send_ai_reply(self, reply_text, emotion, user_id, mood_score=0, is_proactive=False, audio_url=None, visemes=None):
+        reply_text = sanitize_reply_text(reply_text)
+        if not reply_text:
+            return
         if not audio_url or visemes is None:
             audio_url, visemes = await generate_audio_file(reply_text, emotion)
         audio_url = protect_generated_audio(user_id, audio_url)
@@ -240,11 +244,14 @@ class ConnectionManager:
         await self.broadcast_to_user(user_id, {
             "type": "final_reply", "text": reply_text, "audio_url": audio_url,
             "visemes": visemes or [],
-            "motion_file": emotion_mapper.get_motion_file(emotion), "crisis_level": "NORMAL"
+            "emotion": emotion, "crisis_level": "NORMAL"
         })
 
     # 🔥 新增：用于单独发送一小段语音碎片的通道
     async def send_ai_reply_chunk(self, reply_text, emotion, user_id, chunk_index):
+        reply_text = sanitize_reply_text(reply_text)
+        if not reply_text:
+            return
         print(f"🎵 [Chunk] 开始生成碎片 {chunk_index}: '{reply_text}'")
         audio_url, visemes = await generate_audio_file(reply_text, emotion)
         audio_url = protect_generated_audio(user_id, audio_url)
@@ -272,7 +279,6 @@ class ConnectionManager:
             now_dt = datetime.datetime.utcnow() 
             diff_hours = (now_dt - last_dt).total_seconds() / 3600.0
             if diff_hours < 2.0:
-                await self.broadcast_to_user(user_id, {"type": "final_reply", "text": "", "motion_file": "Happy"})
                 return
             welcome_data = await brain.make_proactive_greeting(user_id, last_time, last_content, last_mood, diff_hours)
             await asyncio.sleep(1.0)
@@ -347,6 +353,27 @@ async def process_and_push_response(user_text, user_id):
     current_emotion = "neutral"
     current_mood_score = 0
     chunk_index = 0
+    delivery_demux = ControlPrefixDemux()
+
+    async def publish_text_chunk(raw_text):
+        nonlocal full_reply_text, chunk_index
+        text_chunk = sanitize_reply_text(raw_text)
+        if not text_chunk:
+            return
+
+        full_reply_text += text_chunk
+        await ws_manager.broadcast_to_user(user_id, {
+            "type": "text_stream_chunk",
+            "chunk_index": chunk_index,
+            "text": text_chunk,
+            "emotion": current_emotion
+        })
+        print(f"📝 [Stream] 发送文字碎片 {chunk_index} 给用户 {user_id}: '{text_chunk[:30]}...'")
+
+        asyncio.create_task(
+            ws_manager.send_ai_reply_chunk(text_chunk, current_emotion, user_id, chunk_index)
+        )
+        chunk_index += 1
     
     await ws_manager.broadcast_to_user(user_id, {"type": "audio_stream_start"})
     print(f"🎬 [Stream] 开始流式音频给用户 {user_id}")
@@ -357,37 +384,21 @@ async def process_and_push_response(user_text, user_id):
             if item["type"] == "meta":
                 current_emotion = item.get("emotion", "neutral")
                 current_mood_score = item.get("mood_score", 0)
-                # 可以选择在这里提前播报预制动作
-                await ws_manager.broadcast_to_user(user_id, {
-                    "type": "final_reply", "text": "", "audio_url": None, 
-                    "motion_file": emotion_mapper.get_motion_file(current_emotion)
-                })
             elif item["type"] == "live2d_action_candidate":
                 event = action_director.decide(user_id, item.get("plan"))
                 if event is not None:
                     await ws_manager.broadcast_to_user(user_id, event)
             elif item["type"] == "sentence":
-                text_chunk = item.get("text", "")
-                full_reply_text += text_chunk
-                
-                # 🔥 [优化] 文字先出：立即推送文字碎片给前端显示，不等 TTS
-                await ws_manager.broadcast_to_user(user_id, {
-                    "type": "text_stream_chunk",
-                    "chunk_index": chunk_index,
-                    "text": text_chunk,
-                    "emotion": current_emotion
-                })
-                print(f"📝 [Stream] 发送文字碎片 {chunk_index} 给用户 {user_id}: '{text_chunk[:30]}...'")
-                
-                # 🔥 [优化] 音频异步跟上：后台启动 TTS + Rhubarb，完成后自动推音频
-                asyncio.create_task(
-                    ws_manager.send_ai_reply_chunk(text_chunk, current_emotion, user_id, chunk_index)
-                )
-                chunk_index += 1
+                _, safe_body = delivery_demux.feed(item.get("text", ""))
+                await publish_text_chunk(safe_body)
 
     except Exception as e:
         print(f"Streaming error: {e}")
         if not full_reply_text: full_reply_text = "..."
+
+    _, safe_tail = delivery_demux.finish()
+    await publish_text_chunk(safe_tail)
+    full_reply_text = sanitize_reply_text(full_reply_text)
 
     # 所有碎片合成任务虽然已经派发，这里发送文字终点标记（但不影响后面的声音飞过来）
     database.add_message(user_id, "ai", full_reply_text, current_mood_score, None)
@@ -583,7 +594,11 @@ async def vision_chat_api(req: PhotoRequest, current_user: dict = Depends(get_cu
     user_id = current_user["id"]
 
     # 1. 识别 (VisionService 会自动处理 base64 前缀问题)
-    reply_text = vision_service.see_and_reply(req.image, req.text)
+    reply_text = sanitize_reply_text(
+        vision_service.see_and_reply(req.image, req.text)
+    )
+    if not reply_text:
+        reply_text = "我刚才没能看清，可以再让我看一次吗？"
 
     # 2. 🔥 [优化] 通过 WebSocket 流式推送，复用前端已有的音频队列播放逻辑
     async def _push_vision_audio():

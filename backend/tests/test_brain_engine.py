@@ -16,7 +16,9 @@ def brain():
 @pytest.mark.asyncio
 @patch('database.get_user_profile', return_value="Test Profile")
 @patch('database.get_recent_history', return_value=[])
-async def test_chat_stream_action_interception(mock_get_recent_history, mock_get_user_profile, brain):
+async def test_legacy_action_prefix_is_stripped_without_emitting_preset_action(
+    mock_get_recent_history, mock_get_user_profile, brain
+):
     async def mock_create(*args, **kwargs):
         async def mock_async_generator():
             chunks = [
@@ -48,12 +50,9 @@ async def test_chat_stream_action_interception(mock_get_recent_history, mock_get
         assert events[0]['type'] == 'meta'
         assert events[0]['emotion'] == 'happy'
         
-        # 2. 应该截获 chat_action，且 action 解析正确，正文中不应包含动作标签
+        # 2. 旧版动作标签只做清理，不再触发预设动作
         action_events = [e for e in events if e['type'] == 'chat_action']
-        assert len(action_events) > 0
-        assert action_events[0]['action'] == '惊讶'
-        if 'params' in action_events[0]:
-            assert '头左偏' in action_events[0]['params'] or action_events[0]['params'].get('head_tilt') == 'left'
+        assert action_events == []
 
         # 3. 句子产出中，不应该包含 "[动作:惊讶, 头左偏]" 这类文本
         sentence_events = [e for e in events if e['type'] == 'sentence']

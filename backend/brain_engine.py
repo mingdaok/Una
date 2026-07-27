@@ -3,36 +3,7 @@ import datetime
 import random
 from openai import AsyncOpenAI
 import database
-from live2d_action import parse_action_plan
-
-
-def _find_json_object_end(text: str):
-    """返回顶层 JSON 对象结束位置；对象尚未闭合时返回 None。"""
-    if not text.startswith("{"):
-        return None
-
-    depth = 0
-    in_string = False
-    escaped = False
-    for index, char in enumerate(text):
-        if in_string:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
-            continue
-
-        if char == '"':
-            in_string = True
-        elif char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                return index + 1
-    return None
+from chat_control import ControlPrefixDemux, sanitize_reply_text
 
 
 class UnaBrain:
@@ -268,16 +239,18 @@ class UnaBrain:
             f"1. 第一行必须为 EMOTION 控制行；第二行必须为 ACTION 控制行；从第三行开始写正文回复。\n"
             f"2. ACTION 行只能输出 JSON 或 null，格式为：ACTION: {{\"intent\": \"thinking\", \"intensity\": 0.3, \"expression\": \"subtle\", \"timing\": \"after_sentence\", \"duration_ms\": 900, \"variation_seed\": 1}}。\n"
             f"   - intent 仅可使用 warm_listening/thinking/shy_happy/happy_surprise/gentle_comfort/sad_support/encouraging/curious_question。\n"
-            f"   - 普通聊天优先 ACTION: null 或 subtle；仅明确的惊喜、安慰、低落陪伴使用 expressive。\n"
+            f"   - 普通聊天优先输出 ACTION: null；需要轻微动作时，subtle 是 expression 字段的值，不能单独写成 ACTION: subtle。\n"
+            f"   - 仅明确的惊喜、安慰、低落陪伴，才把 expression 设为 expressive。\n"
             f"3. 你的回复要显得自然随性，内容丰满些（大约 80-150 字），但绝不要长篇大论。遵循以下口语铁律：\n"
             f"   - 句子长短结合散落分布！可以有两三个字的极短短语（真的吗？太好了！），也可以有十几字的正常交流，绝不要每句字数一样像排比句。\n"
             f"   - 强制多用句号（。）、叹号（！）、问号（？）作为断句结尾。尽量少用逗号（，）连篇结牍！\n"
             f"   - 自然地通过换行分成两三个段落，让排版显透气。\n"
             f"   - 严禁：列清单、用破折号、从句套从句。\n"
-            f"格式（第一行必须严格如下，不要有多余文字）：\n"
-            f"EMOTION: [动作情绪标签(happy/sad/angry/shy/thinking/neutral等)] | MOOD: [心情分(-5到5)]\n"
-            f"示例（从第二行开始的自然风格）：\n"
-            f"[动作:开心, 头左偏] 哇！你来了！\n\n其实我刚才还在偷偷想你呢。今天过得怎样呀？遇到什么好玩的事了吗？\n\n快和我说说，我听着呢！"
+            f"4. 严禁输出 [动作:...]、括号舞台说明、代码围栏或其他控制格式；所有动作信息只能放入第二行 ACTION JSON。\n"
+            f"完整格式示例（必须严格保持三段，不要有多余文字）：\n"
+            f"EMOTION: happy | MOOD: 3\n"
+            f"ACTION: {{\"intent\":\"shy_happy\",\"intensity\":0.45,\"expression\":\"subtle\",\"timing\":\"reply_start\",\"duration_ms\":900,\"variation_seed\":1}}\n"
+            f"哇！你来了！\n\n其实我刚才还在偷偷想你呢。今天过得怎样呀？遇到什么好玩的事了吗？\n\n快和我说说，我听着呢！"
         )
 
         try:
@@ -290,21 +263,9 @@ class UnaBrain:
             )
 
             buffer = ""
-            is_first_line_parsed = False
-            is_action_line_parsed = False
             yielded_chunks = 0
+            control_demux = ControlPrefixDemux()
             import re
-            
-            ACTION_SYNONYMS = {
-                "微笑": "开心", "高兴": "开心", "大笑": "开心", "兴奋": "开心",
-                "伤心": "难过", "落泪": "难过", "哭泣": "难过", "悲伤": "难过",
-                "愤怒": "生气", "发火": "生气",
-                "歪头": "头左偏",
-                "吃惊": "惊讶", "震撼": "惊讶", "震惊": "惊讶",
-                "疑惑": "困惑", "不懂": "困惑", "疑问": "困惑",
-                "向左偏": "头左偏", "向右偏": "头右偏",
-                "低头": "头低下", "抬头": "头抬起"
-            }
 
             async for chunk in response:
                 choices = getattr(chunk, "choices", None)
@@ -312,174 +273,46 @@ class UnaBrain:
                     continue
                 delta = getattr(getattr(choices[0], "delta", None), "content", None)
                 if delta:
-                    buffer += delta
+                    control_events, body_delta = control_demux.feed(delta)
+                    for event in control_events:
+                        yield event
+                    buffer += body_delta
 
-                    # 第一阶段：尝试解析首行的 EMOTION: xxx | MOOD: xxx
-                    if not is_first_line_parsed:
-                        emotion = "neutral"
-                        mood_score = 0
+                    # 智能动态标点截停分发（控制前缀已在独立状态机中完全隔离）
+                    while True:
+                        match_strong = re.search(r'([。！？\!\?\n]+)', buffer)
+                        match_weak = re.search(r'([，、；\,]+)', buffer)
+                        split_pos = -1
 
-                        # 判断是否已经生成出包含 EMOTION 和 MOOD 的完整前缀块（无论 AI 是否给了换行）
-                        match = re.search(r'EMOTION:\s*(.+?)\s*\|\s*MOOD:\s*\[?(-?\d+)\]?', buffer, re.IGNORECASE)
-                        
-                        if match:
-                            try:
-                                e_part = match.group(1).strip()
-                                # 强制只提取英文字母作为可用情绪标签，过滤掉 AI 自己乱加的中文描述
-                                emotion = "".join(re.findall(r'[a-zA-Z]+', e_part)).lower()
-                                if not emotion: emotion = "neutral"
-                                
-                                mood_score = int(match.group(2))
-                            except: pass
+                        if match_strong:
+                            pos = match_strong.end()
+                            if yielded_chunks == 0 or pos >= 15:
+                                split_pos = pos
+                        elif match_weak:
+                            pos = match_weak.end()
+                            if (yielded_chunks == 0 and pos >= 3) or (yielded_chunks > 0 and pos >= 25):
+                                split_pos = pos
 
-                            # 从 buffer 中彻底剔除前面这段匹配到的控制文本
-                            buffer = buffer[match.end():].lstrip()
-                            # 有的 AI 喜欢在心情后加类似 "(低头笑)" 的戏精描述，一并清理避免在前端读出来
-                            buffer = re.sub(r'^\（.*?\）\s*', '', buffer)
-                            buffer = re.sub(r'^\(.*?\)\s*', '', buffer)
-                            
-                            yield {"type": "meta", "emotion": emotion, "mood_score": mood_score}
-                            is_first_line_parsed = True
+                        if split_pos == -1:
+                            break
 
-                        elif "\n" in buffer or len(buffer) > 40:
-                            # 容错：如果产生了换行却没匹配上，或者已经挤了 40 个字了，说明 AI 格式完全坏了
-                            # 暴力清洗掉可能存在的残缺标签，防止前端读出奇怪英文
-                            buffer = re.sub(r'EMOTION:[^\|]+(\|?)', '', buffer, flags=re.IGNORECASE)
-                            buffer = re.sub(r'MOOD:\s*\[?\-?\d+\]?', '', buffer, flags=re.IGNORECASE)
-                            # 额外清洗可能残留的括号和特殊字符
-                            buffer = re.sub(r'^[\[\]【】（）()【】《》<>""''「」『』【】]+', '', buffer)
-                            buffer = buffer.strip()
-                            
-                            # 如果清洗后buffer为空或只剩特殊字符，跳过这次yield
-                            if not buffer or re.match(r'^[^\w\u4e00-\u9fff]*$', buffer):
-                                print(f"⚠️ [流式容错] AI 格式崩坏，清洗后无有效内容，跳过输出")
-                                yield {"type": "meta", "emotion": "neutral", "mood_score": 0}
-                                is_first_line_parsed = True
-                                continue
-                            
-                            print(f"⚠️ [流式容错] AI 格式崩坏，已强制解锁下发并清洗头文本。剩余文本: '{buffer[:50]}...'")
-                            yield {"type": "meta", "emotion": "neutral", "mood_score": 0}
-                            is_first_line_parsed = True
+                        sent = sanitize_reply_text(buffer[:split_pos])
+                        buffer = buffer[split_pos:]
+                        if sent and not re.match(r'^[^\w\u4e00-\u9fff]*$', sent):
+                            print(f"💦 [流式出核] 产出句段: {sent}")
+                            yield {"type": "sentence", "text": sent}
+                            yielded_chunks += 1
 
-                    # 动作截取阶段
-                    if is_first_line_parsed and not is_action_line_parsed:
-                        action_buffer = buffer.lstrip()
-                        if action_buffer.startswith("[动作:"):
-                            is_action_line_parsed = True
-                        elif action_buffer.upper().startswith("ACTION:"):
-                            raw_action = action_buffer.split(":", 1)[1].lstrip()
-                            if raw_action.lower().startswith("null"):
-                                buffer = raw_action[4:].lstrip()
-                                is_action_line_parsed = True
-                            elif raw_action.startswith("{"):
-                                action_end = _find_json_object_end(raw_action)
-                                if action_end is None:
-                                    continue
-                                try:
-                                    action_data = json.loads(raw_action[:action_end])
-                                except (TypeError, ValueError, json.JSONDecodeError):
-                                    action_data = None
-                                plan = parse_action_plan(action_data)
-                                buffer = raw_action[action_end:].lstrip()
-                                if plan is not None:
-                                    yield {"type": "live2d_action_candidate", "plan": plan}
-                                is_action_line_parsed = True
-                            elif "\n" in raw_action:
-                                _, buffer = raw_action.split("\n", 1)
-                                is_action_line_parsed = True
-                        elif "\n" in action_buffer:
-                            action_line, buffer = action_buffer.split("\n", 1)
-                            if action_line.strip().upper().startswith("ACTION:"):
-                                raw_action = action_line.split(":", 1)[1].strip()
-                                if raw_action.lower() != "null":
-                                    try:
-                                        plan = parse_action_plan(json.loads(raw_action))
-                                    except (TypeError, ValueError, json.JSONDecodeError):
-                                        plan = None
-                                    if plan is not None:
-                                        yield {"type": "live2d_action_candidate", "plan": plan}
-                            else:
-                                buffer = action_line + "\n" + buffer
-                            is_action_line_parsed = True
-
-                    if is_first_line_parsed and not is_action_line_parsed:
-                        continue
-
-                    if is_first_line_parsed and is_action_line_parsed:
-                        action_match = re.search(r'\[动作:([^\]]+)\]', buffer)
-                        if action_match:
-                            try:
-                                action_text = action_match.group(1).strip()
-                                buffer = buffer[:action_match.start()] + buffer[action_match.end():]
-                                
-                                parts = [p.strip() for p in action_text.split(",") if p.strip()]
-                                main_action = "neutral"
-                                params = {}
-                                
-                                for p in parts:
-                                    mapped_p = ACTION_SYNONYMS.get(p, p)
-                                    if mapped_p in ["惊讶", "开心", "难过", "害羞", "思考", "生气", "困惑", "期待"]:
-                                        main_action = mapped_p
-                                    elif mapped_p in ["头左偏", "头右偏", "头低下", "头抬起", "身体左倾", "身体右倾", "身体前倾"]:
-                                        params["direction"] = mapped_p
-                                        if mapped_p == "头左偏": params["head_tilt"] = "left"
-                                        elif mapped_p == "头右偏": params["head_tilt"] = "right"
-                                        
-                                yield {"type": "chat_action", "action": main_action, "params": params}
-                            except Exception as e:
-                                print(f"Action parse error: {e}")
-
-                    # 第二阶段：智能动态标点截停分发 (消除割裂感)
-                    if is_first_line_parsed:
-                        # 正在接收类似 [动作:xxx] 的标签中，暂停标点截停
-                        if buffer.rfind('[') > buffer.rfind(']'):
-                            continue
-                            
-                        while True:
-                            # 优先寻找强停顿符 (必定切分)
-                            match_strong = re.search(r'([。！？\!\?\n]+)', buffer)
-                            # 寻找弱停顿符 (逗号、顿号等)
-                            match_weak = re.search(r'([，、；\,]+)', buffer)
-                            
-                            split_pos = -1
-                            
-                            if match_strong:
-                                pos = match_strong.end()
-                                # 🔥 后续碎片即使碰到句号，也要积攒到 15 字符以上再切
-                                # 防止碎片太小导致后端 TTS 合成频繁启动，拉高整体可用播放时长
-                                if yielded_chunks == 0 or pos >= 15:
-                                    split_pos = pos
-                            elif match_weak:
-                                pos = match_weak.end()
-                                # 🔥 核心策略（流瀑式兜底）：
-                                # 首个碎片逢逗号大于3字可切；后续碎片逗号大于 25 字才切（被逼无奈的兜底切分）
-                                if (yielded_chunks == 0 and pos >= 3) or (yielded_chunks > 0 and pos >= 25):
-                                    split_pos = pos
-                                    
-                            if split_pos != -1:
-                                sent = buffer[:split_pos].strip()
-                                buffer = buffer[split_pos:]
-                                if len(sent) > 0 and not re.match(r'^[^\w\u4e00-\u9fff]*$', sent):
-                                    print(f"💦 [流式出核] 产出句段: {sent}")
-                                    yield {"type": "sentence", "text": sent}
-                                    yielded_chunks += 1
-                            else:
-                                break
+            final_events, final_body = control_demux.finish()
+            for event in final_events:
+                yield event
+            buffer += final_body
 
             # 生成完毕后，把肚子里剩下没有标点符号的半句话也吐出来
-            if is_first_line_parsed and not is_action_line_parsed:
-                pending_control = buffer.lstrip()
-                if pending_control.upper().startswith("ACTION:") or pending_control.startswith("[动作:"):
-                    buffer = ""
-
-            final_p = buffer.strip()
+            final_p = sanitize_reply_text(buffer)
             if final_p and not re.match(r'^[^\w\u4e00-\u9fff]*$', final_p):
-                 # 🔥 兜底：如果整段回复都没触发过 is_first_line_parsed（极端情况），在收尾时补发默认 meta
-                 if not is_first_line_parsed:
-                     print(f"⚠️ [流式兜底] 整段回复未解析到情绪标签，补发默认 meta")
-                     yield {"type": "meta", "emotion": "neutral", "mood_score": 0}
-                 print(f"💦 [流式收尾] 产出末段: {final_p}")
-                 yield {"type": "sentence", "text": final_p}
+                print(f"💦 [流式收尾] 产出末段: {final_p}")
+                yield {"type": "sentence", "text": final_p}
                  
         except Exception as e:
             print(f"Brain Stream Error: {e}")
