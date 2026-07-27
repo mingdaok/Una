@@ -54,6 +54,46 @@ def test_parse_motion_plan_rejects_non_finite_and_out_of_order_frames():
     }])) is None
 
 
+def test_parse_motion_plan_accepts_time_bounds_and_drops_out_of_range_track():
+    parsed = parse_motion_plan(valid_motion(tracks=[
+        {
+            "channel": "head_pitch",
+            "mode": "override",
+            "keyframes": [{"t": 0.0, "value": 0.0}, {"t": 1.0, "value": 0.0}],
+        },
+        {
+            "channel": "head_yaw",
+            "mode": "override",
+            "keyframes": [{"t": -0.01, "value": 0.0}, {"t": 1.0, "value": 0.0}],
+        },
+    ]))
+
+    assert [track["channel"] for track in parsed["tracks"]] == ["head_pitch"]
+
+
+def test_parse_motion_plan_accepts_value_bounds_and_drops_out_of_range_track():
+    parsed = parse_motion_plan(valid_motion(tracks=[
+        {
+            "channel": "head_pitch",
+            "mode": "override",
+            "keyframes": [{"t": 0.0, "value": -1.0}, {"t": 1.0, "value": 1.0}],
+        },
+        {
+            "channel": "head_yaw",
+            "mode": "override",
+            "keyframes": [{"t": 0.0, "value": 0.0}, {"t": 1.0, "value": 1.01}],
+        },
+    ]))
+
+    assert [track["channel"] for track in parsed["tracks"]] == ["head_pitch"]
+
+
+def test_parse_motion_plan_clamps_ai_duration_at_4000_ms():
+    parsed = parse_motion_plan(valid_motion(duration_ms=9999))
+
+    assert parsed["duration_ms"] == 4000
+
+
 def test_director_overwrites_ai_authority_fields_and_rate_limits_per_user():
     now = [1785124800.0]
     director = MotionDirectorV3(

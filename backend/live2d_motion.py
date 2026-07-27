@@ -55,7 +55,12 @@ def _parse_track(track):
             return None
 
         easing = keyframe.get("easing", "linear")
-        if easing not in ALLOWED_EASINGS or (previous_t is not None and t <= previous_t):
+        if (
+            easing not in ALLOWED_EASINGS
+            or not 0.0 <= t <= 1.0
+            or not -1.0 <= value <= 1.0
+            or (previous_t is not None and t <= previous_t)
+        ):
             return None
 
         normalized_frames.append({"t": t, "value": value, "easing": easing})
@@ -75,7 +80,7 @@ def parse_motion_plan(payload):
         return None
 
     try:
-        duration_ms = _clamped_milliseconds(payload.get("duration_ms", 800), 400, 3000)
+        duration_ms = _clamped_milliseconds(payload.get("duration_ms", 800), 400, 4000)
         blend = payload.get("blend", {})
         if not isinstance(blend, dict):
             return None
