@@ -94,7 +94,7 @@ describe('buildModelCapabilityMap', () => {
     );
     const map = buildModelCapabilityMap(coreModel, { modelName: 'hiyori' });
 
-    expect(map.project({ eye_open: -1, mouth_open: 1 })).toEqual([
+    expect(map.project({ eye_open: -1, mouth_open: 1, breath: 1 })).toEqual([
       { id: 'ParamEyeLOpen', value: 0 },
       { id: 'ParamEyeROpen', value: 0 },
     ]);
@@ -112,6 +112,20 @@ describe('buildModelCapabilityMap', () => {
     const map = buildModelCapabilityMap(coreModel, { modelName: 'hiyori' });
 
     expect(map.parameterIds).toEqual(expect.any(Set));
+    expect(map.parameterIds.has('ParamAngleY')).toBe(true);
+    expect(map.hasChannel('head_pitch')).toBe(false);
+  });
+
+  it('safely falls back when a Cubism private ID getter throws', () => {
+    const coreModel = coreModelWith([], { idShape: 'none' });
+    Object.defineProperty(coreModel, '_parameterIds', {
+      get() {
+        throw new Error('private Cubism field is unavailable');
+      },
+    });
+
+    expect(() => buildModelCapabilityMap(coreModel, { modelName: 'hiyori' })).not.toThrow();
+    const map = buildModelCapabilityMap(coreModel, { modelName: 'hiyori' });
     expect(map.parameterIds.has('ParamAngleY')).toBe(true);
     expect(map.hasChannel('head_pitch')).toBe(false);
   });

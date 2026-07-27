@@ -40,10 +40,14 @@ const MODEL_FALLBACK_IDS = Object.freeze({
 });
 
 function readParameterIds(coreModel) {
-  if (Array.isArray(coreModel?._parameterIds)) return [...coreModel._parameterIds];
-  const internalIds = coreModel?._model?.parameters?.ids;
-  if (Array.isArray(internalIds)) return [...internalIds];
-  return [];
+  try {
+    if (Array.isArray(coreModel?._parameterIds)) return [...coreModel._parameterIds];
+    const internalIds = coreModel?._model?.parameters?.ids;
+    if (Array.isArray(internalIds)) return [...internalIds];
+    return [];
+  } catch {
+    return [];
+  }
 }
 
 function fallbackIds(modelName) {
