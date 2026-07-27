@@ -13,7 +13,7 @@ from brain_engine import UnaBrain
 @pytest.mark.asyncio
 @patch('database.get_user_profile', return_value="Test Profile")
 @patch('database.get_recent_history', return_value=[])
-async def test_chat_stream_emits_structured_action_candidate_before_reply_text(
+async def test_chat_stream_emits_v3_motion_candidate_before_reply_text(
     mock_get_recent_history, mock_get_user_profile
 ):
     brain = UnaBrain(api_key="test", base_url="test", model="test")
@@ -22,10 +22,14 @@ async def test_chat_stream_emits_structured_action_candidate_before_reply_text(
         async def mock_async_generator():
             chunks = [
                 "EMOTION: shy | MOOD: 2\n",
-                'ACTION: {"intent": "shy_happy", ',
-                '"intensity": 0.68, "expression": "subtle", ',
-                '"timing": "after_sentence", "duration_ms": 1200, ',
-                '"variation_seed": 8}\n你好呀！',
+                (
+                    'ACTION: {"duration_ms":1200,"variation_seed":8,'
+                    '"blend":{"in_ms":100,"out_ms":160},'
+                    '"tracks":[{"channel":"head_pitch","mode":"override",'
+                    '"keyframes":[{"t":0,"value":0},{"t":0.5,"value":-0.4},'
+                    '{"t":1,"value":0}]}]}\n'
+                ),
+                "你好呀！",
             ]
             for chunk in chunks:
                 mock_chunk = MagicMock()
@@ -46,9 +50,9 @@ async def test_chat_stream_emits_structured_action_candidate_before_reply_text(
 
     candidates = [event for event in events if event['type'] == 'live2d_action_candidate']
     assert len(candidates) == 1
-    assert candidates[0]['plan']['intent'] == 'shy_happy'
-    sentences = "".join(event['text'] for event in events if event['type'] == 'sentence')
-    assert 'ACTION:' not in sentences
+    assert candidates[0]['plan']['tracks'][0]['channel'] == 'head_pitch'
+    reply_text = "".join(event['text'] for event in events if event['type'] == 'sentence')
+    assert 'ACTION:' not in reply_text
 
 
 @pytest.mark.asyncio

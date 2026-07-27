@@ -91,6 +91,7 @@ from auth_api import auth_service, get_current_user, router as auth_router
 from media_service import register_media, media_url, router as media_router, sign_history_audio_urls
 from settings import settings
 from live2d_action import ActionDirector
+from live2d_motion import MotionDirectorV3, is_motion_v3_candidate
 from chat_control import ControlPrefixDemux, sanitize_reply_text
 
 # === 加载配置 ===
@@ -184,6 +185,7 @@ asr = SenseVoiceASR()
 memory_service = MemoryService()
 emotion_mapper = Live2DEmotionMapper()
 action_director = ActionDirector()
+motion_director = MotionDirectorV3()
 # 将 brain 实例注入 DiaryService
 diary_service = DiaryService(brain=brain)
 vision_service = VisionService() if 'VisionService' in globals() and VisionService else None
@@ -385,7 +387,11 @@ async def process_and_push_response(user_text, user_id):
                 current_emotion = item.get("emotion", "neutral")
                 current_mood_score = item.get("mood_score", 0)
             elif item["type"] == "live2d_action_candidate":
-                event = action_director.decide(user_id, item.get("plan"))
+                plan = item.get("plan")
+                if is_motion_v3_candidate(plan):
+                    event = motion_director.decide(user_id, plan)
+                else:
+                    event = action_director.decide(user_id, plan)
                 if event is not None:
                     await ws_manager.broadcast_to_user(user_id, event)
             elif item["type"] == "sentence":

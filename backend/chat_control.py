@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 from live2d_action import parse_action_plan
+from live2d_motion import is_motion_v3_candidate, parse_motion_plan
 
 
 _EMOTION_PREFIX = "EMOTION:"
@@ -321,7 +322,10 @@ class ControlPrefixDemux:
             payload = None
 
         if action_end is not None:
-            plan = parse_action_plan(payload)
+            if is_motion_v3_candidate(payload):
+                plan = parse_motion_plan(payload)
+            else:
+                plan = parse_action_plan(payload)
             self._buffer = raw_action[action_end:]
             self._ensure_meta(events)
             if plan is not None and not self._action_emitted:

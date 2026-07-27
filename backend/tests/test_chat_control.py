@@ -13,6 +13,14 @@ ACTION_JSON = (
     '"duration_ms":1000,"variation_seed":5}'
 )
 
+MOTION_V3_JSON = (
+    '{"duration_ms":1200,"variation_seed":8,'
+    '"blend":{"in_ms":100,"out_ms":160},'
+    '"tracks":[{"channel":"head_pitch","mode":"override",'
+    '"keyframes":[{"t":0,"value":0},{"t":0.5,"value":-0.4},'
+    '{"t":1,"value":0}]}]}'
+)
+
 
 def collect_fragments(fragments):
     demux = ControlPrefixDemux()
@@ -41,6 +49,21 @@ def test_mixed_legacy_and_semantic_controls_never_enter_body():
         "live2d_action_candidate",
     ]
     assert events[1]["plan"]["intent"] == "curious_question"
+
+
+def test_v3_motion_control_is_emitted_without_leaking_its_json_into_body():
+    events, body = collect_fragments([
+        "EMOTION: shy | MOOD: 2\n",
+        f"ACTION: {MOTION_V3_JSON}\n你好呀！",
+    ])
+
+    candidates = [
+        event for event in events
+        if event["type"] == "live2d_action_candidate"
+    ]
+    assert candidates[0]["plan"]["tracks"][0]["channel"] == "head_pitch"
+    assert "ACTION:" not in body
+    assert body == "你好呀！"
 
 
 def test_control_prefix_is_safe_when_every_character_is_a_stream_fragment():

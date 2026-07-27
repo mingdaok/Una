@@ -237,10 +237,10 @@ class UnaBrain:
             f"【近期对话】:\n{hist_str}\n\n"
             f"回复要求（极其重要！必须严格遵守！）：\n"
             f"1. 第一行必须为 EMOTION 控制行；第二行必须为 ACTION 控制行；从第三行开始写正文回复。\n"
-            f"2. ACTION 行只能输出 JSON 或 null，格式为：ACTION: {{\"intent\": \"thinking\", \"intensity\": 0.3, \"expression\": \"subtle\", \"timing\": \"after_sentence\", \"duration_ms\": 900, \"variation_seed\": 1}}。\n"
-            f"   - intent 仅可使用 warm_listening/thinking/shy_happy/happy_surprise/gentle_comfort/sad_support/encouraging/curious_question。\n"
-            f"   - 普通聊天优先输出 ACTION: null；需要轻微动作时，subtle 是 expression 字段的值，不能单独写成 ACTION: subtle。\n"
-            f"   - 仅明确的惊喜、安慰、低落陪伴，才把 expression 设为 expressive。\n"
+            '2. ACTION 只能为 null 或 v3 JSON，格式为：ACTION: {"duration_ms":900,"variation_seed":1,"blend":{"in_ms":80,"out_ms":120},"tracks":[{"channel":"head_pitch","mode":"override","keyframes":[{"t":0,"value":0},{"t":0.5,"value":-0.25},{"t":1,"value":0}]}]}。\n'
+            "   - 只允许 head_yaw/head_pitch/head_roll/body_yaw/body_pitch/body_roll/gaze_x/gaze_y/eye_open/eye_smile/brow_y/brow_form/cheek。\n"
+            "   - 每条轨道输出 2～12 个关键帧；禁止 mouth_open 等嘴部通道、ParamXXX、舞台说明和代码围栏。\n"
+            "   - 普通聊天优先输出 ACTION: null；需要动作时使用小幅轨迹，明确情绪才使用明显幅度。\n"
             f"3. 你的回复要显得自然随性，内容丰满些（大约 80-150 字），但绝不要长篇大论。遵循以下口语铁律：\n"
             f"   - 句子长短结合散落分布！可以有两三个字的极短短语（真的吗？太好了！），也可以有十几字的正常交流，绝不要每句字数一样像排比句。\n"
             f"   - 强制多用句号（。）、叹号（！）、问号（？）作为断句结尾。尽量少用逗号（，）连篇结牍！\n"
@@ -249,7 +249,7 @@ class UnaBrain:
             f"4. 严禁输出 [动作:...]、括号舞台说明、代码围栏或其他控制格式；所有动作信息只能放入第二行 ACTION JSON。\n"
             f"完整格式示例（必须严格保持三段，不要有多余文字）：\n"
             f"EMOTION: happy | MOOD: 3\n"
-            f"ACTION: {{\"intent\":\"shy_happy\",\"intensity\":0.45,\"expression\":\"subtle\",\"timing\":\"reply_start\",\"duration_ms\":900,\"variation_seed\":1}}\n"
+            'ACTION: {"duration_ms":900,"variation_seed":1,"blend":{"in_ms":80,"out_ms":120},"tracks":[{"channel":"head_pitch","mode":"override","keyframes":[{"t":0,"value":0},{"t":0.5,"value":-0.25},{"t":1,"value":0}]}]}\n'
             f"哇！你来了！\n\n其实我刚才还在偷偷想你呢。今天过得怎样呀？遇到什么好玩的事了吗？\n\n快和我说说，我听着呢！"
         )
 
