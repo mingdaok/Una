@@ -117,13 +117,17 @@ export function compileMotionPlan(plan) {
   const safeTracks = plan.tracks.map(normalizeTrack).filter(Boolean).slice(0, MAX_TRACKS);
   if (!safeTracks.length) return null;
 
-  return {
+  return Object.freeze({
     motionId: typeof plan.motion_id === 'string' ? plan.motion_id : null,
     source: typeof plan.source === 'string' ? plan.source : null,
     durationMs: clampedMilliseconds(plan.duration_ms, 400, 4000, 800),
     blendInMs: clampedMilliseconds(plan.blend?.in_ms, 0, 500, 0),
     blendOutMs: clampedMilliseconds(plan.blend?.out_ms, 0, 500, 0),
     expiresAtMs: finiteNumber(plan.expires_at_ms),
+    // 混合器需要轨道模式来区分叠加和覆盖；冻结快照避免调用方改写编译结果。
+    trackModes: Object.freeze(Object.fromEntries(
+      safeTracks.map(track => [track.channel, track.mode]),
+    )),
     sample(progress) {
       const numericProgress = finiteNumber(progress);
       if (numericProgress === null) return {};
@@ -136,5 +140,5 @@ export function compileMotionPlan(plan) {
         }
       }));
     },
-  };
+  });
 }

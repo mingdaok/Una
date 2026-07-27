@@ -78,4 +78,17 @@ describe('compileMotionPlan', () => {
     expect(compiled.sample(0.5).head_pitch).toBeCloseTo(-0.8);
     expect(compiled.sample(1).head_pitch).toBe(0);
   });
+
+  it('冻结按通道保存的轨道模式，供混合器区分 additive 与 override', () => {
+    const compiled = compileMotionPlan(normalizeMotionEvent(validEvent({
+      tracks: [
+        track('head_pitch', [[0, 0], [1, 0.3]], 'additive'),
+        track('gaze_x', [[0, 0], [1, 0.2]], 'override'),
+      ],
+    }), { nowMs: 2000 }));
+
+    expect(compiled.trackModes).toEqual({ head_pitch: 'additive', gaze_x: 'override' });
+    expect(Object.isFrozen(compiled.trackModes)).toBe(true);
+    expect(Object.isFrozen(compiled)).toBe(true);
+  });
 });
