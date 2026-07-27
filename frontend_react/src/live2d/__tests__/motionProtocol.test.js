@@ -61,9 +61,9 @@ describe('normalizeMotionEvent', () => {
     expect(normalizeMotionEvent(validEvent({ tracks: [track('head_pitch', frames)] }), { nowMs: 2000 })).toBeNull();
   });
 
-  it('drops tracks with unknown easing', () => {
+  it.each(['spring', 'toString', 'constructor'])('drops tracks with unknown easing %s', easing => {
     expect(normalizeMotionEvent(validEvent({
-      tracks: [track('head_pitch', [[0, 0], [1, 0, 'spring']])],
+      tracks: [track('head_pitch', [[0, 0], [1, 0, easing]])],
     }), { nowMs: 2000 })).toBeNull();
   });
 });

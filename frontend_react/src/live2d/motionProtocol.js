@@ -43,7 +43,7 @@ function normalizeTrack(track) {
     const t = finiteNumber(keyframe.t);
     const value = finiteNumber(keyframe.value);
     const easing = keyframe.easing ?? 'linear';
-    if (t === null || value === null || !EASING[easing]
+    if (t === null || value === null || !Object.hasOwn(EASING, easing)
       || t < 0 || t > 1 || value < -1 || value > 1 || t <= previousT) {
       return null;
     }
