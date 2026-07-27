@@ -43,11 +43,43 @@ describe('createImmediateMotion', () => {
     expect(activeRange(nod)[1]).toBeLessThan(activeRange(shake)[0]);
   });
 
-  it('preserves repeated same-channel peaks when sequential groups would exceed twelve frames', () => {
+  it('rejects same-channel sequential gestures that cannot retain every neutral return in twelve frames', () => {
     const motion = createImmediateMotion(parseImmediateGesture('先点头五次，再点头五次'), options);
+
+    expect(motion).toBeNull();
+  });
+
+  it('uses Chinese amplitude modifiers to order light, normal, and strong peaks', () => {
+    const peakMagnitude = text => Math.abs(createImmediateMotion(
+      parseImmediateGesture(text), options,
+    ).tracks.find(item => item.channel === 'head_pitch').keyframes.reduce(
+      (lowest, frame) => Math.min(lowest, frame.value),
+      0,
+    ));
+
+    const normal = peakMagnitude('点头');
+    const lightPeaks = ['轻轻点头', '小幅点头', '稍微点头'].map(peakMagnitude);
+    const strongPeaks = ['明显点头', '用力点头', '大幅点头'].map(peakMagnitude);
+
+    expect(lightPeaks.every(peak => peak < normal)).toBe(true);
+    expect(strongPeaks.every(peak => peak > normal && peak <= 1)).toBe(true);
+    expect(lightPeaks[0]).toBeLessThan(normal);
+    expect(normal).toBeLessThan(strongPeaks[0]);
+  });
+
+  it('rejects parallel gestures that target the same semantic channel', () => {
+    const motion = createImmediateMotion(parseImmediateGesture('点头并抬头'), options);
+
+    expect(motion).toBeNull();
+  });
+
+  it.each([1, 2, 3, 4, 5])('keeps all %i normal nod cycles as neutral-to-peak-to-neutral frames', count => {
+    const motion = createImmediateMotion(parseImmediateGesture(`点头${count}次`), options);
     const track = motion.tracks.find(item => item.channel === 'head_pitch');
 
-    expect(track.keyframes.filter(frame => frame.value < -0.1)).toHaveLength(10);
+    expect(track.keyframes).toHaveLength((count * 2) + 1);
+    expect(track.keyframes.filter(frame => frame.value < -0.1)).toHaveLength(count);
+    expect(track.keyframes.filter((frame, index) => index % 2 === 0).every(frame => frame.value === 0)).toBe(true);
     expect(track.keyframes.length).toBeLessThanOrEqual(12);
     expect(track.keyframes.at(-1)).toMatchObject({ t: 1, value: 0 });
   });

@@ -90,23 +90,23 @@ function addGestureCurve(trackFrames, gesture, start, end, seed, groupIndex, ges
 }
 
 function normalizeTracks(trackFrames) {
-  return [...trackFrames.entries()].slice(0, MAX_TRACKS).flatMap(([channel, framesByTime]) => {
+  if (trackFrames.size > MAX_TRACKS) return null;
+
+  const tracks = [];
+  for (const [channel, framesByTime] of trackFrames) {
     addFrameToTimeline(framesByTime, 0, 0);
     addFrameToTimeline(framesByTime, 1, 0);
     const keyframes = [...framesByTime.values()].sort((left, right) => left.t - right.t);
-    if (keyframes.length <= 12) return [{ channel, mode: 'override', keyframes }];
+    if (keyframes.length > 12) return null;
+    tracks.push({ channel, mode: 'override', keyframes });
+  }
+  return tracks;
+}
 
-    const nonNeutralFrames = keyframes.filter(frame => Math.abs(frame.value) > 0.0001);
-    if (nonNeutralFrames.length > 10) return [];
-    return [{
-      channel,
-      mode: 'override',
-      keyframes: [
-        { t: 0, value: 0, easing: 'ease_in_out' },
-        ...nonNeutralFrames,
-        { t: 1, value: 0, easing: 'ease_in_out' },
-      ],
-    }];
+function hasParallelChannelConflict(groups) {
+  return groups.some(group => {
+    const channels = group.gestures.map(gesture => GESTURE_CHANNELS[gesture.kind]?.[0]).filter(Boolean);
+    return channels.length !== new Set(channels).size;
   });
 }
 
@@ -114,6 +114,7 @@ function createPlan(groups, source, { nowMs = Date.now(), idFactory, seed = 0 } 
   if (!Array.isArray(groups) || !groups.length || groups.some(group => !Array.isArray(group?.gestures) || !group.gestures.length)) {
     return null;
   }
+  if (hasParallelChannelConflict(groups)) return null;
 
   const createdAtMs = boundedNumber(nowMs, Date.now());
   const durations = groupDuration(groups);
@@ -132,7 +133,7 @@ function createPlan(groups, source, { nowMs = Date.now(), idFactory, seed = 0 } 
   });
 
   const tracks = normalizeTracks(trackFrames);
-  if (!tracks.length) return null;
+  if (!tracks?.length) return null;
   return {
     type: 'live2d_motion_v3',
     motion_id: motionId(createdAtMs, seed, idFactory),
