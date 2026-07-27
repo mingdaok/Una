@@ -58,6 +58,16 @@ describe('Live2DStateMixer', () => {
     expect(mixer.sample(frameInputs({ nowMs: 1300 })).head_pitch).toBeCloseTo(-0.6);
   });
 
+  it('同来源同通道未提供 blend 参数时也在 140 毫秒内交叉淡化', () => {
+    const mixer = createLive2DStateMixer({ clock: () => 1000 });
+    mixer.enqueue(compiled('default-old', 'ai_reply', { head_pitch: 0.8 }), 1000);
+    mixer.enqueue(compiled('default-new', 'ai_reply', { head_pitch: -0.6 }), 1100);
+
+    expect(mixer.sample(frameInputs({ nowMs: 1100 })).head_pitch).toBeCloseTo(0.8);
+    expect(mixer.sample(frameInputs({ nowMs: 1170 })).head_pitch).toBeCloseTo(0.1);
+    expect(mixer.sample(frameInputs({ nowMs: 1240 })).head_pitch).toBeCloseTo(-0.6);
+  });
+
   it('不同通道的动作可以并发，低优先级 AI 不会被无关用户动作清除', () => {
     const mixer = createLive2DStateMixer({ clock: () => 1000 });
     mixer.enqueue(compiled('ai-gaze', 'ai_reply', { gaze_y: -0.3 }), 1000);
@@ -100,6 +110,31 @@ describe('Live2DStateMixer', () => {
     }), 1200)).toBe(true);
   });
 
+  it('去重缓存按动作生命周期 TTL 清扫：有效期内拒绝，过期后允许同 ID 新动作', () => {
+    const mixer = createLive2DStateMixer({ clock: () => 1000 });
+    const first = compiled('ttl-motion', 'ai_reply', { gaze_x: 0.6 }, { durationMs: 100 });
+
+    expect(mixer.enqueue(first, 1000)).toBe(true);
+    expect(mixer.enqueue(compiled('ttl-motion', 'ai_reply', { gaze_x: -0.2 }), 1050)).toBe(false);
+    expect(mixer.sample(frameInputs({ nowMs: 1100 })).gaze_x).toBeUndefined();
+    expect(mixer.enqueue(compiled('ttl-motion', 'ai_reply', { gaze_x: -0.2 }, {
+      durationMs: 300,
+    }), 1100)).toBe(true);
+  });
+
+  it('去重缓存达到容量上限后淘汰最早条目，避免无限增长', () => {
+    const mixer = createLive2DStateMixer({ clock: () => 1000 });
+    for (let index = 0; index <= 256; index += 1) {
+      expect(mixer.enqueue(compiled(`capacity-${index}`, 'ai_reply', {}, {
+        durationMs: 10000,
+      }), 1000)).toBe(true);
+    }
+
+    expect(mixer.enqueue(compiled('capacity-0', 'ai_reply', {}, {
+      durationMs: 10000,
+    }), 1000)).toBe(true);
+  });
+
   it('眨眼只能向闭眼方向修饰 eye_open，且不能影响 TTS 口型', () => {
     const mixer = createLive2DStateMixer();
 
@@ -136,5 +171,31 @@ describe('Live2DStateMixer', () => {
     mixer.enqueue(healthy, 1000);
     expect(mixer.sample(frameInputs()).gaze_x).toBeCloseTo(0.4);
     expect(mixer.sample(frameInputs({ nowMs: 1600 })).gaze_x).toBeCloseTo(0.4);
+  });
+
+  it('隔离采样帧属性读取异常，健康动作和下一帧不会中断', () => {
+    const mixer = createLive2DStateMixer({ clock: () => 1000 });
+    const brokenFrame = new Proxy({}, {
+      get() {
+        throw new Error('broken sampled frame getter');
+      },
+    });
+    const broken = compiled('broken-getter', 'ai_reply', {});
+    broken.sample = () => brokenFrame;
+    const healthy = compiled('healthy-after-getter', 'ai_reply', { gaze_y: -0.4 });
+
+    mixer.enqueue(broken, 1000);
+    mixer.enqueue(healthy, 1000);
+    expect(mixer.sample(frameInputs()).gaze_y).toBeCloseTo(-0.4);
+    expect(mixer.sample(frameInputs({ nowMs: 1600 })).gaze_y).toBeCloseTo(-0.4);
+  });
+
+  it('旧 CompiledMotion 缺少 trackModes 时仍默认按 override 混合', () => {
+    const mixer = createLive2DStateMixer({ clock: () => 1000 });
+    const legacyMotion = compiled('legacy-override', 'ai_reply', { head_yaw: 0.4 });
+    delete legacyMotion.trackModes;
+
+    expect(mixer.enqueue(legacyMotion, 1000)).toBe(true);
+    expect(mixer.sample(frameInputs({ idle: { head_yaw: -0.2 } })).head_yaw).toBeCloseTo(0.4);
   });
 });

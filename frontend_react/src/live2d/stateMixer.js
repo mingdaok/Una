@@ -7,8 +7,8 @@ export const SOURCE_PRIORITY = Object.freeze({
   user_command: 40,
 });
 
-const SEMANTIC_CHANNEL_SET = new Set(SEMANTIC_CHANNELS);
 const MAX_SEEN_MOTION_IDS = 256;
+const DEFAULT_REPLACEMENT_BLEND_MS = 140;
 
 function clamp(value) {
   return Math.max(-1, Math.min(1, value));
@@ -22,11 +22,16 @@ function finiteMilliseconds(value) {
   return finite(value) && value >= 0 ? value : null;
 }
 
-function safeLayer(layer) {
+function safeLayer(layer, { rejectOnReadError = false } = {}) {
   if (!layer || typeof layer !== 'object' || Array.isArray(layer)) return {};
   const output = {};
   for (const channel of SEMANTIC_CHANNELS) {
-    if (finite(layer[channel])) output[channel] = clamp(layer[channel]);
+    try {
+      const value = layer[channel];
+      if (finite(value)) output[channel] = clamp(value);
+    } catch {
+      if (rejectOnReadError) return null;
+    }
   }
   return output;
 }
@@ -66,21 +71,27 @@ function isValidMotion(motion) {
  */
 export function createLive2DStateMixer({ clock = () => Date.now() } = {}) {
   const active = new Map();
-  const seenIds = new Set();
-  const seenOrder = [];
+  const seenIds = new Map();
   let sequence = 0;
 
-  function rememberMotionId(motionId) {
-    seenIds.add(motionId);
-    seenOrder.push(motionId);
-    if (seenOrder.length > MAX_SEEN_MOTION_IDS) {
-      const expiredId = seenOrder.shift();
-      seenIds.delete(expiredId);
+  function cleanupSeenIds(nowMs) {
+    for (const [motionId, expiresAtMs] of seenIds) {
+      if (expiresAtMs <= nowMs) seenIds.delete(motionId);
+    }
+  }
+
+  function rememberMotionId(motionId, expiresAtMs) {
+    seenIds.set(motionId, expiresAtMs);
+    while (seenIds.size > MAX_SEEN_MOTION_IDS) {
+      const oldestMotionId = seenIds.keys().next().value;
+      seenIds.delete(oldestMotionId);
     }
   }
 
   function enqueue(motion, receivedAtMs = clock()) {
-    if (!isValidMotion(motion) || !finite(receivedAtMs) || seenIds.has(motion.motionId)) return false;
+    if (!isValidMotion(motion) || !finite(receivedAtMs)) return false;
+    cleanupSeenIds(receivedAtMs);
+    if (seenIds.has(motion.motionId)) return false;
     const expiresAtMs = finiteMilliseconds(motion.expiresAtMs);
     if (expiresAtMs !== null && expiresAtMs <= receivedAtMs) return false;
 
@@ -90,7 +101,7 @@ export function createLive2DStateMixer({ clock = () => Date.now() } = {}) {
       startAtMs,
       sequence: sequence += 1,
     });
-    rememberMotionId(motion.motionId);
+    rememberMotionId(motion.motionId, expiresAtMs ?? (startAtMs + motion.durationMs));
     return true;
   }
 
@@ -113,17 +124,18 @@ export function createLive2DStateMixer({ clock = () => Date.now() } = {}) {
         continue;
       }
 
+      const frame = safeLayer(sampled, { rejectOnReadError: true });
+      if (frame === null) {
+        active.delete(motionId);
+        continue;
+      }
+
       samples.push({
         motion,
         sequence: record.sequence,
+        elapsed,
         priority: SOURCE_PRIORITY[motion.source],
-        weight: blendWeight(
-          elapsed,
-          motion.durationMs,
-          finiteMilliseconds(motion.blendInMs) ?? 0,
-          finiteMilliseconds(motion.blendOutMs) ?? 0,
-        ),
-        frame: safeLayer(sampled),
+        frame,
       });
     }
     return samples.sort((left, right) => left.priority - right.priority || left.sequence - right.sequence);
@@ -131,13 +143,32 @@ export function createLive2DStateMixer({ clock = () => Date.now() } = {}) {
 
   function sample({ nowMs = clock(), idle = {}, emotion = {}, blink = {}, lipSync = {} } = {}) {
     const currentMs = finite(nowMs) ? nowMs : clock();
+    cleanupSeenIds(currentMs);
     const frame = { ...safeLayer(idle), ...safeLayer(emotion) };
     const samples = collectActiveSamples(currentMs);
+
+    function weightFor(item, channel) {
+      const requestedBlendInMs = finiteMilliseconds(item.motion.blendInMs) ?? 0;
+      const hasOlderSameSourceChannel = samples.some(other => (
+        other.sequence < item.sequence
+        && other.motion.source === item.motion.source
+        && Object.hasOwn(other.frame, channel)
+      ));
+      const blendInMs = requestedBlendInMs > 0
+        ? requestedBlendInMs
+        : (hasOlderSameSourceChannel ? DEFAULT_REPLACEMENT_BLEND_MS : 0);
+      return blendWeight(
+        item.elapsed,
+        item.motion.durationMs,
+        blendInMs,
+        finiteMilliseconds(item.motion.blendOutMs) ?? 0,
+      );
+    }
 
     for (const item of samples) {
       for (const [channel, value] of Object.entries(item.frame)) {
         if (trackMode(item.motion, channel) !== 'additive') continue;
-        frame[channel] = clamp((frame[channel] ?? 0) + value * item.weight);
+        frame[channel] = clamp((frame[channel] ?? 0) + value * weightFor(item, channel));
       }
     }
 
@@ -146,7 +177,8 @@ export function createLive2DStateMixer({ clock = () => Date.now() } = {}) {
       for (const [channel, value] of Object.entries(item.frame)) {
         if (trackMode(item.motion, channel) !== 'override') continue;
         const base = frame[channel] ?? 0;
-        frame[channel] = clamp(base + (value - base) * item.weight);
+        const weight = weightFor(item, channel);
+        frame[channel] = clamp(base + (value - base) * weight);
       }
     }
 
@@ -167,7 +199,6 @@ export function createLive2DStateMixer({ clock = () => Date.now() } = {}) {
   function reset() {
     active.clear();
     seenIds.clear();
-    seenOrder.length = 0;
     sequence = 0;
   }
 

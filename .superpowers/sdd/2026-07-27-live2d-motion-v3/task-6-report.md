@@ -53,6 +53,29 @@
 
 结果：Vitest 10 个测试文件、71 项测试全部通过；Vite 生产构建成功。构建仅输出已有的非模块脚本与 Browserslist 数据过期警告，未产生构建错误。
 
+## 审查修复轮次 1/5
+
+### RED
+
+为审查意见增加四类回归：无显式 blend 的同来源同通道接替、按动作生命周期清理的去重 TTL 与容量上限、带抛错 getter 的采样帧、缺少 `trackModes` 的旧编译结果。运行：
+
+```powershell
+& 'D:\ai\Node\npx.cmd' vitest run src/live2d/__tests__/stateMixer.test.js
+```
+
+结果：13 项中 3 项按预期失败，分别暴露默认接替瞬跳、过期 ID 被永久拒绝、采样帧 getter 异常中断整帧；容量上限和旧 `trackModes` 兼容用例由已有行为通过。
+
+### GREEN
+
+- 选择 `140ms` 作为统一默认接替时长，位于设计规定的 `100～180ms` 范围内。仅当同来源、同通道的新覆盖轨道没有显式淡入时启用；显式淡入仍按请求参数执行。
+- 去重缓存改为 `Map<motionId, expiresAtMs>`：优先使用事件有效期，否则使用 `startAtMs + durationMs`；每次入队和采样都清理到期项，超过 256 条时淘汰最早项。
+- 对动作采样结果的逐通道属性读取增加异常隔离。读取失败的单一动作立即移除，健康动作仍在当前帧和下一帧正常输出。
+- 保持旧 `CompiledMotion` 缺少 `trackModes` 时默认 `override` 的兼容规则。
+
+再次运行同一命令结果：13/13 通过。
+
+修复后的完整验证：Vitest 10 个测试文件、76 项测试全部通过；Vite 生产构建成功。构建仅保留已有的非模块脚本与 Browserslist 数据过期提示。
+
 ## 残余风险
 
 - 模块尚未接入 `useLive2DController` 的真实 ticker，因此尚未进行浏览器或 Android 真机验收。
