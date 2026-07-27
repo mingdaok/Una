@@ -76,6 +76,27 @@
 
 修复后的完整验证：Vitest 10 个测试文件、76 项测试全部通过；Vite 生产构建成功。构建仅保留已有的非模块脚本与 Browserslist 数据过期提示。
 
+## 审查修复轮次 2/5
+
+### RED
+
+将容量测试改为正确的生命周期规则，并新增同来源同通道 `additive`、`additive → override` 的回归测试。运行：
+
+```powershell
+& 'D:\ai\Node\npx.cmd' vitest run src/live2d/__tests__/stateMixer.test.js
+```
+
+结果：15 项中 3 项按预期失败：缓存淘汰后活跃动作可重入；两个 additive / mixed-mode 用例都错误地触发默认淡入。
+
+### GREEN
+
+- 入队先按 `receivedAtMs` 清扫已结束的活动动作，随后始终拒绝仍在 `active` 中的相同 `motion_id`，再检查带 TTL 的去重缓存。因此缓存容量淘汰不会重置仍在播放的动作；生命周期结束后才允许同 ID 重新进入。
+- 默认 `140ms` 接替条件收紧为同来源、同通道的 `override → override`。`additive` 轨道不因同源前序轨道降低权重；mixed mode 按“先 additive、再 override”规则立即取得覆盖层。
+
+再次运行定向测试结果：15/15 通过。
+
+修复后的完整验证：Vitest 10 个测试文件、78 项测试全部通过；Vite 生产构建成功。构建仅保留已有的非模块脚本与 Browserslist 数据过期提示。
+
 ## 残余风险
 
 - 模块尚未接入 `useLive2DController` 的真实 ticker，因此尚未进行浏览器或 Android 真机验收。

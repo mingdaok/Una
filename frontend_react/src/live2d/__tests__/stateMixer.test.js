@@ -122,7 +122,7 @@ describe('Live2DStateMixer', () => {
     }), 1100)).toBe(true);
   });
 
-  it('去重缓存达到容量上限后淘汰最早条目，避免无限增长', () => {
+  it('去重缓存达到容量上限后仍拒绝活跃动作重放，生命周期结束后才释放同 ID', () => {
     const mixer = createLive2DStateMixer({ clock: () => 1000 });
     for (let index = 0; index <= 256; index += 1) {
       expect(mixer.enqueue(compiled(`capacity-${index}`, 'ai_reply', {}, {
@@ -132,7 +132,33 @@ describe('Live2DStateMixer', () => {
 
     expect(mixer.enqueue(compiled('capacity-0', 'ai_reply', {}, {
       durationMs: 10000,
-    }), 1000)).toBe(true);
+    }), 1000)).toBe(false);
+    mixer.sample(frameInputs({ nowMs: 11000 }));
+    expect(mixer.enqueue(compiled('capacity-0', 'ai_reply', {}, {
+      durationMs: 10000,
+    }), 11000)).toBe(true);
+  });
+
+  it('同来源同通道 additive 无显式 blend 时立即叠加，不套用默认接替淡入', () => {
+    const mixer = createLive2DStateMixer({ clock: () => 1000 });
+    mixer.enqueue(compiled('additive-old', 'ai_reply', { head_yaw: 0.2 }, {
+      mode: 'additive',
+    }), 1000);
+    mixer.enqueue(compiled('additive-new', 'ai_reply', { head_yaw: 0.3 }, {
+      mode: 'additive',
+    }), 1100);
+
+    expect(mixer.sample(frameInputs({ nowMs: 1100, idle: { head_yaw: 0.1 } })).head_yaw).toBeCloseTo(0.6);
+  });
+
+  it('同来源同通道的 additive 旧层不会让新 override 发生默认接替淡入', () => {
+    const mixer = createLive2DStateMixer({ clock: () => 1000 });
+    mixer.enqueue(compiled('mixed-additive', 'ai_reply', { head_yaw: 0.2 }, {
+      mode: 'additive',
+    }), 1000);
+    mixer.enqueue(compiled('mixed-override', 'ai_reply', { head_yaw: -0.5 }), 1100);
+
+    expect(mixer.sample(frameInputs({ nowMs: 1100 })).head_yaw).toBeCloseTo(-0.5);
   });
 
   it('眨眼只能向闭眼方向修饰 eye_open，且不能影响 TTS 口型', () => {

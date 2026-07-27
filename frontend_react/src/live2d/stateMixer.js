@@ -88,8 +88,20 @@ export function createLive2DStateMixer({ clock = () => Date.now() } = {}) {
     }
   }
 
+  function cleanupActiveMotions(nowMs) {
+    for (const [motionId, record] of active) {
+      const elapsed = nowMs - record.startAtMs;
+      const expiresAtMs = finiteMilliseconds(record.motion.expiresAtMs);
+      if (elapsed >= record.motion.durationMs || (expiresAtMs !== null && expiresAtMs <= nowMs)) {
+        active.delete(motionId);
+      }
+    }
+  }
+
   function enqueue(motion, receivedAtMs = clock()) {
     if (!isValidMotion(motion) || !finite(receivedAtMs)) return false;
+    cleanupActiveMotions(receivedAtMs);
+    if (active.has(motion.motionId)) return false;
     cleanupSeenIds(receivedAtMs);
     if (seenIds.has(motion.motionId)) return false;
     const expiresAtMs = finiteMilliseconds(motion.expiresAtMs);
@@ -107,6 +119,7 @@ export function createLive2DStateMixer({ clock = () => Date.now() } = {}) {
 
   function collectActiveSamples(nowMs) {
     const samples = [];
+    cleanupActiveMotions(nowMs);
     for (const [motionId, record] of active) {
       const { motion } = record;
       const elapsed = nowMs - record.startAtMs;
@@ -149,14 +162,15 @@ export function createLive2DStateMixer({ clock = () => Date.now() } = {}) {
 
     function weightFor(item, channel) {
       const requestedBlendInMs = finiteMilliseconds(item.motion.blendInMs) ?? 0;
-      const hasOlderSameSourceChannel = samples.some(other => (
+      const hasOlderSameSourceOverride = trackMode(item.motion, channel) === 'override' && samples.some(other => (
         other.sequence < item.sequence
         && other.motion.source === item.motion.source
         && Object.hasOwn(other.frame, channel)
+        && trackMode(other.motion, channel) === 'override'
       ));
       const blendInMs = requestedBlendInMs > 0
         ? requestedBlendInMs
-        : (hasOlderSameSourceChannel ? DEFAULT_REPLACEMENT_BLEND_MS : 0);
+        : (hasOlderSameSourceOverride ? DEFAULT_REPLACEMENT_BLEND_MS : 0);
       return blendWeight(
         item.elapsed,
         item.motion.durationMs,
