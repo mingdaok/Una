@@ -74,7 +74,8 @@ function addGestureCurve(trackFrames, gesture, start, end, seed, groupIndex, ges
   const amplitudeJitter = (seededUnit(seed, (groupIndex * 17) + gestureIndex) - 0.5) * 0.16;
   const phaseJitter = (seededUnit(seed, groupIndex) - 0.5) * 0.12;
   const baseAmplitude = boundedNumber(gesture.amplitude, gesture.kind === 'close_eyes' ? 0.82 : 0.55);
-  const amplitude = Math.max(0.05, Math.min(1, baseAmplitude * (1 + amplitudeJitter)));
+  const amplitudeScale = Math.max(0, Math.min(2, boundedNumber(gesture.amplitudeScale, 1)));
+  const amplitude = Math.max(0.05, Math.min(1, baseAmplitude * amplitudeScale * (1 + amplitudeJitter)));
   const span = end - start;
 
   addFrame(trackFrames, channel, start, 0);

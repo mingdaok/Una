@@ -3,6 +3,10 @@ import { createImmediateMotion, createListeningMotion } from '../gestureGenerato
 import { parseImmediateGesture } from '../gestureParser';
 
 const options = { nowMs: 1000, idFactory: () => 'local-1', seed: 9 };
+const AMPLITUDE_ACTIONS = [
+  '点头', '摇头', '抬头', '低头', '向左看', '向右看', '向左歪头', '向右歪头',
+  '身体前倾', '身体后退', '身体向左倾', '身体向右倾', '眨眼', '闭眼',
+];
 
 function activeRange(track) {
   const active = track.keyframes.filter(frame => Math.abs(frame.value) > 0.0001);
@@ -65,6 +69,24 @@ describe('createImmediateMotion', () => {
     expect(strongPeaks.every(peak => peak > normal && peak <= 1)).toBe(true);
     expect(lightPeaks[0]).toBeLessThan(normal);
     expect(normal).toBeLessThan(strongPeaks[0]);
+  });
+
+  it.each(AMPLITUDE_ACTIONS)('scales %s relative to its own base amplitude and keeps safe frames', action => {
+    const motions = ['轻轻', '', '大幅'].map(modifier => createImmediateMotion(
+      parseImmediateGesture(`${modifier}${action}`), options,
+    ));
+    const peakMagnitude = motion => Math.max(...motion.tracks.flatMap(track => track.keyframes.map(
+      frame => Math.abs(frame.value),
+    )));
+    const [light, normal, strong] = motions.map(peakMagnitude);
+
+    expect(light).toBeLessThan(normal);
+    expect(normal).toBeLessThan(strong);
+    expect(motions.flatMap(motion => motion.tracks).every(track => (
+      track.keyframes.length <= 12
+      && track.keyframes.at(-1).value === 0
+      && track.keyframes.every(frame => frame.value >= -1 && frame.value <= 1)
+    ))).toBe(true);
   });
 
   it('rejects parallel gestures that target the same semantic channel', () => {

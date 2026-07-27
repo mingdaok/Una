@@ -17,8 +17,8 @@ const GESTURES = [
 
 const NEGATION = /不|别|勿|禁止|停止|无需/;
 const AMPLITUDE_MODIFIERS = Object.freeze([
-  [/(轻轻|小幅|稍微)/, 0.35],
-  [/(明显|用力|大幅)/, 0.8],
+  [/(轻轻|小幅|稍微)/, 0.65],
+  [/(明显|用力|大幅)/, 1.35],
 ]);
 const CHINESE_DIGITS = Object.freeze({
   一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5,
@@ -55,8 +55,8 @@ function parseSingleGesture(segment) {
   };
   if (/(慢慢|缓慢|慢一点|慢些)/.test(before)) gesture.speed = 'slow';
   if (/(快速|迅速|快一点|快些)/.test(before)) gesture.speed = 'fast';
-  const amplitude = AMPLITUDE_MODIFIERS.find(([pattern]) => pattern.test(before))?.[1];
-  if (amplitude) gesture.amplitude = amplitude;
+  const amplitudeScale = AMPLITUDE_MODIFIERS.find(([pattern]) => pattern.test(before))?.[1];
+  if (amplitudeScale) gesture.amplitudeScale = amplitudeScale;
   return gesture;
 }
 
