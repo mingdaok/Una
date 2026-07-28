@@ -151,6 +151,79 @@ describe('useUnaCore WebSocket handling', () => {
         expect(result.current.motionEvent).toBe(first);
     });
 
+    it('evicts the oldest live v3 motion id when the bounded de-duplication cache is full', async () => {
+        const { result } = renderHook(() => useUnaCore('test_user'));
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+        act(() => mockWebSocket.onopen());
+
+        act(() => {
+            for (let index = 0; index <= 100; index += 1) {
+                mockWebSocket.onmessage({
+                    data: JSON.stringify(validServerMotion({ motion_id: `bounded-${index}` })),
+                });
+            }
+        });
+        expect(result.current.motionEvent.motion_id).toBe('bounded-100');
+
+        act(() => mockWebSocket.onmessage({
+            data: JSON.stringify(validServerMotion({ motion_id: 'bounded-0' })),
+        }));
+        expect(result.current.motionEvent.motion_id).toBe('bounded-0');
+    });
+
+    it('does not let malformed v3 events replace the current usable motion state', async () => {
+        const { result } = renderHook(() => useUnaCore('test_user'));
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+        act(() => mockWebSocket.onopen());
+
+        act(() => mockWebSocket.onmessage({
+            data: JSON.stringify(validServerMotion({ motion_id: 'safe-motion' })),
+        }));
+        const safeMotion = result.current.motionEvent;
+
+        act(() => mockWebSocket.onmessage({
+            data: JSON.stringify(validServerMotion({
+                motion_id: 'malformed-mouth-motion',
+                tracks: [{
+                    channel: 'mouth_open',
+                    mode: 'override',
+                    keyframes: [{ t: 0, value: 0 }, { t: 1, value: 1 }],
+                }],
+            })),
+        }));
+        expect(result.current.motionEvent).toBe(safeMotion);
+    });
+
+    it('ignores an old WebSocket generation after reconnecting with a newer connection', async () => {
+        const sockets = [];
+        global.WebSocket = function() {
+            const socket = { send: vi.fn(), close: vi.fn(), readyState: 1 };
+            sockets.push(socket);
+            return socket;
+        };
+        global.WebSocket.OPEN = 1;
+
+        const { result, rerender } = renderHook(
+            ({ user }) => useUnaCore(user),
+            { initialProps: { user: 'first-user' } },
+        );
+        await waitFor(() => expect(sockets).toHaveLength(1));
+        act(() => sockets[0].onopen());
+
+        rerender({ user: 'second-user' });
+        await waitFor(() => expect(sockets).toHaveLength(2));
+        act(() => sockets[1].onopen());
+        act(() => sockets[1].onmessage({
+            data: JSON.stringify(validServerMotion({ motion_id: 'new-connection-motion' })),
+        }));
+        const activeMotion = result.current.motionEvent;
+
+        act(() => sockets[0].onmessage({
+            data: JSON.stringify(validServerMotion({ motion_id: 'stale-connection-motion' })),
+        }));
+        expect(result.current.motionEvent).toBe(activeMotion);
+    });
+
     it('allows a new session to connect while the previous WebSocket ticket request is still pending', async () => {
         const ticketResolvers = [];
         const sockets = [];
