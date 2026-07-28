@@ -38,7 +38,7 @@ describe('compileLegacyAction', () => {
     const frame = compiled.sample(0.5);
 
     expect(compiled.source).toBe('legacy_fallback');
-    expect(compiled.motionId).toBe('legacy-action-1');
+    expect(compiled.motionId).toBe('legacy-event-action-1');
     expect(frame).toHaveProperty('head_pitch');
     expect(frame).not.toHaveProperty('mouth_open');
     expect(frame).not.toHaveProperty('mouth_form');
@@ -113,12 +113,35 @@ describe('compileLegacyAction', () => {
     }
   });
 
+  it('隔离服务 action_id、外部工厂和内部回退生成的 motionId 命名空间', () => {
+    const actionIdMotion = compile({ ...shyHappyEvent, action_id: '1000-7-1' });
+    const factoryMotion = compile(
+      { ...shyHappyEvent, action_id: '' },
+      'panda_cake',
+      { idFactory: () => '1000-7-1' },
+    );
+    const fallbackMotion = compile(
+      { ...shyHappyEvent, action_id: '' },
+      'panda_cake',
+      { idFactory: () => { throw new Error('factory failure'); } },
+    );
+
+    expect(actionIdMotion.motionId).toBe('legacy-event-1000-7-1');
+    expect(factoryMotion.motionId).toBe('legacy-factory-1000-7-1');
+    expect(fallbackMotion.motionId).toBe('legacy-fallback-1000-7-1');
+    expect(new Set([
+      actionIdMotion.motionId,
+      factoryMotion.motionId,
+      fallbackMotion.motionId,
+    ]).size).toBe(3);
+  });
+
   it('对合法 action_id 生成稳定且彼此不碰撞的 motionId', () => {
     const replay = compile({ ...shyHappyEvent, action_id: 'server-action-a' });
     const replayAgain = compile({ ...shyHappyEvent, action_id: 'server-action-a' });
     const distinct = compile({ ...shyHappyEvent, action_id: 'server-action-b' });
 
-    expect(replay.motionId).toBe('legacy-server-action-a');
+    expect(replay.motionId).toBe('legacy-event-server-action-a');
     expect(replayAgain.motionId).toBe(replay.motionId);
     expect(distinct.motionId).not.toBe(replay.motionId);
     expect(compile({ ...shyHappyEvent, action_id: 'server-action-a' }, 'panda_cake', {
@@ -129,10 +152,10 @@ describe('compileLegacyAction', () => {
   it('只在 action_id 无效时使用 idFactory，并能安全处理恶意工厂', () => {
     const invalidActionId = { ...shyHappyEvent, action_id: '' };
     expect(compile(invalidActionId, 'panda_cake', { idFactory: () => 'factory-id' }).motionId)
-      .toBe('factory-id');
+      .toBe('legacy-factory-factory-id');
     expect(compile({ ...shyHappyEvent, action_id: '   ' }, 'panda_cake', {
       idFactory: () => 'factory-for-blank-id',
-    }).motionId).toBe('factory-for-blank-id');
+    }).motionId).toBe('legacy-factory-factory-for-blank-id');
 
     const fromThrowingFactory = compile(invalidActionId, 'panda_cake', {
       idFactory: () => { throw new Error('factory failure'); },
@@ -141,8 +164,8 @@ describe('compileLegacyAction', () => {
       idFactory: () => '',
     });
 
-    expect(fromThrowingFactory.motionId).toMatch(/^legacy-1000-7-\d+$/);
-    expect(fromInvalidFactory.motionId).toMatch(/^legacy-1000-7-\d+$/);
+    expect(fromThrowingFactory.motionId).toMatch(/^legacy-fallback-1000-7-\d+$/);
+    expect(fromInvalidFactory.motionId).toMatch(/^legacy-fallback-1000-7-\d+$/);
     expect(fromThrowingFactory.motionId).not.toBe(fromInvalidFactory.motionId);
   });
 

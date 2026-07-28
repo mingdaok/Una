@@ -70,16 +70,16 @@ function hasNonBlankString(value) {
 }
 
 function motionIdForLegacyAction(event, nowMs, seed, idFactory) {
-  if (hasNonBlankString(event.action_id)) return `legacy-${event.action_id}`;
+  if (hasNonBlankString(event.action_id)) return `legacy-event-${event.action_id}`;
 
   try {
     const generated = typeof idFactory === 'function' ? idFactory() : null;
-    if (hasNonBlankString(generated)) return generated;
+    if (hasNonBlankString(generated)) return `legacy-factory-${generated}`;
   } catch {
     // 可选的 ID 生成器失败不能阻断旧动作兼容路径。
   }
   fallbackMotionSequence += 1;
-  return `legacy-${nowMs}-${seed}-${fallbackMotionSequence}`;
+  return `legacy-fallback-${nowMs}-${seed}-${fallbackMotionSequence}`;
 }
 
 function clampSemantic(value) {
