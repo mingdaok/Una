@@ -40,6 +40,8 @@ const LEGACY_TO_SEMANTIC = Object.freeze({
   browAngle: 'brow_y',
 });
 
+let fallbackMotionSequence = 0;
+
 function seededUnit(seed) {
   let value = (seed >>> 0) + 0x6D2B79F5;
   value = Math.imul(value ^ (value >>> 15), value | 1);
@@ -48,14 +50,14 @@ function seededUnit(seed) {
 }
 
 function boundedIntensity(value) {
-  const number = Number(value);
-  return Number.isFinite(number) ? Math.max(0, Math.min(1, number)) : 0;
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(0, Math.min(1, value))
+    : 0;
 }
 
 function boundedDuration(value) {
-  const duration = Number(value);
-  return Number.isFinite(duration) && duration > 0
-    ? Math.max(400, Math.min(2500, Math.trunc(duration)))
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.max(400, Math.min(2500, Math.trunc(value)))
     : 800;
 }
 
@@ -63,14 +65,21 @@ function boundedNow(nowMs) {
   return typeof nowMs === 'number' && Number.isFinite(nowMs) ? nowMs : Date.now();
 }
 
-function fallbackMotionId(nowMs, seed, idFactory) {
+function hasNonBlankString(value) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function motionIdForLegacyAction(event, nowMs, seed, idFactory) {
+  if (hasNonBlankString(event.action_id)) return `legacy-${event.action_id}`;
+
   try {
     const generated = typeof idFactory === 'function' ? idFactory() : null;
-    if (typeof generated === 'string' && generated) return generated;
+    if (hasNonBlankString(generated)) return generated;
   } catch {
     // 可选的 ID 生成器失败不能阻断旧动作兼容路径。
   }
-  return `legacy-${nowMs}-${seed}`;
+  fallbackMotionSequence += 1;
+  return `legacy-${nowMs}-${seed}-${fallbackMotionSequence}`;
 }
 
 function clampSemantic(value) {
@@ -127,7 +136,7 @@ export function compileLegacyAction(event, currentModel, { nowMs = Date.now(), i
     : 'legacy_fallback';
   const normalized = normalizeMotionEvent({
     type: 'live2d_motion_v3',
-    motion_id: fallbackMotionId(createdAtMs, seed, idFactory),
+    motion_id: motionIdForLegacyAction(event, createdAtMs, seed, idFactory),
     source,
     created_at_ms: createdAtMs,
     expires_at_ms: createdAtMs + durationMs + 1000,
