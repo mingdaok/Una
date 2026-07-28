@@ -107,11 +107,27 @@ export function createLive2DStateMixer({ clock = () => Date.now() } = {}) {
     const expiresAtMs = finiteMilliseconds(motion.expiresAtMs);
     if (expiresAtMs !== null && expiresAtMs <= receivedAtMs) return false;
 
+    const replacementWindowMs = (finiteMilliseconds(motion.blendInMs) ?? 0) > 0
+      ? motion.blendInMs
+      : DEFAULT_REPLACEMENT_BLEND_MS;
+    const newOverrideChannels = Object.keys(motion.trackModes || {}).filter(channel => (
+      trackMode(motion, channel) === 'override'
+    ));
+    for (const record of active.values()) {
+      if (record.motion.source !== motion.source) continue;
+      for (const channel of newOverrideChannels) {
+        if (trackMode(record.motion, channel) === 'override') {
+          record.replacedChannels.set(channel, receivedAtMs + replacementWindowMs);
+        }
+      }
+    }
+
     const startAtMs = receivedAtMs;
     active.set(motion.motionId, {
       motion,
       startAtMs,
       sequence: sequence += 1,
+      replacedChannels: new Map(),
     });
     rememberMotionId(motion.motionId, expiresAtMs ?? (startAtMs + motion.durationMs));
     return true;
@@ -137,11 +153,15 @@ export function createLive2DStateMixer({ clock = () => Date.now() } = {}) {
         continue;
       }
 
-      const frame = safeLayer(sampled, { rejectOnReadError: true });
-      if (frame === null) {
+      const sampledFrame = safeLayer(sampled, { rejectOnReadError: true });
+      if (sampledFrame === null) {
         active.delete(motionId);
         continue;
       }
+      const frame = Object.fromEntries(Object.entries(sampledFrame).filter(([channel]) => {
+        const replacementEndsAtMs = record.replacedChannels.get(channel);
+        return finiteMilliseconds(replacementEndsAtMs) === null || nowMs < replacementEndsAtMs;
+      }));
 
       samples.push({
         motion,

@@ -84,10 +84,13 @@ describe('useLive2DController 统一状态混合', () => {
     vi.useRealTimers();
   });
 
-  function renderController({ currentModel = 'panda_cake', lipValue = { rhubarb: 'X' }, motionEvent = null } = {}) {
-    return renderHook(({ model, lip, event }) => useLive2DController(
-      appRef, modelRef, model, 'neutral', lip, event,
-    ), { initialProps: { model: currentModel, lip: lipValue, event: motionEvent } });
+  function renderController({ currentModel = 'panda_cake', lipValue = { rhubarb: 'X' }, motionEvent = null, readyToken } = {}) {
+    const initialReadyToken = readyToken === undefined
+      ? { model: modelRef.current, modelName: currentModel, version: currentModel }
+      : readyToken;
+    return renderHook(({ model, lip, event, ready }) => useLive2DController(
+      appRef, modelRef, model, 'neutral', lip, event, ready,
+    ), { initialProps: { model: currentModel, lip: lipValue, event: motionEvent, ready: initialReadyToken } });
   }
 
   it('将 v3 head_pitch 投影写入 ParamAngleY', () => {
@@ -155,12 +158,76 @@ describe('useLive2DController 统一状态混合', () => {
     expect(callsFor(firstCoreModel, 'ParamAngleY').at(-1)[1]).toBeGreaterThan(0);
 
     const replacementCoreModel = createCoreModel(IDS.filter(id => id !== 'ParamAngleY'));
-    modelRef.current = { internalModel: { coreModel: replacementCoreModel } };
-    view.rerender({ model: 'hiyori', lip: { rhubarb: 'X' }, event: motion({ id: 'new-model-yaw', channel: 'head_yaw' }) });
+    const replacementModel = { internalModel: { coreModel: replacementCoreModel } };
+    modelRef.current = replacementModel;
+    view.rerender({
+      model: 'hiyori', lip: { rhubarb: 'X' }, event: motion({ id: 'new-model-yaw', channel: 'head_yaw' }),
+      ready: { model: replacementModel, modelName: 'hiyori', version: 2 },
+    });
     tickerCallback(1);
 
     expect(callsFor(replacementCoreModel, 'ParamAngleY')).toHaveLength(0);
     expect(callsFor(replacementCoreModel, 'ParamAngleX').at(-1)[1]).toBeGreaterThan(0);
+    view.unmount();
+  });
+
+  it('异步切换期间不会用新模型名绑定旧 CoreModel，新的 ready 实例才会建表', () => {
+    const oldCoreModel = createCoreModel(IDS.filter(id => id !== 'ParamAngleX'));
+    const oldModel = { internalModel: { coreModel: oldCoreModel } };
+    modelRef.current = oldModel;
+    const view = renderController({ readyToken: { model: oldModel, modelName: 'panda_cake', version: 1 } });
+    tickerCallback(1);
+    oldCoreModel.setParameterValueById.mockClear();
+
+    view.rerender({ model: 'hiyori', lip: { rhubarb: 'X' }, event: null, ready: null });
+    tickerCallback(1);
+    expect(oldCoreModel.setParameterValueById).not.toHaveBeenCalled();
+
+    const newCoreModel = createCoreModel(IDS.filter(id => id !== 'ParamAngleY'));
+    const newModel = { internalModel: { coreModel: newCoreModel } };
+    modelRef.current = newModel;
+    view.rerender({
+      model: 'hiyori', lip: { rhubarb: 'X' }, event: motion({ id: 'new-ready-yaw', channel: 'head_yaw' }),
+      ready: { model: newModel, modelName: 'hiyori', version: 2 },
+    });
+    tickerCallback(1);
+    expect(callsFor(newCoreModel, 'ParamAngleX').at(-1)[1]).toBeGreaterThan(0);
+    expect(callsFor(newCoreModel, 'ParamAngleY')).toHaveLength(0);
+    view.unmount();
+  });
+
+  it('慢加载超过三秒后仍等待新的 ready 信号建立能力表', () => {
+    modelRef.current = null;
+    const view = renderController({ motionEvent: null, readyToken: null });
+    vi.advanceTimersByTime(6000);
+    const coreModel = createCoreModel();
+    const newModel = { internalModel: { coreModel } };
+    modelRef.current = newModel;
+    view.rerender({
+      model: 'panda_cake', lip: { rhubarb: 'X' }, event: motion({ id: 'slow-ready', channel: 'head_pitch' }),
+      ready: { model: newModel, modelName: 'panda_cake', version: 1 },
+    });
+    tickerCallback(1);
+    expect(callsFor(coreModel, 'ParamAngleY').at(-1)[1]).toBeGreaterThan(0);
+    view.unmount();
+  });
+
+  it('仅切换模型而不更换事件时不会在新模型重播旧 motion_id', () => {
+    const oldModel = modelRef.current;
+    const oldEvent = motion({ id: 'do-not-replay', channel: 'head_pitch', value: 0.7 });
+    const view = renderController({ readyToken: { model: oldModel, modelName: 'panda_cake', version: 1 }, motionEvent: oldEvent });
+    tickerCallback(1);
+
+    view.rerender({ model: 'hiyori', lip: { rhubarb: 'X' }, event: oldEvent, ready: null });
+    const newCoreModel = createCoreModel();
+    const newModel = { internalModel: { coreModel: newCoreModel } };
+    modelRef.current = newModel;
+    view.rerender({
+      model: 'hiyori', lip: { rhubarb: 'X' }, event: oldEvent,
+      ready: { model: newModel, modelName: 'hiyori', version: 2 },
+    });
+    tickerCallback(1);
+    expect(callsFor(newCoreModel, 'ParamAngleY').at(-1)[1]).toBe(0);
     view.unmount();
   });
 

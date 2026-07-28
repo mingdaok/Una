@@ -4,9 +4,6 @@ import { buildModelCapabilityMap } from '../live2d/modelCapabilities';
 import { compileMotionPlan, normalizeMotionEvent } from '../live2d/motionProtocol';
 import { createLive2DStateMixer } from '../live2d/stateMixer';
 
-const MAX_MODEL_RETRIES = 60;
-const MODEL_RETRY_MS = 50;
-
 const EMOTION_FRAMES = Object.freeze({
   happy: { eye_open: -0.05, eye_smile: 0.35, brow_y: 0.2, brow_form: 0.2, cheek: 0.3 },
   joy: { eye_open: 0.05, eye_smile: 0.45, brow_y: 0.25, brow_form: 0.25, cheek: 0.4 },
@@ -102,9 +99,10 @@ function legacyChatActionToMotion(event, nowMs) {
  * Live2D 参数写入的唯一入口。
  * 所有动作先编译为语义通道，再由状态混合器合成；口型和呼吸通过保留层独立投影。
  */
-export function useLive2DController(appRef, modelRef, currentModel, emotion, lipValue, motionEvent) {
+export function useLive2DController(appRef, modelRef, currentModel, emotion, lipValue, motionEvent, modelReady) {
   const capabilityMapRef = useRef(null);
   const mixerRef = useRef(createLive2DStateMixer());
+  const currentModelRef = useRef(currentModel);
   const lipValueRef = useRef(lipValue || { rhubarb: 'X' });
   const emotionTargetRef = useRef(emotionFrame(emotion));
   const emotionCurrentRef = useRef({ ...emotionFrame(emotion) });
@@ -112,6 +110,7 @@ export function useLive2DController(appRef, modelRef, currentModel, emotion, lip
   const breathRef = useRef({ phase: 0 });
   const mouthOpenRef = useRef(0);
   const mouthFormRef = useRef(0);
+  currentModelRef.current = currentModel;
 
   useEffect(() => {
     lipValueRef.current = lipValue || { rhubarb: 'X' };
@@ -121,34 +120,26 @@ export function useLive2DController(appRef, modelRef, currentModel, emotion, lip
     emotionTargetRef.current = emotionFrame(emotion);
   }, [emotion]);
 
-  // CoreModel 没有公开 getParameterId()；能力图只读取实际可见的参数 ID 与索引范围。
+  // 切换意图一出现就清空旧模型的能力表和动作；不能借用尚未卸载的旧实例。
   useEffect(() => {
-    let attempts = 0;
-    let retryTimer = null;
-    let disposed = false;
     capabilityMapRef.current = null;
     mixerRef.current.reset();
+  }, [currentModel]);
 
-    const buildCapabilities = () => {
-      if (disposed) return;
-      const coreModel = modelRef.current?.internalModel?.coreModel;
-      if (coreModel?.setParameterValueById) {
-        capabilityMapRef.current = buildModelCapabilityMap(coreModel, { modelName: currentModel });
-        mixerRef.current.reset();
-        return;
-      }
-      attempts += 1;
-      if (attempts < MAX_MODEL_RETRIES) retryTimer = setTimeout(buildCapabilities, MODEL_RETRY_MS);
-    };
+  // 只有 Viewer 宣告“该实例已准备好”后才建表。这替代有限次数轮询，慢加载也能恢复。
+  useEffect(() => {
+    if (
+      !modelReady
+      || modelReady.modelName !== currentModel
+      || modelReady.model !== modelRef.current
+    ) return;
+    const coreModel = modelReady.model?.internalModel?.coreModel;
+    if (!coreModel?.setParameterValueById) return;
 
-    buildCapabilities();
-    return () => {
-      disposed = true;
-      if (retryTimer) clearTimeout(retryTimer);
-      mixerRef.current.reset();
-      capabilityMapRef.current = null;
-    };
-  }, [currentModel, modelRef]);
+    const replacesReadyInstance = capabilityMapRef.current !== null;
+    capabilityMapRef.current = buildModelCapabilityMap(coreModel, { modelName: currentModel });
+    if (replacesReadyInstance) mixerRef.current.reset();
+  }, [currentModel, modelReady?.version, modelReady?.model, modelReady?.modelName, modelRef]);
 
   useEffect(() => {
     const nowMs = Date.now();
@@ -157,12 +148,12 @@ export function useLive2DController(appRef, modelRef, currentModel, emotion, lip
       const normalized = normalizeMotionEvent(motionEvent, { nowMs });
       compiled = normalized && compileMotionPlan(normalized);
     } else if (motionEvent?.type === 'live2d_action_v2' || motionEvent?.type === 'local_micro_reaction') {
-      compiled = compileLegacyAction(motionEvent, currentModel, { nowMs });
+      compiled = compileLegacyAction(motionEvent, currentModelRef.current, { nowMs });
     } else {
       compiled = legacyChatActionToMotion(motionEvent, nowMs);
     }
     if (compiled) mixerRef.current.enqueue(compiled, nowMs);
-  }, [motionEvent, currentModel]);
+  }, [motionEvent]);
 
   useEffect(() => {
     let pollTimer = null;

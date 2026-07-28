@@ -68,6 +68,21 @@ describe('Live2DStateMixer', () => {
     expect(mixer.sample(frameInputs({ nowMs: 1240 })).head_pitch).toBeCloseTo(-0.6);
   });
 
+  it('同来源同通道被新 override 替换后，旧轨道不会在新动作结束时重新出现，但其他通道继续', () => {
+    const mixer = createLive2DStateMixer({ clock: () => 1000 });
+    mixer.enqueue(compiled('old-two-channels', 'ai_reply', {
+      head_pitch: 0.8,
+      gaze_x: 0.4,
+    }, { durationMs: 2000 }), 1000);
+    mixer.enqueue(compiled('short-replacement', 'ai_reply', {
+      head_pitch: -0.6,
+    }, { durationMs: 300 }), 1100);
+
+    expect(mixer.sample(frameInputs({ nowMs: 1170 })).head_pitch).toBeCloseTo(0.1);
+    expect(mixer.sample(frameInputs({ nowMs: 1500 })).head_pitch).toBeUndefined();
+    expect(mixer.sample(frameInputs({ nowMs: 1500 })).gaze_x).toBeCloseTo(0.4);
+  });
+
   it('不同通道的动作可以并发，低优先级 AI 不会被无关用户动作清除', () => {
     const mixer = createLive2DStateMixer({ clock: () => 1000 });
     mixer.enqueue(compiled('ai-gaze', 'ai_reply', { gaze_y: -0.3 }), 1000);

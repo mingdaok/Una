@@ -10,6 +10,8 @@ export default function Live2DViewer({ lipValue, emotion, motionEvent }) {
   const canvasRef = useRef(null);
   const modelRef = useRef(null);
   const appRef = useRef(null); // 用于死死抓住 App 实例，方便销毁
+  const modelReadyVersionRef = useRef(0);
+  const [modelReady, setModelReady] = useState(null);
   const [isLoaded, setIsLoaded] = useState(false);
   const [currentModel, setCurrentModel] = useState(() => localStorage.getItem('live2d_model') || 'panda_cake'); // 默认加载粉色熊猫模型
   const [showSettings, setShowSettings] = useState(false); // 控制设置面板显示
@@ -149,6 +151,7 @@ export default function Live2DViewer({ lipValue, emotion, motionEvent }) {
       
     console.log("🦋 Live2D Loading:", modelUrl);
     setIsLoaded(false);
+    setModelReady(null);
 
     let isCancelled = false; // 用于防范竞态条件（比如刚点加载 A 立刻切 B）
 
@@ -177,6 +180,12 @@ export default function Live2DViewer({ lipValue, emotion, motionEvent }) {
       model.y = window.innerHeight * yRef.current;
       model.scale.set(scaleRef.current);
 
+      modelReadyVersionRef.current += 1;
+      setModelReady({
+        model,
+        modelName: currentModel,
+        version: modelReadyVersionRef.current,
+      });
       setIsLoaded(true);
       console.log("✅ Live2D Ready");
     }).catch(e => {
@@ -197,7 +206,7 @@ export default function Live2DViewer({ lipValue, emotion, motionEvent }) {
   //   - 自动眨眼周期控制
   //   - panda_cake 特有参数（JAW, ParamMouthOpenY4, 红晕）兼容
   // ============================================================
-  useLive2DController(appRef, modelRef, currentModel, emotion, lipValue, motionEvent);
+  useLive2DController(appRef, modelRef, currentModel, emotion, lipValue, motionEvent, modelReady);
 
   // 口型同步和参数覆写已完全迁移至 useLive2DController，
   // 此处不再有任何 lipValue useEffect 或 Ticker，避免双重驱动冲突。
