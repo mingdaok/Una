@@ -1,12 +1,23 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { getApiBase, getWebSocketBase } from '../config';
 import { authFetch, createWebSocketTicket } from '../auth/session';
+import { parseImmediateGesture } from '../live2d/gestureParser';
+import { createImmediateMotion, createListeningMotion } from '../live2d/gestureGenerator';
+import { normalizeMotionEvent } from '../live2d/motionProtocol';
+
+const MAX_SEEN_MOTION_IDS = 100;
+
+function pruneSeenMotionIds(seenMotionIds, nowMs) {
+    for (const [motionId, expiresAtMs] of seenMotionIds) {
+        if (!Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs) seenMotionIds.delete(motionId);
+    }
+}
 
 export function useUnaCore(authenticated) {
     const [messages, setMessages] = useState([]);
     const [connectionStatus, setConnectionStatus] = useState("CONNECTING");
     const [lipValue, setLipValue] = useState({ openY: 0, form: 0, volume: 0 });
-    const [actionOverride, setActionOverride] = useState(null);
+    const [motionEvent, setMotionEvent] = useState(null);
 
     const websocketRef = useRef(null);
     const reconnectTimeoutRef = useRef(null);
@@ -16,6 +27,8 @@ export function useUnaCore(authenticated) {
     const currentLipRef = useRef({ openY: 0, form: 0, volume: 0 });
     const isConnecting = useRef(false);
     const seenActionIdsRef = useRef(new Set());
+    const seenMotionIdsRef = useRef(new Map());
+    const connectionGenerationRef = useRef(0);
 
     // 🌊 流式音频列车队列
     const audioQueueRef = useRef([]);
@@ -78,6 +91,8 @@ export function useUnaCore(authenticated) {
         if (!authenticated || isConnecting.current) return;
         isConnecting.current = true;
         setConnectionStatus("CONNECTING");
+        const connectionGeneration = connectionGenerationRef.current + 1;
+        connectionGenerationRef.current = connectionGeneration;
 
         try {
             const ticket = await createWebSocketTicket();
@@ -86,6 +101,10 @@ export function useUnaCore(authenticated) {
             const ws = new WebSocket(wsUrl);
 
             ws.onopen = () => {
+                if (connectionGeneration !== connectionGenerationRef.current) {
+                    ws.close();
+                    return;
+                }
                 console.log("✅ [WS] 连接成功");
                 setConnectionStatus("OPEN");
                 isConnecting.current = false;
@@ -99,6 +118,7 @@ export function useUnaCore(authenticated) {
             };
 
             ws.onmessage = (event) => {
+                if (connectionGeneration !== connectionGenerationRef.current) return;
                 try {
                     const data = JSON.parse(event.data);
                     if (data.type === 'pong') return;
@@ -122,7 +142,7 @@ export function useUnaCore(authenticated) {
 
                     // 收到动作标签指令
                     if (data.type === 'chat_action') {
-                        setActionOverride({ action: data.action, params: data.params || {}, timestamp: Date.now() });
+                        setMotionEvent({ action: data.action, params: data.params || {}, timestamp: Date.now() });
                         return;
                     }
 
@@ -130,7 +150,24 @@ export function useUnaCore(authenticated) {
                         if (!data.action_id || seenActionIdsRef.current.has(data.action_id)) return;
                         if (seenActionIdsRef.current.size >= 100) seenActionIdsRef.current.clear();
                         seenActionIdsRef.current.add(data.action_id);
-                        setActionOverride({ ...data, timestamp: Date.now() });
+                        setMotionEvent({ ...data, timestamp: Date.now() });
+                        return;
+                    }
+
+                    if (data.type === 'live2d_motion_v3') {
+                        const nowMs = Date.now();
+                        const normalizedMotion = normalizeMotionEvent(data, { nowMs });
+                        if (!normalizedMotion) return;
+
+                        const seenMotionIds = seenMotionIdsRef.current;
+                        pruneSeenMotionIds(seenMotionIds, nowMs);
+                        if (seenMotionIds.has(normalizedMotion.motion_id)) return;
+                        if (seenMotionIds.size >= MAX_SEEN_MOTION_IDS) {
+                            const oldestMotionId = seenMotionIds.keys().next().value;
+                            if (oldestMotionId !== undefined) seenMotionIds.delete(oldestMotionId);
+                        }
+                        seenMotionIds.set(normalizedMotion.motion_id, normalizedMotion.expires_at_ms);
+                        setMotionEvent(normalizedMotion);
                         return;
                     }
 
@@ -251,6 +288,7 @@ export function useUnaCore(authenticated) {
             };
 
             ws.onclose = (e) => {
+                if (connectionGeneration !== connectionGenerationRef.current) return;
                 console.log("❌ [WS] 断开:", e.code);
                 setConnectionStatus("CLOSED");
                 websocketRef.current = null;
@@ -273,7 +311,11 @@ export function useUnaCore(authenticated) {
     useEffect(() => {
         connectWebSocket();
         return () => {
+            connectionGenerationRef.current += 1;
             if (websocketRef.current) websocketRef.current.close();
+            websocketRef.current = null;
+            seenActionIdsRef.current.clear();
+            seenMotionIdsRef.current.clear();
             if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
             if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
             stopCurrentAudio();
@@ -296,12 +338,12 @@ export function useUnaCore(authenticated) {
         if (websocketRef.current?.readyState === WebSocket.OPEN) {
             const clientMessageId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
             setMessages(prev => [...prev, { role: 'user', text, content: text, clientMessageId, date: new Date() }]);
-            const timestamp = Date.now();
-            setActionOverride({
-                type: 'local_micro_reaction', intent: 'warm_listening', intensity: 0.18,
-                expression: 'subtle', timing: 'reply_start', duration_ms: 500,
-                variation_seed: timestamp >>> 0, timestamp,
-            });
+            const nowMs = Date.now();
+            const command = parseImmediateGesture(text);
+            const localMotion = command
+                ? createImmediateMotion(command, { nowMs })
+                : createListeningMotion({ nowMs });
+            setMotionEvent(localMotion);
             websocketRef.current.send(JSON.stringify({ type: 'text', content: text, client_message_id: clientMessageId }));
         } else {
             // 尝试重连
@@ -494,6 +536,7 @@ export function useUnaCore(authenticated) {
         lipValue, interrupt, playAudio, connectionStatus,
         sendStopSignal,  // 供 useAudioRecorder 在录音结束后调用
         replayChunks,    // 新增：连续播放音频碎片
-        actionOverride   // 供前端组件驱动 Live2D 动作
+        motionEvent,
+        actionOverride: motionEvent, // P1 迁移期兼容旧调用方；Task 9 会统一改用 motionEvent
     };
 }

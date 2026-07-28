@@ -2,6 +2,28 @@ import { renderHook, act } from '@testing-library/react';
 import { useUnaCore } from '../useUnaCore';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+function validServerMotion(overrides = {}) {
+    const now = Date.now();
+    return {
+        type: 'live2d_motion_v3',
+        motion_id: 'server-motion',
+        source: 'ai_reply',
+        created_at_ms: now,
+        expires_at_ms: now + 10_000,
+        duration_ms: 800,
+        blend: { in_ms: 80, out_ms: 120 },
+        tracks: [{
+            channel: 'head_pitch',
+            mode: 'override',
+            keyframes: [
+                { t: 0, value: 0, easing: 'linear' },
+                { t: 1, value: -0.4, easing: 'ease_in_out' },
+            ],
+        }],
+        ...overrides,
+    };
+}
+
 describe('useUnaCore WebSocket handling', () => {
     let mockWebSocket;
     
@@ -18,6 +40,7 @@ describe('useUnaCore WebSocket handling', () => {
             readyState: 1 // WebSocket.OPEN
         };
         global.WebSocket = function() { return mockWebSocket; };
+        global.WebSocket.OPEN = 1;
     });
 
     it('should parse chat_action and set actionOverride', async () => {
@@ -50,5 +73,81 @@ describe('useUnaCore WebSocket handling', () => {
         expect(result.current.actionOverride).not.toBeNull();
         expect(result.current.actionOverride.action).toBe('惊讶');
         expect(result.current.actionOverride.params.direction).toBe('头左偏');
+    });
+
+    it('dispatches an explicit immediate gesture before its WebSocket message is sent', async () => {
+        const { result } = renderHook(() => useUnaCore('test_user'));
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+        act(() => mockWebSocket.onopen());
+
+        act(() => result.current.sendMessage('上下点头三次'));
+
+        expect(result.current.motionEvent).toMatchObject({
+            type: 'live2d_motion_v3',
+            source: 'user_command',
+        });
+        expect(result.current.motionEvent.tracks[0].channel).toBe('head_pitch');
+        expect(mockWebSocket.send).toHaveBeenCalledOnce();
+    });
+
+    it('records local motion before a synchronous server event triggered by WebSocket.send', async () => {
+        const { result } = renderHook(() => useUnaCore('test_user'));
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+        act(() => mockWebSocket.onopen());
+
+        mockWebSocket.send.mockImplementation(() => {
+            mockWebSocket.onmessage({
+                data: JSON.stringify(validServerMotion({ motion_id: 'reply-after-send' })),
+            });
+        });
+
+        act(() => result.current.sendMessage('上下点头三次'));
+
+        // If send ran first, the later local state update would overwrite this reply event.
+        expect(result.current.motionEvent.motion_id).toBe('reply-after-send');
+    });
+
+    it('uses a listening motion for negated and unsupported text instead of a nod', async () => {
+        const { result } = renderHook(() => useUnaCore('test_user'));
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+        act(() => mockWebSocket.onopen());
+
+        act(() => result.current.sendMessage('不要点头'));
+        expect(result.current.motionEvent).toMatchObject({
+            type: 'live2d_motion_v3',
+            source: 'local_micro_reaction',
+        });
+        expect(result.current.motionEvent.tracks.some(track => track.channel === 'head_pitch')).toBe(false);
+
+        act(() => result.current.sendMessage('今天天气怎么样'));
+        expect(result.current.motionEvent).toMatchObject({
+            type: 'live2d_motion_v3',
+            source: 'local_micro_reaction',
+        });
+    });
+
+    it('accepts one valid v3 server motion but ignores its duplicate and expired events', async () => {
+        const { result } = renderHook(() => useUnaCore('test_user'));
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+        act(() => mockWebSocket.onopen());
+
+        act(() => mockWebSocket.onmessage({
+            data: JSON.stringify(validServerMotion({ motion_id: 'server-1' })),
+        }));
+        expect(result.current.motionEvent.motion_id).toBe('server-1');
+
+        const first = result.current.motionEvent;
+        act(() => mockWebSocket.onmessage({
+            data: JSON.stringify(validServerMotion({ motion_id: 'server-1' })),
+        }));
+        expect(result.current.motionEvent).toBe(first);
+
+        act(() => mockWebSocket.onmessage({
+            data: JSON.stringify(validServerMotion({
+                motion_id: 'expired-server-motion',
+                expires_at_ms: Date.now() - 1,
+            })),
+        }));
+        expect(result.current.motionEvent).toBe(first);
     });
 });

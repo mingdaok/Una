@@ -40,7 +40,7 @@ export default function App() {
   const {
     messages, setMessages, sendMessage, sendAudioData, sendImage,
     lipValue, interrupt, playAudio, connectionStatus, replayChunks,
-    sendStopSignal, actionOverride
+    sendStopSignal, motionEvent
   } = useUnaCore(isLoggedIn);
 
   // 第二个参数 sendStopSignal：录音停止并发送完音频后，自动向后端发 stop 触发识别
@@ -185,7 +185,11 @@ export default function App() {
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
           >
             <div className="fixed inset-0 bg-cover bg-center z-0 pointer-events-none" style={{ backgroundImage: `url(${baseUrl}assets/bg_living.jpg)` }} />
-            <Live2DViewer lipValue={lipValue} emotion={[...messages].reverse().find(m => m.isAI)?.emotion} actionOverride={actionOverride} />
+            <Live2DViewer
+              lipValue={lipValue}
+              emotion={[...messages].reverse().find(message => message.isAI)?.emotion}
+              motionEvent={motionEvent}
+            />
 
             <div className="absolute top-4 right-4 z-50">
               {connectionStatus === 'OPEN' ? <Wifi size={16} className="text-green-400/50" /> : <WifiOff size={16} className="text-red-500" />}
