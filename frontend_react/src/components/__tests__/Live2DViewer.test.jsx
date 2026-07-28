@@ -2,8 +2,7 @@ import { act, render, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Live2DViewer from '../Live2DViewer';
 
-
-describe('Live2DViewer 参数控制权', () => {
+describe('Live2DViewer 参数控制层', () => {
   let app;
   let model;
   let resetExpression;
@@ -12,80 +11,36 @@ describe('Live2DViewer 参数控制权', () => {
     localStorage.clear();
     vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'warn').mockImplementation(() => {});
-
     resetExpression = vi.fn();
     model = {
-      anchor: { set: vi.fn() },
-      scale: { set: vi.fn() },
-      destroy: vi.fn(),
-      motion: vi.fn(),
-      expression: vi.fn(),
-      internalModel: {
-        motionManager: {
-          expressionManager: { resetExpression },
-        },
-        coreModel: {
-          getParameterCount: () => 2,
-          getParameterDefaultValue: () => 0,
-          getParameterValueById: () => 0,
-          setParameterValueByIndex: vi.fn(),
-        },
-      },
+      anchor: { set: vi.fn() }, scale: { set: vi.fn() }, destroy: vi.fn(), motion: vi.fn(), expression: vi.fn(),
+      internalModel: { motionManager: { expressionManager: { resetExpression } }, coreModel: {
+        _parameterIds: ['ParamAngleY', 'ParamMouthOpenY', 'ParamMouthForm', 'ParamBreath'],
+        getParameterCount: () => 4,
+        getParameterMinimumValue: index => index === 1 ? 0 : -30,
+        getParameterMaximumValue: index => index === 1 ? 1 : 30,
+        getParameterDefaultValue: () => 0,
+        setParameterValueById: vi.fn(), setParameterValueByIndex: vi.fn(),
+      } },
     };
-
-    app = {
-      stage: {
-        addChild: vi.fn(),
-        removeChild: vi.fn(),
-      },
-      ticker: {
-        add: vi.fn(),
-        remove: vi.fn(),
-      },
-      destroy: vi.fn(),
-    };
-
-    class FakeApplication {
-      constructor() {
-        return app;
-      }
-    }
-
-    window.PIXI = {
-      Application: FakeApplication,
-      live2d: {
-        Live2DModel: {
-          from: vi.fn(() => Promise.resolve(model)),
-        },
-      },
-    };
+    app = { stage: { addChild: vi.fn(), removeChild: vi.fn() }, ticker: { add: vi.fn(), remove: vi.fn() }, destroy: vi.fn() };
+    class FakeApplication { constructor() { return app; } }
+    window.PIXI = { Application: FakeApplication, live2d: { Live2DModel: { from: vi.fn(() => Promise.resolve(model)) } } };
   });
 
-  afterEach(() => {
-    delete window.PIXI;
-    vi.restoreAllMocks();
-  });
+  afterEach(() => { delete window.PIXI; vi.restoreAllMocks(); });
 
-  it('加载时正式复位，情绪变化时不再调用预设 Motion 或 Expression', async () => {
-    const view = render(
-      <Live2DViewer
-        lipValue={{ rhubarb: 'X' }}
-        emotion="neutral"
-        actionOverride={null}
-      />,
-    );
-
+  it('将 motionEvent 传入统一控制器，并且模型加载和情绪切换不调用预设 Motion 或 Expression', async () => {
+    const event = {
+      type: 'live2d_motion_v3', motion_id: 'viewer-motion', source: 'ai_reply',
+      created_at_ms: Date.now(), expires_at_ms: Date.now() + 3000, duration_ms: 800,
+      blend: { in_ms: 0, out_ms: 0 },
+      tracks: [{ channel: 'head_pitch', mode: 'override', keyframes: [{ t: 0, value: 0.5 }, { t: 1, value: 0.5 }] }],
+    };
+    const view = render(<Live2DViewer lipValue={{ rhubarb: 'X' }} emotion="neutral" motionEvent={event} />);
     await waitFor(() => expect(app.stage.addChild).toHaveBeenCalledWith(model));
-
-    view.rerender(
-      <Live2DViewer
-        lipValue={{ rhubarb: 'X' }}
-        emotion="thinking"
-        actionOverride={null}
-      />,
-    );
+    view.rerender(<Live2DViewer lipValue={{ rhubarb: 'X' }} emotion="thinking" motionEvent={event} />);
     await act(async () => Promise.resolve());
-
     expect(resetExpression).toHaveBeenCalledOnce();
     expect(model.motion).not.toHaveBeenCalled();
     expect(model.expression).not.toHaveBeenCalled();

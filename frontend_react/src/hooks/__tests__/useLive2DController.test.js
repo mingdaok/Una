@@ -2,56 +2,81 @@ import { renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useLive2DController } from '../useLive2DController';
 
-const actionComposerControl = vi.hoisted(() => ({
-  implementation: null,
-}));
+const protocolControl = vi.hoisted(() => ({ brokenMotionId: null }));
 
-vi.mock('../../live2d/actionComposer', async (importOriginal) => {
+vi.mock('../../live2d/motionProtocol', async (importOriginal) => {
   const original = await importOriginal();
   return {
     ...original,
-    compileAction: (...args) => {
-      if (actionComposerControl.implementation) {
-        return actionComposerControl.implementation(...args);
+    compileMotionPlan: (plan) => {
+      if (plan?.motion_id === protocolControl.brokenMotionId) {
+        return {
+          motionId: plan.motion_id,
+          source: plan.source,
+          durationMs: 800,
+          sample: () => { throw new Error('损坏的动作采样器'); },
+        };
       }
-      return original.compileAction(...args);
+      return original.compileMotionPlan(plan);
     },
   };
 });
 
-describe('useLive2DController 动作覆写', () => {
+const IDS = [
+  'ParamAngleX', 'ParamAngleY', 'ParamAngleZ',
+  'ParamBodyAngleX', 'ParamBodyAngleY', 'ParamBodyAngleZ',
+  'ParamEyeLOpen', 'ParamEyeROpen',
+  'ParamEyeBallX', 'ParamEyeBallY',
+  'ParamMouthOpenY', 'ParamMouthForm', 'ParamBreath',
+];
+
+function createCoreModel(ids = IDS) {
+  return {
+    _parameterIds: ids,
+    getParameterCount: () => ids.length,
+    getParameterMinimumValue: index => ids[index].includes('Open') ? 0 : -30,
+    getParameterMaximumValue: index => ids[index].includes('Open') ? 1 : 30,
+    getParameterDefaultValue: index => ids[index].includes('Eye') ? 1 : 0,
+    setParameterValueById: vi.fn(),
+  };
+}
+
+function motion({ id, source = 'ai_reply', channel, value = 1 }) {
+  return {
+    type: 'live2d_motion_v3',
+    motion_id: id,
+    source,
+    created_at_ms: Date.now(),
+    expires_at_ms: Date.now() + 3000,
+    duration_ms: 800,
+    blend: { in_ms: 0, out_ms: 0 },
+    tracks: [{
+      channel,
+      mode: 'override',
+      keyframes: [{ t: 0, value }, { t: 1, value }],
+    }],
+  };
+}
+
+function callsFor(coreModel, id) {
+  return coreModel.setParameterValueById.mock.calls.filter(([writtenId]) => writtenId === id);
+}
+
+describe('useLive2DController 统一状态混合', () => {
   let tickerCallback;
   let appRef;
   let modelRef;
 
   beforeEach(() => {
     vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-07-26T12:00:00.000Z'));
-    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.setSystemTime(new Date('2026-07-29T12:00:00.000Z'));
     vi.spyOn(console, 'warn').mockImplementation(() => {});
-    actionComposerControl.implementation = null;
-
-    const coreModel = {
-      getParameterCount: () => 0,
-      getParameterValueById: () => 0,
-      setParameterValueById: vi.fn(),
-    };
-
-    appRef = {
-      current: {
-        ticker: {
-          add: vi.fn((callback) => {
-            tickerCallback = callback;
-          }),
-          remove: vi.fn(),
-        },
-      },
-    };
-    modelRef = {
-      current: {
-        internalModel: { coreModel },
-      },
-    };
+    protocolControl.brokenMotionId = null;
+    appRef = { current: { ticker: {
+      add: vi.fn(callback => { tickerCallback = callback; }),
+      remove: vi.fn(),
+    } } };
+    modelRef = { current: { internalModel: { coreModel: createCoreModel() } } };
   });
 
   afterEach(() => {
@@ -59,130 +84,124 @@ describe('useLive2DController 动作覆写', () => {
     vi.useRealTimers();
   });
 
-  it('执行不含 params 的自由动作时不会让 Ticker 抛出异常', () => {
-    const actionOverride = {
-      type: 'local_micro_reaction',
-      action_id: 'local-test',
-      intent: 'warm_listening',
-      intensity: 0.3,
-      duration_ms: 800,
-      variation_seed: 1,
-    };
+  function renderController({ currentModel = 'panda_cake', lipValue = { rhubarb: 'X' }, motionEvent = null } = {}) {
+    return renderHook(({ model, lip, event }) => useLive2DController(
+      appRef, modelRef, model, 'neutral', lip, event,
+    ), { initialProps: { model: currentModel, lip: lipValue, event: motionEvent } });
+  }
 
-    const { unmount } = renderHook(() => useLive2DController(
-      appRef,
-      modelRef,
-      'panda_cake',
-      'neutral',
-      { rhubarb: 'X' },
-      actionOverride,
-    ));
-
-    vi.advanceTimersByTime(16);
-
-    expect(tickerCallback).toBeTypeOf('function');
-    expect(() => tickerCallback(1)).not.toThrow();
-
-    unmount();
+  it('将 v3 head_pitch 投影写入 ParamAngleY', () => {
+    const view = renderController({ motionEvent: motion({ id: 'pitch', channel: 'head_pitch', value: 0.6 }) });
+    tickerCallback(1);
+    expect(callsFor(modelRef.current.internalModel.coreModel, 'ParamAngleY').at(-1)[1]).toBeGreaterThan(0);
+    view.unmount();
   });
 
-  it('动作采样器异常时丢弃当前动作并继续执行后续帧', () => {
-    actionComposerControl.implementation = () => ({
-      actionId: 'broken-action',
-      durationMs: 800,
-      sample: () => {
-        throw new Error('动作帧损坏');
+  it('用户命令与 AI 回复在不同通道时都会写入', () => {
+    const view = renderController({ motionEvent: motion({ id: 'user-pitch', source: 'user_command', channel: 'head_pitch' }) });
+    view.rerender({ model: 'panda_cake', lip: { rhubarb: 'X' }, event: motion({ id: 'ai-roll', channel: 'body_roll', value: -0.5 }) });
+    tickerCallback(1);
+    const coreModel = modelRef.current.internalModel.coreModel;
+    expect(callsFor(coreModel, 'ParamAngleY').at(-1)[1]).toBeGreaterThan(0);
+    expect(callsFor(coreModel, 'ParamBodyAngleZ').at(-1)[1]).toBeLessThan(0);
+    view.unmount();
+  });
+
+  it('兼容 v2 与本地微反应事件，并仍通过混合器写入语义参数', () => {
+    const view = renderController({
+      motionEvent: {
+        type: 'live2d_action_v2', action_id: 'v2-listening', intent: 'warm_listening',
+        intensity: 1, duration_ms: 800, variation_seed: 1,
       },
     });
+    tickerCallback(1);
+    const coreModel = modelRef.current.internalModel.coreModel;
+    expect(callsFor(coreModel, 'ParamAngleY')).not.toHaveLength(0);
 
-    const { unmount } = renderHook(() => useLive2DController(
-      appRef,
-      modelRef,
-      'panda_cake',
-      'neutral',
-      { rhubarb: 'X' },
-      {
-        type: 'live2d_action_v2',
-        action_id: 'broken-action',
-        intent: 'warm_listening',
-        intensity: 0.3,
-        duration_ms: 800,
-        variation_seed: 1,
+    view.rerender({
+      model: 'panda_cake', lip: { rhubarb: 'X' },
+      event: {
+        type: 'local_micro_reaction', action_id: 'local-listening', intent: 'warm_listening',
+        intensity: 1, duration_ms: 800, variation_seed: 2,
       },
-    ));
-
-    vi.advanceTimersByTime(16);
-
-    expect(() => tickerCallback(1)).not.toThrow();
-    const writesAfterBrokenFrame = modelRef.current.internalModel.coreModel
-      .setParameterValueById.mock.calls.length;
-
-    expect(writesAfterBrokenFrame).toBeGreaterThan(0);
-    expect(() => tickerCallback(1)).not.toThrow();
-    expect(modelRef.current.internalModel.coreModel.setParameterValueById)
-      .toHaveBeenCalledTimes(writesAfterBrokenFrame * 2);
-    expect(console.warn).toHaveBeenCalledOnce();
-
-    unmount();
-  });
-
-  it('动作时长缺失时使用安全默认时长并正常采样', () => {
-    const sample = vi.fn(() => ({
-      headAngleY: -1,
-      bodyAngleZ: 1,
-    }));
-    actionComposerControl.implementation = () => ({
-      actionId: 'missing-duration',
-      sample,
     });
-
-    const { unmount } = renderHook(() => useLive2DController(
-      appRef,
-      modelRef,
-      'panda_cake',
-      'neutral',
-      { rhubarb: 'X' },
-      {
-        type: 'live2d_action_v2',
-        action_id: 'missing-duration',
-        intent: 'warm_listening',
-        intensity: 0.3,
-        variation_seed: 1,
-      },
-    ));
-
-    vi.advanceTimersByTime(16);
     tickerCallback(1);
-
-    expect(sample).toHaveBeenCalledOnce();
-    expect(sample).toHaveBeenCalledWith(0.02);
-
-    unmount();
+    expect(callsFor(coreModel, 'ParamAngleY')).not.toHaveLength(0);
+    view.unmount();
   });
 
-  it('旧版动作仍会应用 params 中的方向参数', () => {
-    const { unmount } = renderHook(() => useLive2DController(
-      appRef,
-      modelRef,
-      'panda_cake',
-      'neutral',
-      { rhubarb: 'X' },
-      {
-        action: '开心',
-        params: { direction: 'left' },
-      },
-    ));
+  it('动作轨道不能改写口型保留参数', () => {
+    const view = renderController({ motionEvent: motion({ id: 'blocked-mouth', channel: 'mouth_open', value: 1 }) });
+    tickerCallback(1);
+    const coreModel = modelRef.current.internalModel.coreModel;
+    expect(callsFor(coreModel, 'ParamMouthOpenY').at(-1)[1]).toBe(0);
+    expect(callsFor(coreModel, 'ParamMouthForm').at(-1)[1]).toBe(0);
+    view.unmount();
+  });
 
-    vi.advanceTimersByTime(16);
+  it('TTS 仍可通过保留层写入口型', () => {
+    const view = renderController({ lipValue: { rhubarb: 'C' } });
+    tickerCallback(1);
+    const coreModel = modelRef.current.internalModel.coreModel;
+    expect(callsFor(coreModel, 'ParamMouthOpenY').at(-1)[1]).toBeGreaterThan(0);
+    expect(callsFor(coreModel, 'ParamMouthForm').at(-1)[1]).toBe(0);
+    view.unmount();
+  });
+
+  it('切换模型时重置混合器并重建能力表', () => {
+    const view = renderController({ motionEvent: motion({ id: 'old-model-pitch', channel: 'head_pitch' }) });
+    tickerCallback(1);
+    const firstCoreModel = modelRef.current.internalModel.coreModel;
+    expect(callsFor(firstCoreModel, 'ParamAngleY').at(-1)[1]).toBeGreaterThan(0);
+
+    const replacementCoreModel = createCoreModel(IDS.filter(id => id !== 'ParamAngleY'));
+    modelRef.current = { internalModel: { coreModel: replacementCoreModel } };
+    view.rerender({ model: 'hiyori', lip: { rhubarb: 'X' }, event: motion({ id: 'new-model-yaw', channel: 'head_yaw' }) });
     tickerCallback(1);
 
-    const bodyAngleZWrites = modelRef.current.internalModel.coreModel
-      .setParameterValueById.mock.calls
-      .filter(([parameterId]) => parameterId === 'ParamBodyAngleZ');
+    expect(callsFor(replacementCoreModel, 'ParamAngleY')).toHaveLength(0);
+    expect(callsFor(replacementCoreModel, 'ParamAngleX').at(-1)[1]).toBeGreaterThan(0);
+    view.unmount();
+  });
 
-    expect(bodyAngleZWrites).not.toHaveLength(0);
-    expect(bodyAngleZWrites.at(-1)[1]).toBeGreaterThan(0);
+  it('单个动作采样异常不会冻结下一帧', () => {
+    protocolControl.brokenMotionId = 'broken-motion';
+    const view = renderController({ motionEvent: motion({ id: 'broken-motion', channel: 'head_pitch' }) });
+    const coreModel = modelRef.current.internalModel.coreModel;
+    expect(() => tickerCallback(1)).not.toThrow();
+    const writesAfterFailure = coreModel.setParameterValueById.mock.calls.length;
+    expect(writesAfterFailure).toBeGreaterThan(0);
+    expect(() => tickerCallback(1)).not.toThrow();
+    expect(coreModel.setParameterValueById.mock.calls.length).toBeGreaterThan(writesAfterFailure);
+    view.unmount();
+  });
 
-    unmount();
+  it('动作结束后回归基础层，并在卸载时移除唯一 Ticker', () => {
+    const view = renderController({ motionEvent: motion({ id: 'return-center', channel: 'head_pitch' }) });
+    const coreModel = modelRef.current.internalModel.coreModel;
+    tickerCallback(1);
+    expect(callsFor(coreModel, 'ParamAngleY').at(-1)[1]).toBeGreaterThan(0);
+    vi.advanceTimersByTime(801);
+    tickerCallback(1);
+    expect(callsFor(coreModel, 'ParamAngleY').at(-1)[1]).toBe(0);
+    view.unmount();
+    expect(appRef.current.ticker.remove).toHaveBeenCalledOnce();
+  });
+
+  it('只向能力表中的参数写入有限且范围内的值', () => {
+    const view = renderController({
+      lipValue: { rhubarb: 'C' },
+      motionEvent: motion({ id: 'bounded', channel: 'body_pitch', value: 1 }),
+    });
+    tickerCallback(1);
+    const coreModel = modelRef.current.internalModel.coreModel;
+    for (const [id, value] of coreModel.setParameterValueById.mock.calls) {
+      const index = IDS.indexOf(id);
+      expect(index).toBeGreaterThanOrEqual(0);
+      expect(Number.isFinite(value)).toBe(true);
+      expect(value).toBeGreaterThanOrEqual(coreModel.getParameterMinimumValue(index));
+      expect(value).toBeLessThanOrEqual(coreModel.getParameterMaximumValue(index));
+    }
+    view.unmount();
   });
 });
