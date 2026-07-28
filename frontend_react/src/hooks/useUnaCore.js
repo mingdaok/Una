@@ -96,9 +96,11 @@ export function useUnaCore(authenticated) {
 
         try {
             const ticket = await createWebSocketTicket();
+            if (connectionGeneration !== connectionGenerationRef.current) return;
             const wsUrl = `${getWebSocketBase()}/ws/chat?ticket=${encodeURIComponent(ticket)}`;
             console.log("🔌 [WS] 准备连接");
             const ws = new WebSocket(wsUrl);
+            websocketRef.current = ws;
 
             ws.onopen = () => {
                 if (connectionGeneration !== connectionGenerationRef.current) {
@@ -303,6 +305,7 @@ export function useUnaCore(authenticated) {
             ws.onerror = (e) => { ws.close(); };
 
         } catch (err) {
+            if (connectionGeneration !== connectionGenerationRef.current) return;
             isConnecting.current = false;
             reconnectTimeoutRef.current = setTimeout(connectWebSocket, 5000);
         }
@@ -312,6 +315,7 @@ export function useUnaCore(authenticated) {
         connectWebSocket();
         return () => {
             connectionGenerationRef.current += 1;
+            isConnecting.current = false;
             if (websocketRef.current) websocketRef.current.close();
             websocketRef.current = null;
             seenActionIdsRef.current.clear();

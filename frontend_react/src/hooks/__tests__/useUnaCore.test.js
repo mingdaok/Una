@@ -1,4 +1,4 @@
-import { renderHook, act } from '@testing-library/react';
+import { renderHook, act, waitFor } from '@testing-library/react';
 import { useUnaCore } from '../useUnaCore';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -149,5 +149,46 @@ describe('useUnaCore WebSocket handling', () => {
             })),
         }));
         expect(result.current.motionEvent).toBe(first);
+    });
+
+    it('allows a new session to connect while the previous WebSocket ticket request is still pending', async () => {
+        const ticketResolvers = [];
+        const sockets = [];
+        global.fetch = vi.fn((url) => {
+            if (String(url).includes('/api/auth/ws-ticket')) {
+                return new Promise(resolve => ticketResolvers.push(resolve));
+            }
+            return Promise.resolve({ ok: true, json: () => Promise.resolve([]) });
+        });
+        global.WebSocket = function(url) {
+            const socket = { url, send: vi.fn(), close: vi.fn(), readyState: 1 };
+            sockets.push(socket);
+            return socket;
+        };
+        global.WebSocket.OPEN = 1;
+
+        const { result, rerender } = renderHook(
+            ({ user }) => useUnaCore(user),
+            { initialProps: { user: 'first-user' } },
+        );
+        await waitFor(() => expect(ticketResolvers).toHaveLength(1));
+
+        rerender({ user: 'second-user' });
+        await waitFor(() => expect(ticketResolvers).toHaveLength(2));
+
+        await act(async () => {
+            ticketResolvers[1]({ ok: true, json: async () => ({ ticket: 'second-ticket' }) });
+            await Promise.resolve();
+        });
+        act(() => sockets[0].onopen());
+        expect(result.current.connectionStatus).toBe('OPEN');
+        expect(sockets).toHaveLength(1);
+
+        await act(async () => {
+            ticketResolvers[0]({ ok: true, json: async () => ({ ticket: 'first-ticket' }) });
+            await Promise.resolve();
+        });
+        expect(sockets).toHaveLength(1);
+        expect(result.current.connectionStatus).toBe('OPEN');
     });
 });

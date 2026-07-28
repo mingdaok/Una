@@ -189,6 +189,7 @@ export default function App() {
               lipValue={lipValue}
               emotion={[...messages].reverse().find(message => message.isAI)?.emotion}
               motionEvent={motionEvent}
+              actionOverride={motionEvent}
             />
 
             <div className="absolute top-4 right-4 z-50">
