@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createImmediateMotion, createListeningMotion } from '../gestureGenerator';
 import { parseImmediateGesture } from '../gestureParser';
 
@@ -13,7 +13,44 @@ function activeRange(track) {
   return [active[0].t, active.at(-1).t];
 }
 
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 describe('createImmediateMotion', () => {
+  it('uses crypto.randomUUID for consecutive motions without an explicit idFactory', () => {
+    vi.stubGlobal('crypto', {
+      randomUUID: vi.fn()
+        .mockReturnValueOnce('uuid-first')
+        .mockReturnValueOnce('uuid-second'),
+    });
+    const command = parseImmediateGesture('点头');
+    const generationOptions = { nowMs: 1000, seed: 9 };
+
+    const first = createImmediateMotion(command, generationOptions);
+    const second = createImmediateMotion(command, generationOptions);
+
+    expect([first.motion_id, second.motion_id]).toEqual([
+      'local-uuid-first',
+      'local-uuid-second',
+    ]);
+  });
+
+  it('uses a monotonic fallback when randomUUID is unavailable at a fixed time and seed', () => {
+    vi.stubGlobal('crypto', {});
+    const command = parseImmediateGesture('点头');
+    const generationOptions = { nowMs: 1000, seed: 9 };
+
+    const firstId = createImmediateMotion(command, generationOptions).motion_id;
+    const secondId = createImmediateMotion(command, generationOptions).motion_id;
+    const firstSequence = Number(firstId.split('-').at(-1));
+    const secondSequence = Number(secondId.split('-').at(-1));
+
+    expect(firstId).not.toBe(secondId);
+    expect(firstId).toMatch(/^local-1000-9-\d+$/);
+    expect(secondSequence).toBe(firstSequence + 1);
+  });
+
   it('creates exactly three negative nod peaks and returns the track to neutral', () => {
     const motion = createImmediateMotion(parseImmediateGesture('轻轻点头三次'), options);
     const track = motion.tracks.find(item => item.channel === 'head_pitch');

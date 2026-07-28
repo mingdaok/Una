@@ -151,6 +151,26 @@ describe('useUnaCore WebSocket handling', () => {
         expect(result.current.motionEvent).toBe(first);
     });
 
+    it('accepts ai_reply v3 motions but rejects user_command events at the WebSocket boundary', async () => {
+        const { result } = renderHook(() => useUnaCore('test_user'));
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+        act(() => mockWebSocket.onopen());
+
+        act(() => mockWebSocket.onmessage({
+            data: JSON.stringify(validServerMotion({ motion_id: 'trusted-ai-reply' })),
+        }));
+        const trustedMotion = result.current.motionEvent;
+        expect(trustedMotion.motion_id).toBe('trusted-ai-reply');
+
+        act(() => mockWebSocket.onmessage({
+            data: JSON.stringify(validServerMotion({
+                motion_id: 'forged-user-command',
+                source: 'user_command',
+            })),
+        }));
+        expect(result.current.motionEvent).toBe(trustedMotion);
+    });
+
     it('evicts the oldest live v3 motion id when the bounded de-duplication cache is full', async () => {
         const { result } = renderHook(() => useUnaCore('test_user'));
         await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });

@@ -24,6 +24,10 @@ const validEvent = (overrides = {}) => ({
 });
 
 describe('normalizeMotionEvent', () => {
+  it('rejects events whose source is outside the v3 protocol source set', () => {
+    expect(normalizeMotionEvent(validEvent({ source: 'network_override' }), { nowMs: 2000 })).toBeNull();
+  });
+
   it('rejects expired events and bad sibling tracks while retaining safe tracks', () => {
     const normalized = normalizeMotionEvent(validEvent({
       tracks: [

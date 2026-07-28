@@ -157,6 +157,7 @@ export function useUnaCore(authenticated) {
                     }
 
                     if (data.type === 'live2d_motion_v3') {
+                        if (data.source !== 'ai_reply') return;
                         const nowMs = Date.now();
                         const normalizedMotion = normalizeMotionEvent(data, { nowMs });
                         if (!normalizedMotion) return;

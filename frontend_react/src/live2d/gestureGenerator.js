@@ -17,6 +17,7 @@ const GESTURE_CHANNELS = Object.freeze({
 
 const SPEED_MS = Object.freeze({ normal: 260, slow: 420, fast: 180 });
 const MAX_TRACKS = 8;
+let fallbackMotionSequence = 0;
 
 function boundedNumber(value, fallback) {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
@@ -41,7 +42,14 @@ function motionId(nowMs, seed, idFactory) {
   } catch {
     // A local motion must remain usable when an optional ID factory fails.
   }
-  return `local-${nowMs}-${Math.trunc(boundedNumber(seed, 0))}`;
+  try {
+    const uuid = globalThis.crypto?.randomUUID?.();
+    if (typeof uuid === 'string' && uuid) return `local-${uuid}`;
+  } catch {
+    // Fall through when random UUID generation is unavailable.
+  }
+  fallbackMotionSequence += 1;
+  return `local-${nowMs}-${Math.trunc(boundedNumber(seed, 0))}-${fallbackMotionSequence}`;
 }
 
 function durationForGesture(gesture) {

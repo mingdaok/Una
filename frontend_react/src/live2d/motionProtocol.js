@@ -17,6 +17,9 @@ const EASING = {
   ease_in_out: t => (t < 0.5 ? 2 * t * t : 1 - ((-2 * t + 2) ** 2) / 2),
 };
 const MODE_SET = new Set(['override', 'additive']);
+const SOURCE_SET = new Set([
+  'ai_reply', 'user_command', 'local_micro_reaction', 'legacy_fallback',
+]);
 const MAX_TRACKS = 8;
 const MAX_KEYFRAMES = 12;
 
@@ -57,7 +60,7 @@ function normalizeTrack(track) {
 export function normalizeMotionEvent(event, { nowMs = Date.now() } = {}) {
   if (!event || typeof event !== 'object' || event.type !== 'live2d_motion_v3'
     || typeof event.motion_id !== 'string' || !event.motion_id
-    || typeof event.source !== 'string' || !event.source
+    || !SOURCE_SET.has(event.source)
     || !Array.isArray(event.tracks)) {
     return null;
   }
