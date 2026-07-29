@@ -175,8 +175,8 @@ class MotionDirectorV3:
         self.id_factory = id_factory
         self._last_motion_at = {}
 
-    def decide(self, user_id, payload):
-        plan = parse_motion_plan(payload)
+    def decide(self, user_id, payload, model_name=None):
+        plan = parse_motion_plan(payload, model_name=model_name)
         if plan is None:
             return None
 

@@ -4,6 +4,7 @@ import random
 from openai import AsyncOpenAI
 import database
 from chat_control import ControlPrefixDemux, sanitize_reply_text
+from live2d_motion import allowed_channels_for_model
 
 
 class UnaBrain:
@@ -204,7 +205,7 @@ class UnaBrain:
             return {"reply": "我在听。", "mood_score": 0, "crisis_level": "NORMAL", "emotion": "neutral"}
 
     # 🔥 新增：[Phase 2.5] 句级流式截流生成 (Sentence-Level Streaming)
-    async def chat_stream(self, user_id, user_text, long_term_memory="", recent_negative_count=0):
+    async def chat_stream(self, user_id, user_text, long_term_memory="", recent_negative_count=0, live2d_model=None):
         # 画像等前置处理与普通 chat 一致
         user_profile = database.get_user_profile(user_id)
 
@@ -228,6 +229,10 @@ class UnaBrain:
         hist_str = "\n".join([f"{item.get('role','unknown')}: {item.get('text','')}" for item in history])
 
         # 重点：为了流式极速解析，放弃 JSON 约束，改用严格的纯文本前缀约定
+        allowed_action_channels = "/".join(
+            sorted(allowed_channels_for_model(live2d_model))
+        )
+
         system_prompt = (
             f"你叫 Una，一个温暖、专业、有边界感的心理支持 AI。\n"
             f"【用户画像】：{user_profile}\n"
@@ -238,7 +243,7 @@ class UnaBrain:
             f"回复要求（极其重要！必须严格遵守！）：\n"
             f"1. 第一行必须为 EMOTION 控制行；第二行必须为 ACTION 控制行；从第三行开始写正文回复。\n"
             '2. ACTION 只能为 null 或 v3 JSON，格式为：ACTION: {"duration_ms":900,"variation_seed":1,"blend":{"in_ms":80,"out_ms":120},"tracks":[{"channel":"head_pitch","mode":"override","keyframes":[{"t":0,"value":0},{"t":0.5,"value":-0.25},{"t":1,"value":0}]}]}。\n'
-            "   - 只允许 head_yaw/head_pitch/head_roll/body_yaw/body_pitch/body_roll/gaze_x/gaze_y/eye_open/eye_smile/brow_y/brow_form/cheek。\n"
+            f"   - 只允许 {allowed_action_channels}。\n"
             "   - 每条轨道输出 2～12 个关键帧；禁止 mouth_open 等嘴部通道、ParamXXX、舞台说明和代码围栏。\n"
             "   - 普通聊天优先输出 ACTION: null；需要动作时使用小幅轨迹，明确情绪才使用明显幅度。\n"
             f"3. 你的回复要显得自然随性，内容丰满些（大约 80-150 字），但绝不要长篇大论。遵循以下口语铁律：\n"
@@ -264,7 +269,7 @@ class UnaBrain:
 
             buffer = ""
             yielded_chunks = 0
-            control_demux = ControlPrefixDemux()
+            control_demux = ControlPrefixDemux(live2d_model=live2d_model)
             import re
 
             async for chunk in response:

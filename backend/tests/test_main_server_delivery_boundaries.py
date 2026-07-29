@@ -6,13 +6,85 @@ from pathlib import Path
 from live2d_motion import is_motion_v3_candidate
 
 
+def test_websocket_model_is_normalized_and_propagated_to_all_delivery_boundaries():
+    source_path = Path(__file__).resolve().parents[1] / "main_server.py"
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    process_function = next(
+        node for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "process_and_push_response"
+    )
+    websocket_function = next(
+        node for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "websocket_endpoint"
+    )
+
+    process_args = [argument.arg for argument in process_function.args.args]
+    assert process_args == ["user_text", "user_id", "live2d_model"]
+    assert isinstance(process_function.args.defaults[-1], ast.Constant)
+    assert process_function.args.defaults[-1].value is None
+
+    chat_stream_call = next(
+        node for node in ast.walk(process_function)
+        if isinstance(node, ast.Call)
+        and ast.unparse(node.func) == "brain.chat_stream"
+    )
+    assert any(
+        keyword.arg == "live2d_model" and ast.unparse(keyword.value) == "live2d_model"
+        for keyword in chat_stream_call.keywords
+    )
+
+    delivery_demux_call = next(
+        node for node in ast.walk(process_function)
+        if isinstance(node, ast.Call)
+        and ast.unparse(node.func) == "ControlPrefixDemux"
+    )
+    assert any(
+        keyword.arg == "live2d_model" and ast.unparse(keyword.value) == "live2d_model"
+        for keyword in delivery_demux_call.keywords
+    )
+
+    motion_decide_call = next(
+        node for node in ast.walk(process_function)
+        if isinstance(node, ast.Call)
+        and ast.unparse(node.func) == "motion_director.decide"
+    )
+    assert [ast.unparse(argument) for argument in motion_decide_call.args] == [
+        "user_id", "plan", "live2d_model",
+    ]
+
+    normalize_calls = [
+        node for node in ast.walk(websocket_function)
+        if isinstance(node, ast.Call)
+        and ast.unparse(node.func) == "normalize_live2d_model"
+    ]
+    assert any(
+        ast.unparse(node.args[0]) == "data.get('live2d_model')"
+        for node in normalize_calls
+    )
+    response_calls = [
+        node for node in ast.walk(websocket_function)
+        if isinstance(node, ast.Call)
+        and ast.unparse(node.func) == "process_and_push_response"
+    ]
+    assert any(
+        any(
+            keyword.arg == "live2d_model"
+            and ast.unparse(keyword.value) == "live2d_model"
+            for keyword in node.keywords
+        )
+        for node in response_calls
+    )
+
+
 class StubDirector:
     def __init__(self, event):
         self.calls = []
         self.event = event
 
-    def decide(self, user_id, plan):
-        self.calls.append((user_id, plan))
+    def decide(self, user_id, plan, model_name=None):
+        self.calls.append((user_id, plan, model_name))
         return self.event
 
 
@@ -54,7 +126,13 @@ def compile_live2d_candidate_route():
             kw_defaults=[],
             defaults=[],
         ),
-        body=copy.deepcopy(candidate_branch.body),
+        body=[
+            ast.Assign(
+                targets=[ast.Name(id="live2d_model", ctx=ast.Store())],
+                value=ast.Constant(value=None),
+            ),
+            *copy.deepcopy(candidate_branch.body),
+        ],
         decorator_list=[],
     )
     module = ast.fix_missing_locations(ast.Module(
@@ -110,7 +188,7 @@ def test_tracks_candidate_routes_only_to_v3_motion_director():
     ))
 
     assert action_director.calls == []
-    assert motion_director.calls == [("test-user", motion_plan)]
+    assert motion_director.calls == [("test-user", motion_plan, None)]
     assert ws_manager.events == [
         ("test-user", {"type": "live2d_motion_v3"}),
     ]

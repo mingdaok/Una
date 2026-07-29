@@ -91,7 +91,7 @@ from auth_api import auth_service, get_current_user, router as auth_router
 from media_service import register_media, media_url, router as media_router, sign_history_audio_urls
 from settings import settings
 from live2d_action import ActionDirector
-from live2d_motion import MotionDirectorV3, is_motion_v3_candidate
+from live2d_motion import MotionDirectorV3, is_motion_v3_candidate, normalize_live2d_model
 from chat_control import ControlPrefixDemux, sanitize_reply_text
 
 # === 加载配置 ===
@@ -327,7 +327,8 @@ class AsyncInteractionManager:
 
 global_manager = AsyncInteractionManager(wait_interval=3.0)
 
-async def process_and_push_response(user_text, user_id):
+async def process_and_push_response(user_text, user_id, live2d_model=None):
+    live2d_model = normalize_live2d_model(live2d_model)
     await ws_manager.broadcast_to_user(user_id, {"type": "typing_status", "status": "thinking"})
     search_query = user_text
     if len(user_text) < 5:
@@ -355,7 +356,7 @@ async def process_and_push_response(user_text, user_id):
     current_emotion = "neutral"
     current_mood_score = 0
     chunk_index = 0
-    delivery_demux = ControlPrefixDemux()
+    delivery_demux = ControlPrefixDemux(live2d_model=live2d_model)
 
     async def publish_text_chunk(raw_text):
         nonlocal full_reply_text, chunk_index
@@ -382,14 +383,14 @@ async def process_and_push_response(user_text, user_id):
 
     try:
         # 使用流式接口获取片段
-        async for item in brain.chat_stream(user_id, user_text, long_term_memory=relevant_memories, recent_negative_count=negative_count):
+        async for item in brain.chat_stream(user_id, user_text, long_term_memory=relevant_memories, recent_negative_count=negative_count, live2d_model=live2d_model):
             if item["type"] == "meta":
                 current_emotion = item.get("emotion", "neutral")
                 current_mood_score = item.get("mood_score", 0)
             elif item["type"] == "live2d_action_candidate":
                 plan = item.get("plan")
                 if is_motion_v3_candidate(plan):
-                    event = motion_director.decide(user_id, plan)
+                    event = motion_director.decide(user_id, plan, live2d_model)
                 else:
                     event = action_director.decide(user_id, plan)
                 if event is not None:
@@ -476,12 +477,13 @@ async def websocket_endpoint(websocket: WebSocket, ticket: str):
                         if msg_type == "text":
                             content = data.get("content", "")
                             client_message_id = data.get("client_message_id")
+                            live2d_model = normalize_live2d_model(data.get("live2d_model"))
                             if content:
                                 print(f"📩 收到文字消息: '{content}' (长度:{len(content)})")
                                 # 同步文本给前端显示
                                 await ws_manager.broadcast_to_user(user_id, {"type": "user_sync", "text": content, "client_message_id": client_message_id})
                                 # 直通车：绕过防抖等待池，瞬间起跑
-                                asyncio.create_task(process_and_push_response(content, user_id))
+                                asyncio.create_task(process_and_push_response(content, user_id, live2d_model=live2d_model))
 
                         # 处理客户端心跳响应
                         elif msg_type == "pong":

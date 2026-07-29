@@ -13,6 +13,56 @@ from brain_engine import UnaBrain
 @pytest.mark.asyncio
 @patch('database.get_user_profile', return_value="Test Profile")
 @patch('database.get_recent_history', return_value=[])
+async def test_cross_model_action_is_dropped_without_leaking_control_text(
+    mock_get_recent_history, mock_get_user_profile
+):
+    brain = UnaBrain(api_key="test", base_url="test", model="test")
+
+    async def mock_create(*args, **kwargs):
+        async def mock_async_generator():
+            contents = [
+                "EMOTION: neutral | MOOD: 0\n",
+                (
+                    'ACTION: {"duration_ms":900,"variation_seed":1,'
+                    '"blend":{"in_ms":80,"out_ms":120},'
+                    '"tracks":[{"channel":"panda_hug","mode":"override",'
+                    '"keyframes":[{"t":0,"value":0},{"t":0.5,"value":1},'
+                    '{"t":1,"value":0}]}]}\n'
+                ),
+                "safe reply",
+            ]
+            for content in contents:
+                chunk = MagicMock()
+                chunk.choices = [MagicMock()]
+                chunk.choices[0].delta.content = content
+                yield chunk
+
+        class MockResponse:
+            def __aiter__(self):
+                return mock_async_generator()
+
+        return MockResponse()
+
+    with patch.object(brain.client.chat.completions, 'create', side_effect=mock_create):
+        events = []
+        async for event in brain.chat_stream(
+            user_id="test_user",
+            user_text="hello",
+            live2d_model="hiyori",
+        ):
+            events.append(event)
+
+    assert not [event for event in events if event['type'] == 'live2d_action_candidate']
+    sentences = "".join(
+        event['text'] for event in events if event['type'] == 'sentence'
+    )
+    assert sentences == "safe reply"
+    assert "ACTION:" not in sentences
+
+
+@pytest.mark.asyncio
+@patch('database.get_user_profile', return_value="Test Profile")
+@patch('database.get_recent_history', return_value=[])
 async def test_chat_stream_emits_v3_motion_candidate_before_reply_text(
     mock_get_recent_history, mock_get_user_profile
 ):
