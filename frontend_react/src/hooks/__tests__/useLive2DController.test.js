@@ -44,12 +44,14 @@ const IDS = [
   'ParamMouthOpenY', 'ParamMouthForm', 'ParamBreath',
 ];
 
-function createCoreModel(ids = IDS, { partOpacityById = {} } = {}) {
+function createCoreModel(ids = IDS, {
+  partOpacityById = {}, partOpacityByIndex = null, partIndices = {},
+} = {}) {
   const values = new Map(ids.map((id, index) => [
     id,
     ids[index].includes('Eye') ? 1 : 0,
   ]));
-  return {
+  const coreModel = {
     _parameterIds: ids,
     getParameterCount: () => ids.length,
     getParameterMinimumValue: index => ids[index].includes('Open') ? 0 : -30,
@@ -59,6 +61,12 @@ function createCoreModel(ids = IDS, { partOpacityById = {} } = {}) {
     getPartOpacityById: id => partOpacityById[id],
     setParameterValueById: vi.fn((id, value) => values.set(id, value)),
   };
+  if (partOpacityByIndex) {
+    delete coreModel.getPartOpacityById;
+    coreModel.getPartIndex = id => partIndices[id] ?? -1;
+    coreModel.getPartOpacityByIndex = index => partOpacityByIndex[index];
+  }
+  return coreModel;
 }
 
 function createModel(coreModel = createCoreModel()) {
@@ -242,6 +250,26 @@ describe('useLive2DController 统一状态混合', () => {
     expect(handIndex).toBeGreaterThan(armIndex);
     expect(mouthIndex).toBeGreaterThan(handIndex);
     expect(writes.at(-1)[0]).toBe('ParamMouthForm');
+    view.unmount();
+  });
+
+  it('通过真实 Cubism 的部件索引 API 识别可见 Hiyori 手臂并写入抬臂参数', () => {
+    const coreModel = createCoreModel([...IDS, 'ParamArmLA'], {
+      partOpacityByIndex: { 3: 1 },
+      partIndices: { PartArmA: 3 },
+    });
+    const hiyoriModel = createModel(coreModel);
+    hiyoriModel.internalModel.update.mockImplementation(() => {
+      coreModel.setParameterValueById('ParamArmLA', -10);
+    });
+    modelRef.current = hiyoriModel;
+    const event = motion({ id: 'indexed-visible-arm', source: 'user_command', channel: 'left_arm_raise', value: 1 });
+    const view = renderController({ currentModel: 'hiyori', motionEvent: event });
+    coreModel.setParameterValueById.mockClear();
+
+    renderFrame(hiyoriModel);
+
+    expect(callsFor(coreModel, 'ParamArmLA').at(-1)[1]).toBe(0);
     view.unmount();
   });
 

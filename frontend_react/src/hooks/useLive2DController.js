@@ -81,7 +81,13 @@ function writeProjected(coreModel, projected) {
 function readablePartOpacities(coreModel) {
   const values = new Map();
   try {
-    const opacity = Number(coreModel?.getPartOpacityById?.('PartArmA'));
+    let opacity = Number(coreModel?.getPartOpacityById?.('PartArmA'));
+    if (!Number.isFinite(opacity)) {
+      const index = Number(coreModel?.getPartIndex?.('PartArmA'));
+      if (Number.isInteger(index) && index >= 0) {
+        opacity = Number(coreModel?.getPartOpacityByIndex?.(index));
+      }
+    }
     if (Number.isFinite(opacity)) values.set('PartArmA', opacity);
   } catch {
     // Part visibility is optional metadata; unavailable parts simply disable the guarded Hiyori track.
