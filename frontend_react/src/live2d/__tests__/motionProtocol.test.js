@@ -24,6 +24,54 @@ const validEvent = (overrides = {}) => ({
 });
 
 describe('normalizeMotionEvent', () => {
+  it('accepts Hiyori arm tracks at 1 but rejects values above the arm range', () => {
+    const valid = normalizeMotionEvent(validEvent({
+      tracks: [track('left_arm_raise', [[0, 0], [1, 1]])],
+    }), { nowMs: 2000, modelName: 'hiyori' });
+    const invalid = normalizeMotionEvent(validEvent({
+      tracks: [track('left_arm_raise', [[0, 0], [1, 1.1]])],
+    }), { nowMs: 2000, modelName: 'hiyori' });
+
+    expect(valid.tracks.map(item => item.channel)).toEqual(['left_arm_raise']);
+    expect(invalid).toBeNull();
+  });
+
+  it('keeps common tracks while filtering model-specific tracks for another model', () => {
+    const normalized = normalizeMotionEvent(validEvent({
+      tracks: [
+        track('head_pitch', [[0, 0], [1, 0.5]]),
+        track('left_arm_raise', [[0, 0], [1, 1]]),
+      ],
+    }), { nowMs: 2000, modelName: 'panda_cake' });
+
+    expect(normalized.tracks.map(item => item.channel)).toEqual(['head_pitch']);
+  });
+
+  it('filters disallowed tracks before applying the eight-track limit', () => {
+    const normalized = normalizeMotionEvent(validEvent({
+      tracks: [
+        ...Array.from({ length: 8 }, (_, index) => track(
+          index % 2 === 0 ? 'left_arm_raise' : 'right_hand_wave',
+          [[0, 0], [1, 1]],
+        )),
+        track('head_pitch', [[0, 0], [1, 0.5]]),
+      ],
+    }), { nowMs: 2000, modelName: 'panda_cake' });
+
+    expect(normalized.tracks.map(item => item.channel)).toEqual(['head_pitch']);
+  });
+
+  it('keeps all known semantic channels for legacy calls without a model name', () => {
+    const normalized = normalizeMotionEvent(validEvent({
+      tracks: [
+        track('left_arm_raise', [[0, 0], [1, 1]]),
+        track('panda_hug', [[0, 0], [1, 1]]),
+      ],
+    }), { nowMs: 2000 });
+
+    expect(normalized.tracks.map(item => item.channel)).toEqual(['left_arm_raise', 'panda_hug']);
+  });
+
   it('rejects events whose source is outside the v3 protocol source set', () => {
     expect(normalizeMotionEvent(validEvent({ source: 'network_override' }), { nowMs: 2000 })).toBeNull();
   });

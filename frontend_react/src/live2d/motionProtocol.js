@@ -1,15 +1,15 @@
-export const SEMANTIC_CHANNELS = Object.freeze([
-  'head_yaw', 'head_pitch', 'head_roll',
-  'body_yaw', 'body_pitch', 'body_roll',
-  'gaze_x', 'gaze_y', 'eye_open', 'eye_smile',
-  'brow_y', 'brow_form', 'cheek',
-]);
+import {
+  COMMON_SEMANTIC_CHANNELS,
+  isChannelAllowedForModel,
+  isSemanticValueValid,
+} from './modelActionProfiles';
+
+export const SEMANTIC_CHANNELS = COMMON_SEMANTIC_CHANNELS;
 
 export const RESERVED_MOTION_CHANNELS = Object.freeze([
   'mouth_open', 'mouth_form', 'mouth_open_y', 'mouth_form_y',
 ]);
 
-const CHANNEL_SET = new Set(SEMANTIC_CHANNELS);
 const EASING = {
   linear: t => t,
   ease_in: t => t * t,
@@ -33,7 +33,7 @@ function clampedMilliseconds(value, minimum, maximum, fallback) {
 }
 
 function normalizeTrack(track) {
-  if (!track || typeof track !== 'object' || !CHANNEL_SET.has(track.channel)
+  if (!track || typeof track !== 'object' || !isSemanticValueValid(track.channel, 0)
     || !MODE_SET.has(track.mode) || !Array.isArray(track.keyframes)
     || track.keyframes.length < 2 || track.keyframes.length > MAX_KEYFRAMES) {
     return null;
@@ -47,7 +47,7 @@ function normalizeTrack(track) {
     const value = finiteNumber(keyframe.value);
     const easing = keyframe.easing ?? 'linear';
     if (t === null || value === null || !Object.hasOwn(EASING, easing)
-      || t < 0 || t > 1 || value < -1 || value > 1 || t <= previousT) {
+      || t < 0 || t > 1 || !isSemanticValueValid(track.channel, value) || t <= previousT) {
       return null;
     }
     keyframes.push({ t, value, easing });
@@ -57,7 +57,7 @@ function normalizeTrack(track) {
   return { channel: track.channel, mode: track.mode, keyframes };
 }
 
-export function normalizeMotionEvent(event, { nowMs = Date.now() } = {}) {
+export function normalizeMotionEvent(event, { nowMs = Date.now(), modelName } = {}) {
   if (!event || typeof event !== 'object' || event.type !== 'live2d_motion_v3'
     || typeof event.motion_id !== 'string' || !event.motion_id
     || !SOURCE_SET.has(event.source)
@@ -76,7 +76,10 @@ export function normalizeMotionEvent(event, { nowMs = Date.now() } = {}) {
   const tracks = [];
   for (const track of event.tracks) {
     const normalizedTrack = normalizeTrack(track);
-    if (normalizedTrack) tracks.push(normalizedTrack);
+    if (normalizedTrack && (modelName === undefined
+      || isChannelAllowedForModel(normalizedTrack.channel, modelName))) {
+      tracks.push(normalizedTrack);
+    }
     if (tracks.length === MAX_TRACKS) break;
   }
   if (!tracks.length) return null;
