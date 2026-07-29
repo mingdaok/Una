@@ -3,6 +3,7 @@ import { channelsForModel } from './modelActionProfiles';
 
 export const SOURCE_PRIORITY = Object.freeze({
   legacy_fallback: 15,
+  local_random: 18,
   local_micro_reaction: 20,
   ai_reply: 30,
   user_command: 40,

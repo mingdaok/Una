@@ -18,7 +18,7 @@ const EASING = {
 };
 const MODE_SET = new Set(['override', 'additive']);
 const SOURCE_SET = new Set([
-  'ai_reply', 'user_command', 'local_micro_reaction', 'legacy_fallback',
+  'ai_reply', 'user_command', 'local_micro_reaction', 'local_random', 'legacy_fallback',
 ]);
 const MAX_TRACKS = 8;
 const MAX_KEYFRAMES = 12;

@@ -3,6 +3,7 @@ import { compileLegacyAction } from '../live2d/actionComposer';
 import { projectModelSpecificActions } from '../live2d/modelActionProjection';
 import { buildModelCapabilityMap } from '../live2d/modelCapabilities';
 import { compileMotionPlan, normalizeMotionEvent } from '../live2d/motionProtocol';
+import { ModelActionScheduler } from '../live2d/modelActionScheduler';
 import { installPostUpdateHook } from '../live2d/postUpdateHook';
 import { createLive2DStateMixer } from '../live2d/stateMixer';
 
@@ -29,6 +30,33 @@ const EMOTION_ALIASES = Object.freeze({
 
 function finite(value) {
   return typeof value === 'number' && Number.isFinite(value);
+}
+
+function createMonotonicSessionClock() {
+  const hasPerformanceClock = typeof performance !== 'undefined' && typeof performance.now === 'function';
+  const epochMs = hasPerformanceClock ? Date.now() - performance.now() : 0;
+  let previous = Date.now();
+  return () => {
+    const candidate = hasPerformanceClock ? epochMs + performance.now() : Date.now();
+    previous = Math.max(previous, candidate);
+    return previous;
+  };
+}
+
+function createSessionSeed() {
+  const entropy = new Uint32Array(2);
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+      crypto.getRandomValues(entropy);
+    } else {
+      entropy[0] = Math.floor(Math.random() * 0xffffffff);
+      entropy[1] = Math.floor(Math.random() * 0xffffffff);
+    }
+  } catch {
+    entropy[0] = Math.floor(Math.random() * 0xffffffff);
+    entropy[1] = Math.floor(Math.random() * 0xffffffff);
+  }
+  return `live2d-${Date.now()}-${entropy[0]}-${entropy[1]}`;
 }
 
 function clamp(value) {
@@ -137,6 +165,11 @@ export function useLive2DController(appRef, modelRef, currentModel, emotion, lip
   const applyControllerFrameRef = useRef(() => {});
   const motionGenerationRef = useRef(null);
   const pandaStateRef = useRef(null);
+  const schedulerClockRef = useRef(createMonotonicSessionClock());
+  const schedulerRef = useRef(new ModelActionScheduler({
+    sessionSeed: createSessionSeed(),
+    now: schedulerClockRef.current,
+  }));
   currentModelRef.current = currentModel;
 
   applyControllerFrameRef.current = (deltaMs = 1000 / 60) => {
@@ -175,8 +208,20 @@ export function useLive2DController(appRef, modelRef, currentModel, emotion, lip
     ) % (Math.PI * 2);
     const breath = (Math.sin(breathRef.current.phase) + 1) / 2;
     const lipSync = lipSyncFrame(lipValueRef.current, mouthOpenRef, mouthFormRef);
+    const nowMs = schedulerClockRef.current();
+    const scheduled = schedulerRef.current.schedule({
+      modelName: currentModelRef.current,
+      emotion,
+      nowMs,
+      mixer: mixerRef.current,
+    });
+    if (scheduled) {
+      const normalized = normalizeMotionEvent(scheduled, { nowMs, modelName: currentModelRef.current });
+      const compiled = normalized && compileMotionPlan(normalized);
+      if (compiled) mixerRef.current.enqueue({ ...compiled, variationSeed: scheduled.variation_seed }, nowMs);
+    }
     const semanticFrame = mixerRef.current.sample({
-      nowMs: Date.now(),
+      nowMs,
       idle: {
         head_yaw: 0,
         head_pitch: 0,
@@ -222,6 +267,7 @@ export function useLive2DController(appRef, modelRef, currentModel, emotion, lip
     mixerRef.current.reset();
     motionGenerationRef.current = null;
     pandaStateRef.current = null;
+    schedulerRef.current.reset({ modelName: currentModel, generation: motionGenerationRef.current ?? 0 });
   }, [currentModel]);
 
   // A newer socket generation cannot retain parameter tracks received by its predecessor.
@@ -230,6 +276,7 @@ export function useLive2DController(appRef, modelRef, currentModel, emotion, lip
     if (!Number.isFinite(generation)) return;
     if (motionGenerationRef.current !== null && motionGenerationRef.current !== generation) {
       mixerRef.current.reset();
+      schedulerRef.current.reset({ modelName: currentModelRef.current, generation });
     }
     motionGenerationRef.current = generation;
   }, [motionGeneration]);
@@ -254,6 +301,7 @@ export function useLive2DController(appRef, modelRef, currentModel, emotion, lip
       modelName: currentModel,
     });
     if (replacesReadyInstance) mixerRef.current.reset();
+    schedulerRef.current.reset({ modelName: currentModel, generation: motionGeneration });
 
     const installedModel = modelReady.model;
     const removePostUpdateHook = installPostUpdateHook(
@@ -275,6 +323,7 @@ export function useLive2DController(appRef, modelRef, currentModel, emotion, lip
         capabilityMapRef.current = null;
       }
       mixerRef.current.reset();
+      schedulerRef.current.reset({ modelName: currentModel, generation: motionGeneration });
       motionGenerationRef.current = null;
     };
   }, [currentModel, modelReady?.version, modelReady?.model, modelReady?.modelName, modelRef]);
