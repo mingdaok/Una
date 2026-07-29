@@ -250,3 +250,18 @@ def test_sanitizer_keeps_normal_reply_unchanged():
     reply = "啊呀！这个谜题让我想想。"
 
     assert sanitize_reply_text(reply) == reply
+
+
+def test_panda_demux_removes_hiyori_arm_track_without_leaking_action_json():
+    hiyori_arm_motion = (
+        '{"duration_ms":1200,"variation_seed":8,'
+        '"blend":{"in_ms":100,"out_ms":160},'
+        '"tracks":[{"channel":"left_arm_raise","mode":"override",'
+        '"keyframes":[{"t":0,"value":0},{"t":1,"value":1}]}]}'
+    )
+    demux = ControlPrefixDemux(live2d_model="panda_cake")
+
+    events, body = demux.feed(f"ACTION: {hiyori_arm_motion}\nhello", final=True)
+
+    assert body == "hello"
+    assert events == [{"type": "meta", "emotion": "neutral", "mood_score": 0}]

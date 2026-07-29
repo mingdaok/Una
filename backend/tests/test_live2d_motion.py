@@ -1,4 +1,11 @@
-from live2d_motion import MotionDirectorV3, is_motion_v3_candidate, parse_motion_plan
+from live2d_motion import (
+    MotionDirectorV3,
+    allowed_channels_for_model,
+    filter_motion_plan_for_model,
+    is_motion_v3_candidate,
+    normalize_live2d_model,
+    parse_motion_plan,
+)
 
 
 def valid_motion(**changes):
@@ -116,3 +123,94 @@ def test_director_overwrites_ai_authority_fields_and_rate_limits_per_user():
     assert event["expires_at_ms"] == 1785124810000
     assert director.decide("u-1", valid_motion()) is None
     assert director.decide("u-2", valid_motion()) is not None
+
+
+def test_model_normalization_accepts_only_the_two_exact_model_names():
+    assert normalize_live2d_model("hiyori") == "hiyori"
+    assert normalize_live2d_model("panda_cake") == "panda_cake"
+    assert normalize_live2d_model("Hiyori") is None
+    assert normalize_live2d_model(None) is None
+    assert allowed_channels_for_model("unknown") == frozenset({
+        "head_yaw", "head_pitch", "head_roll",
+        "body_yaw", "body_pitch", "body_roll",
+        "gaze_x", "gaze_y", "eye_open", "eye_smile",
+        "brow_y", "brow_form", "cheek",
+    })
+
+
+def test_hiyori_arm_raise_accepts_unit_interval_and_drops_invalid_values():
+    arm_track = {
+        "channel": "left_arm_raise",
+        "mode": "override",
+        "keyframes": [{"t": 0, "value": 0}, {"t": 1, "value": 1}],
+    }
+    invalid_high = {
+        **arm_track,
+        "keyframes": [{"t": 0, "value": 0}, {"t": 1, "value": 1.1}],
+    }
+    invalid_negative = {
+        **arm_track,
+        "keyframes": [{"t": 0, "value": 0}, {"t": 1, "value": -0.1}],
+    }
+
+    parsed = parse_motion_plan(
+        valid_motion(tracks=[arm_track, invalid_high, invalid_negative]),
+        model_name="hiyori",
+    )
+
+    assert [track["channel"] for track in parsed["tracks"]] == ["left_arm_raise"]
+
+
+def test_panda_channels_are_kept_but_hiyori_arm_channels_are_dropped():
+    panda_hug = {
+        "channel": "panda_hug",
+        "mode": "additive",
+        "keyframes": [{"t": 0, "value": -1}, {"t": 1, "value": 1}],
+    }
+    hiyori_arm = {
+        "channel": "right_arm_raise",
+        "mode": "override",
+        "keyframes": [{"t": 0, "value": 0}, {"t": 1, "value": 1}],
+    }
+
+    parsed = parse_motion_plan(
+        valid_motion(tracks=[panda_hug, hiyori_arm]), model_name="panda_cake"
+    )
+
+    assert [track["channel"] for track in parsed["tracks"]] == ["panda_hug"]
+
+
+def test_unknown_or_missing_model_keeps_only_generic_channels():
+    generic = valid_motion()["tracks"][0]
+    panda_hug = {
+        "channel": "panda_hug",
+        "mode": "override",
+        "keyframes": [{"t": 0, "value": 0}, {"t": 1, "value": 1}],
+    }
+
+    for model_name in (None, "unknown"):
+        parsed = parse_motion_plan(
+            valid_motion(tracks=[generic, panda_hug]), model_name=model_name
+        )
+        assert [track["channel"] for track in parsed["tracks"]] == ["head_pitch"]
+
+
+def test_second_model_filter_removes_cross_model_tracks_from_a_parsed_plan():
+    parsed_hiyori_plan = {
+        **valid_motion(),
+        "tracks": [
+            valid_motion()["tracks"][0],
+            {
+                "channel": "left_hand_wave",
+                "mode": "override",
+                "keyframes": [
+                    {"t": 0.0, "value": -1.0, "easing": "linear"},
+                    {"t": 1.0, "value": 1.0, "easing": "linear"},
+                ],
+            },
+        ],
+    }
+
+    filtered = filter_motion_plan_for_model(parsed_hiyori_plan, "panda_cake")
+
+    assert [track["channel"] for track in filtered["tracks"]] == ["head_pitch"]

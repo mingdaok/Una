@@ -1,16 +1,29 @@
 """Validation for AI-generated Live2D motion v3 plans."""
 
+from __future__ import annotations
+
 import math
 import time
 import uuid
 
 
-ALLOWED_CHANNELS = frozenset({
+GENERIC_CHANNELS = frozenset({
     "head_yaw", "head_pitch", "head_roll",
     "body_yaw", "body_pitch", "body_roll",
     "gaze_x", "gaze_y", "eye_open", "eye_smile",
     "brow_y", "brow_form", "cheek",
 })
+ALLOWED_CHANNELS = GENERIC_CHANNELS
+HIYORI_CHANNELS = frozenset({
+    "left_arm_raise", "right_arm_raise",
+    "left_hand_wave", "right_hand_wave",
+})
+PANDA_CAKE_CHANNELS = frozenset({"panda_hug", "hands_to_face"})
+MODEL_CHANNELS = {
+    "hiyori": GENERIC_CHANNELS | HIYORI_CHANNELS,
+    "panda_cake": GENERIC_CHANNELS | PANDA_CAKE_CHANNELS,
+}
+ARM_RAISE_CHANNELS = frozenset({"left_arm_raise", "right_arm_raise"})
 ALLOWED_MODES = frozenset({"override", "additive"})
 ALLOWED_EASINGS = frozenset({"linear", "ease_in", "ease_out", "ease_in_out"})
 MAX_TRACKS = 8
@@ -28,7 +41,28 @@ def _clamped_milliseconds(value, minimum, maximum):
     return min(maximum, max(minimum, int(_finite_number(value))))
 
 
-def _parse_track(track):
+def normalize_live2d_model(value: object) -> str | None:
+    """Return a supported model name without case or alias normalization."""
+    if isinstance(value, str) and value in MODEL_CHANNELS:
+        return value
+    return None
+
+
+def allowed_channels_for_model(model_name: str | None) -> frozenset[str]:
+    """Return the generic-only fallback for missing or unrecognized models."""
+    normalized_model = normalize_live2d_model(model_name)
+    if normalized_model is None:
+        return GENERIC_CHANNELS
+    return MODEL_CHANNELS[normalized_model]
+
+
+def _allowed_value_range(channel):
+    if channel in ARM_RAISE_CHANNELS:
+        return 0.0, 1.0
+    return -1.0, 1.0
+
+
+def _parse_track(track, allowed_channels):
     if not isinstance(track, dict):
         return None
 
@@ -36,7 +70,7 @@ def _parse_track(track):
     mode = track.get("mode")
     keyframes = track.get("keyframes")
     if (
-        channel not in ALLOWED_CHANNELS
+        channel not in allowed_channels
         or mode not in ALLOWED_MODES
         or not isinstance(keyframes, list)
         or not 2 <= len(keyframes) <= MAX_KEYFRAMES
@@ -58,7 +92,7 @@ def _parse_track(track):
         if (
             easing not in ALLOWED_EASINGS
             or not 0.0 <= t <= 1.0
-            or not -1.0 <= value <= 1.0
+            or not _allowed_value_range(channel)[0] <= value <= _allowed_value_range(channel)[1]
             or (previous_t is not None and t <= previous_t)
         ):
             return None
@@ -74,7 +108,7 @@ def is_motion_v3_candidate(payload):
     return isinstance(payload, dict) and "tracks" in payload
 
 
-def parse_motion_plan(payload):
+def parse_motion_plan(payload, *, model_name: str | None = None) -> dict | None:
     """Normalize an untrusted motion plan into safe semantic tracks."""
     if not isinstance(payload, dict) or not isinstance(payload.get("tracks"), list) or not payload["tracks"]:
         return None
@@ -93,9 +127,10 @@ def parse_motion_plan(payload):
     if not isinstance(variation_seed, int) or isinstance(variation_seed, bool) or variation_seed < 0:
         return None
 
+    allowed_channels = allowed_channels_for_model(model_name)
     tracks = []
     for track in payload["tracks"]:
-        normalized_track = _parse_track(track)
+        normalized_track = _parse_track(track, allowed_channels)
         if normalized_track is not None:
             tracks.append(normalized_track)
             if len(tracks) == MAX_TRACKS:
@@ -110,6 +145,26 @@ def parse_motion_plan(payload):
         "blend": {"in_ms": blend_in_ms, "out_ms": blend_out_ms},
         "tracks": tracks,
     }
+
+
+def filter_motion_plan_for_model(plan: dict, model_name: str | None) -> dict | None:
+    """Revalidate an already parsed plan against the active model profile."""
+    if not isinstance(plan, dict) or not isinstance(plan.get("tracks"), list):
+        return None
+
+    allowed_channels = allowed_channels_for_model(model_name)
+    tracks = []
+    for track in plan["tracks"]:
+        normalized_track = _parse_track(track, allowed_channels)
+        if normalized_track is not None:
+            tracks.append(normalized_track)
+            if len(tracks) == MAX_TRACKS:
+                break
+
+    if not tracks:
+        return None
+
+    return {**plan, "tracks": tracks}
 
 
 class MotionDirectorV3:

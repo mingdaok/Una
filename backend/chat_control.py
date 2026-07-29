@@ -7,7 +7,11 @@ import re
 from typing import Any
 
 from live2d_action import parse_action_plan
-from live2d_motion import is_motion_v3_candidate, parse_motion_plan
+from live2d_motion import (
+    filter_motion_plan_for_model,
+    is_motion_v3_candidate,
+    parse_motion_plan,
+)
 
 
 _EMOTION_PREFIX = "EMOTION:"
@@ -88,7 +92,8 @@ def _is_truncated_marker_at_end(text: str) -> bool:
 class ControlPrefixDemux:
     """在正文开始前循环消费结构化控制帧。"""
 
-    def __init__(self) -> None:
+    def __init__(self, live2d_model: str | None = None) -> None:
+        self._live2d_model = live2d_model
         self._buffer = ""
         self._body_started = False
         self._meta_emitted = False
@@ -323,7 +328,11 @@ class ControlPrefixDemux:
 
         if action_end is not None:
             if is_motion_v3_candidate(payload):
-                plan = parse_motion_plan(payload)
+                plan = parse_motion_plan(payload, model_name=self._live2d_model)
+                if plan is not None:
+                    plan = filter_motion_plan_for_model(
+                        plan, self._live2d_model
+                    )
             else:
                 plan = parse_action_plan(payload)
             self._buffer = raw_action[action_end:]
