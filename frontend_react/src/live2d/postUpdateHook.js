@@ -19,7 +19,11 @@ export function installPostUpdateHook(
       try {
         afterUpdate(...args);
       } catch (error) {
-        onAfterUpdateError(error);
+        try {
+          onAfterUpdateError(error);
+        } catch {
+          // Error reporting must not leak UNA post-processing failures.
+        }
       }
     }
     return result;

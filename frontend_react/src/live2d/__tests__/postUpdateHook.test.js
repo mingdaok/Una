@@ -58,6 +58,25 @@ describe('installPostUpdateHook', () => {
     expect(onAfterUpdateError).toHaveBeenCalledOnce();
   });
 
+  it('错误报告回调抛错时隔离 UNA 故障且下一帧仍运行后处理', () => {
+    let frame = 0;
+    const afterUpdate = vi.fn(() => {
+      frame += 1;
+      if (frame === 1) throw new Error('broken UNA frame');
+    });
+    const onAfterUpdateError = vi.fn(() => {
+      throw new Error('broken error reporter');
+    });
+    const internalModel = { update: vi.fn(() => 'ok') };
+
+    installPostUpdateHook(internalModel, afterUpdate, { onAfterUpdateError });
+
+    expect(() => internalModel.update(16.67, 1000)).not.toThrow();
+    expect(() => internalModel.update(16.67, 1017)).not.toThrow();
+    expect(afterUpdate).toHaveBeenCalledTimes(2);
+    expect(onAfterUpdateError).toHaveBeenCalledOnce();
+  });
+
   it('cleanup 幂等恢复原函数且不覆盖外部后来安装的函数', () => {
     const originalUpdate = vi.fn();
     const internalModel = { update: originalUpdate };
