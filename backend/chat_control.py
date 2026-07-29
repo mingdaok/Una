@@ -7,6 +7,11 @@ import re
 from typing import Any
 
 from live2d_action import parse_action_plan
+from live2d_motion import (
+    filter_motion_plan_for_model,
+    is_motion_v3_candidate,
+    parse_motion_plan,
+)
 
 
 _EMOTION_PREFIX = "EMOTION:"
@@ -87,7 +92,8 @@ def _is_truncated_marker_at_end(text: str) -> bool:
 class ControlPrefixDemux:
     """在正文开始前循环消费结构化控制帧。"""
 
-    def __init__(self) -> None:
+    def __init__(self, live2d_model: str | None = None) -> None:
+        self._live2d_model = live2d_model
         self._buffer = ""
         self._body_started = False
         self._meta_emitted = False
@@ -95,7 +101,8 @@ class ControlPrefixDemux:
 
     def feed(self, text: str, final: bool = False) -> tuple[list[dict[str, Any]], str]:
         if self._body_started:
-            return [], text or ""
+            self._buffer += text or ""
+            return self._consume_inline_actions(final)
 
         self._buffer += text or ""
         events: list[dict[str, Any]] = []
@@ -147,12 +154,53 @@ class ControlPrefixDemux:
 
             self._body_started = True
             self._ensure_meta(events)
-            body = self._buffer
-            self._buffer = ""
-            return events, body
+            inline_events, body = self._consume_inline_actions(final)
+            return events + inline_events, body
 
     def finish(self) -> tuple[list[dict[str, Any]], str]:
         return self.feed("", final=True)
+
+    def _consume_inline_actions(
+        self, final: bool
+    ) -> tuple[list[dict[str, Any]], str]:
+        """Strip ACTION controls that appear after visible reply text begins."""
+        events: list[dict[str, Any]] = []
+        body_parts: list[str] = []
+
+        while self._buffer:
+            marker_index = self._buffer.upper().find(_ACTION_PREFIX)
+            if marker_index < 0:
+                partial_length = self._partial_action_suffix_length()
+                if partial_length and not final:
+                    body_parts.append(self._buffer[:-partial_length])
+                    self._buffer = self._buffer[-partial_length:]
+                else:
+                    body_parts.append(self._buffer)
+                    self._buffer = ""
+                break
+
+            if marker_index:
+                body_parts.append(self._buffer[:marker_index])
+                self._buffer = self._buffer[marker_index:]
+
+            action_status = self._consume_action(events, final)
+            if action_status == "consumed":
+                continue
+            if action_status == "waiting":
+                break
+
+            body_parts.append(self._buffer[0])
+            self._buffer = self._buffer[1:]
+
+        return events, "".join(body_parts)
+
+    def _partial_action_suffix_length(self) -> int:
+        upper_buffer = self._buffer.upper()
+        maximum = min(len(upper_buffer), len(_ACTION_PREFIX) - 1)
+        for length in range(maximum, 0, -1):
+            if _ACTION_PREFIX.startswith(upper_buffer[-length:]):
+                return length
+        return 0
 
     def _ensure_meta(self, events: list[dict[str, Any]]) -> None:
         if not self._meta_emitted:
@@ -321,7 +369,14 @@ class ControlPrefixDemux:
             payload = None
 
         if action_end is not None:
-            plan = parse_action_plan(payload)
+            if is_motion_v3_candidate(payload):
+                plan = parse_motion_plan(payload, model_name=self._live2d_model)
+                if plan is not None:
+                    plan = filter_motion_plan_for_model(
+                        plan, self._live2d_model
+                    )
+            else:
+                plan = parse_action_plan(payload)
             self._buffer = raw_action[action_end:]
             self._ensure_meta(events)
             if plan is not None and not self._action_emitted:

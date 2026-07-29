@@ -13,6 +13,14 @@ ACTION_JSON = (
     '"duration_ms":1000,"variation_seed":5}'
 )
 
+MOTION_V3_JSON = (
+    '{"duration_ms":1200,"variation_seed":8,'
+    '"blend":{"in_ms":100,"out_ms":160},'
+    '"tracks":[{"channel":"head_pitch","mode":"override",'
+    '"keyframes":[{"t":0,"value":0},{"t":0.5,"value":-0.4},'
+    '{"t":1,"value":0}]}]}'
+)
+
 
 def collect_fragments(fragments):
     demux = ControlPrefixDemux()
@@ -41,6 +49,21 @@ def test_mixed_legacy_and_semantic_controls_never_enter_body():
         "live2d_action_candidate",
     ]
     assert events[1]["plan"]["intent"] == "curious_question"
+
+
+def test_v3_motion_control_is_emitted_without_leaking_its_json_into_body():
+    events, body = collect_fragments([
+        "EMOTION: shy | MOOD: 2\n",
+        f"ACTION: {MOTION_V3_JSON}\n你好呀！",
+    ])
+
+    candidates = [
+        event for event in events
+        if event["type"] == "live2d_action_candidate"
+    ]
+    assert candidates[0]["plan"]["tracks"][0]["channel"] == "head_pitch"
+    assert "ACTION:" not in body
+    assert body == "你好呀！"
 
 
 def test_control_prefix_is_safe_when_every_character_is_a_stream_fragment():
@@ -227,3 +250,44 @@ def test_sanitizer_keeps_normal_reply_unchanged():
     reply = "啊呀！这个谜题让我想想。"
 
     assert sanitize_reply_text(reply) == reply
+
+
+def test_panda_demux_removes_hiyori_arm_track_without_leaking_action_json():
+    hiyori_arm_motion = (
+        '{"duration_ms":1200,"variation_seed":8,'
+        '"blend":{"in_ms":100,"out_ms":160},'
+        '"tracks":[{"channel":"left_arm_raise","mode":"override",'
+        '"keyframes":[{"t":0,"value":0},{"t":1,"value":1}]}]}'
+    )
+    demux = ControlPrefixDemux(live2d_model="panda_cake")
+
+    events, body = demux.feed(f"ACTION: {hiyori_arm_motion}\nhello", final=True)
+
+    assert body == "hello"
+    assert events == [{"type": "meta", "emotion": "neutral", "mood_score": 0}]
+
+
+def test_inline_action_control_emits_candidate_without_leaking_from_body():
+    events, body = collect_fragments([
+        "正文开头。",
+        f"ACTION: {MOTION_V3_JSON}",
+        "正文结尾。",
+    ])
+
+    candidates = [
+        event for event in events
+        if event["type"] == "live2d_action_candidate"
+    ]
+    assert body == "正文开头。正文结尾。"
+    assert len(candidates) == 1
+    assert candidates[0]["plan"]["tracks"][0]["channel"] == "head_pitch"
+    assert "ACTION:" not in body
+
+
+def test_sanitizer_removes_action_json_at_every_visible_text_position():
+    for raw, expected in (
+        (f"ACTION: {ACTION_JSON}正文。", "正文。"),
+        (f"正文前。ACTION: {ACTION_JSON}正文后。", "正文前。正文后。"),
+        (f"正文。ACTION: {ACTION_JSON}", "正文。"),
+    ):
+        assert sanitize_reply_text(raw) == expected

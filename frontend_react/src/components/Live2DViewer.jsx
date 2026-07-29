@@ -3,15 +3,18 @@ import { Settings } from 'lucide-react';
 import { API_HOST } from '../config';
 import { useLive2DController } from '../hooks/useLive2DController';
 import { resetLive2DModelState } from '../live2d/modelState';
+import { readSelectedLive2DModel, writeSelectedLive2DModel } from '../live2d/modelSelection';
 
-export default function Live2DViewer({ lipValue, emotion, actionOverride }) {
+export default function Live2DViewer({ lipValue, emotion, motionEvent, motionGeneration }) {
   // 接入 Live2D 高级控制层 (情感驱动 + 口型同步 + 参数冲突调度)
   // 注意：appRef 和 modelRef 在下方 useEffect 中创建，传入 Hook 后 Hook 内部会等待它们就绪
   const canvasRef = useRef(null);
   const modelRef = useRef(null);
   const appRef = useRef(null); // 用于死死抓住 App 实例，方便销毁
+  const modelReadyVersionRef = useRef(0);
+  const [modelReady, setModelReady] = useState(null);
   const [isLoaded, setIsLoaded] = useState(false);
-  const [currentModel, setCurrentModel] = useState(() => localStorage.getItem('live2d_model') || 'panda_cake'); // 默认加载粉色熊猫模型
+  const [currentModel, setCurrentModel] = useState(readSelectedLive2DModel); // 默认加载粉色熊猫模型
   const [showSettings, setShowSettings] = useState(false); // 控制设置面板显示
 
 
@@ -34,7 +37,6 @@ export default function Live2DViewer({ lipValue, emotion, actionOverride }) {
     localStorage.setItem('live2d_scale', modelScale);
     localStorage.setItem('live2d_x', modelX);
     localStorage.setItem('live2d_y', modelY);
-    localStorage.setItem('live2d_model', currentModel);
     
     if (modelRef.current && isLoaded) {
       modelRef.current.scale.set(modelScale);
@@ -89,6 +91,7 @@ export default function Live2DViewer({ lipValue, emotion, actionOverride }) {
   // 切换模型函数
   const switchModel = (newModel) => {
     if (newModel === currentModel) return;
+    if (writeSelectedLive2DModel(newModel) !== newModel) return;
     setCurrentModel(newModel);
     setIsLoaded(false);
     setShowSettings(false); // 切换后自动关闭面板
@@ -149,6 +152,7 @@ export default function Live2DViewer({ lipValue, emotion, actionOverride }) {
       
     console.log("🦋 Live2D Loading:", modelUrl);
     setIsLoaded(false);
+    setModelReady(null);
 
     let isCancelled = false; // 用于防范竞态条件（比如刚点加载 A 立刻切 B）
 
@@ -177,6 +181,12 @@ export default function Live2DViewer({ lipValue, emotion, actionOverride }) {
       model.y = window.innerHeight * yRef.current;
       model.scale.set(scaleRef.current);
 
+      modelReadyVersionRef.current += 1;
+      setModelReady({
+        model,
+        modelName: currentModel,
+        version: modelReadyVersionRef.current,
+      });
       setIsLoaded(true);
       console.log("✅ Live2D Ready");
     }).catch(e => {
@@ -190,14 +200,13 @@ export default function Live2DViewer({ lipValue, emotion, actionOverride }) {
 
   // ============================================================
   // 接入 Live2D 高级控制层 Hook
-  // 这个 Hook 内部挂载 PIXI Ticker，统一管理：
-  //   - 情感参数平滑 Lerp（脸部脂肪 0.12，身体 0.04）
-  //   - 身体联动摇摆 / 低头 / 呼吸正弦波
-  //   - 口型同步强制覆写（最高优先级，位于 Ticker 末尾）
-  //   - 自动眨眼周期控制
-  //   - panda_cake 特有参数（JAW, ParamMouthOpenY4, 红晕）兼容
+  // 这个 Hook 负责 post-update 生命周期：
+  //   - 在 Live2D 原生 internalModel.update() 完成后、当前绘制前合成并投影语义参数
+  //   - 统一处理情感、身体联动、动作轨道、自动眨眼与呼吸保留层
+  //   - 在每帧后处理末尾安全投影口型，保持其最高优先级
+  //   - 在模型切换、重复 ready 与卸载时安装或清理后处理，并隔离单帧异常
   // ============================================================
-  useLive2DController(appRef, modelRef, currentModel, emotion, lipValue, actionOverride);
+  useLive2DController(appRef, modelRef, currentModel, emotion, lipValue, motionEvent, modelReady, motionGeneration);
 
   // 口型同步和参数覆写已完全迁移至 useLive2DController，
   // 此处不再有任何 lipValue useEffect 或 Ticker，避免双重驱动冲突。

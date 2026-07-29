@@ -4,6 +4,7 @@ import random
 from openai import AsyncOpenAI
 import database
 from chat_control import ControlPrefixDemux, sanitize_reply_text
+from live2d_motion import allowed_channels_for_model
 
 
 class UnaBrain:
@@ -204,7 +205,7 @@ class UnaBrain:
             return {"reply": "我在听。", "mood_score": 0, "crisis_level": "NORMAL", "emotion": "neutral"}
 
     # 🔥 新增：[Phase 2.5] 句级流式截流生成 (Sentence-Level Streaming)
-    async def chat_stream(self, user_id, user_text, long_term_memory="", recent_negative_count=0):
+    async def chat_stream(self, user_id, user_text, long_term_memory="", recent_negative_count=0, live2d_model=None):
         # 画像等前置处理与普通 chat 一致
         user_profile = database.get_user_profile(user_id)
 
@@ -228,6 +229,14 @@ class UnaBrain:
         hist_str = "\n".join([f"{item.get('role','unknown')}: {item.get('text','')}" for item in history])
 
         # 重点：为了流式极速解析，放弃 JSON 约束，改用严格的纯文本前缀约定
+        allowed_channels = allowed_channels_for_model(live2d_model)
+        allowed_action_channels = "/".join(sorted(allowed_channels))
+        panda_range_guidance = (
+            "   - panda_hug、hands_to_face 的值域为 0..1；0 表示恢复，1 表示完整姿态。\n"
+            if {"panda_hug", "hands_to_face"}.issubset(allowed_channels)
+            else ""
+        )
+
         system_prompt = (
             f"你叫 Una，一个温暖、专业、有边界感的心理支持 AI。\n"
             f"【用户画像】：{user_profile}\n"
@@ -237,10 +246,11 @@ class UnaBrain:
             f"【近期对话】:\n{hist_str}\n\n"
             f"回复要求（极其重要！必须严格遵守！）：\n"
             f"1. 第一行必须为 EMOTION 控制行；第二行必须为 ACTION 控制行；从第三行开始写正文回复。\n"
-            f"2. ACTION 行只能输出 JSON 或 null，格式为：ACTION: {{\"intent\": \"thinking\", \"intensity\": 0.3, \"expression\": \"subtle\", \"timing\": \"after_sentence\", \"duration_ms\": 900, \"variation_seed\": 1}}。\n"
-            f"   - intent 仅可使用 warm_listening/thinking/shy_happy/happy_surprise/gentle_comfort/sad_support/encouraging/curious_question。\n"
-            f"   - 普通聊天优先输出 ACTION: null；需要轻微动作时，subtle 是 expression 字段的值，不能单独写成 ACTION: subtle。\n"
-            f"   - 仅明确的惊喜、安慰、低落陪伴，才把 expression 设为 expressive。\n"
+            '2. ACTION 只能为 null 或 v3 JSON，格式为：ACTION: {"duration_ms":900,"variation_seed":1,"blend":{"in_ms":80,"out_ms":120},"tracks":[{"channel":"head_pitch","mode":"override","keyframes":[{"t":0,"value":0},{"t":0.5,"value":-0.25},{"t":1,"value":0}]}]}。\n'
+            f"   - 只允许 {allowed_action_channels}。\n"
+            f"{panda_range_guidance}"
+            "   - 每条轨道输出 2～12 个关键帧；禁止 mouth_open 等嘴部通道、ParamXXX、舞台说明和代码围栏。\n"
+            "   - 普通聊天优先输出 ACTION: null；需要动作时使用小幅轨迹，明确情绪才使用明显幅度。\n"
             f"3. 你的回复要显得自然随性，内容丰满些（大约 80-150 字），但绝不要长篇大论。遵循以下口语铁律：\n"
             f"   - 句子长短结合散落分布！可以有两三个字的极短短语（真的吗？太好了！），也可以有十几字的正常交流，绝不要每句字数一样像排比句。\n"
             f"   - 强制多用句号（。）、叹号（！）、问号（？）作为断句结尾。尽量少用逗号（，）连篇结牍！\n"
@@ -249,7 +259,7 @@ class UnaBrain:
             f"4. 严禁输出 [动作:...]、括号舞台说明、代码围栏或其他控制格式；所有动作信息只能放入第二行 ACTION JSON。\n"
             f"完整格式示例（必须严格保持三段，不要有多余文字）：\n"
             f"EMOTION: happy | MOOD: 3\n"
-            f"ACTION: {{\"intent\":\"shy_happy\",\"intensity\":0.45,\"expression\":\"subtle\",\"timing\":\"reply_start\",\"duration_ms\":900,\"variation_seed\":1}}\n"
+            'ACTION: {"duration_ms":900,"variation_seed":1,"blend":{"in_ms":80,"out_ms":120},"tracks":[{"channel":"head_pitch","mode":"override","keyframes":[{"t":0,"value":0},{"t":0.5,"value":-0.25},{"t":1,"value":0}]}]}\n'
             f"哇！你来了！\n\n其实我刚才还在偷偷想你呢。今天过得怎样呀？遇到什么好玩的事了吗？\n\n快和我说说，我听着呢！"
         )
 
@@ -264,7 +274,7 @@ class UnaBrain:
 
             buffer = ""
             yielded_chunks = 0
-            control_demux = ControlPrefixDemux()
+            control_demux = ControlPrefixDemux(live2d_model=live2d_model)
             import re
 
             async for chunk in response:
