@@ -101,7 +101,8 @@ class ControlPrefixDemux:
 
     def feed(self, text: str, final: bool = False) -> tuple[list[dict[str, Any]], str]:
         if self._body_started:
-            return [], text or ""
+            self._buffer += text or ""
+            return self._consume_inline_actions(final)
 
         self._buffer += text or ""
         events: list[dict[str, Any]] = []
@@ -153,12 +154,53 @@ class ControlPrefixDemux:
 
             self._body_started = True
             self._ensure_meta(events)
-            body = self._buffer
-            self._buffer = ""
-            return events, body
+            inline_events, body = self._consume_inline_actions(final)
+            return events + inline_events, body
 
     def finish(self) -> tuple[list[dict[str, Any]], str]:
         return self.feed("", final=True)
+
+    def _consume_inline_actions(
+        self, final: bool
+    ) -> tuple[list[dict[str, Any]], str]:
+        """Strip ACTION controls that appear after visible reply text begins."""
+        events: list[dict[str, Any]] = []
+        body_parts: list[str] = []
+
+        while self._buffer:
+            marker_index = self._buffer.upper().find(_ACTION_PREFIX)
+            if marker_index < 0:
+                partial_length = self._partial_action_suffix_length()
+                if partial_length and not final:
+                    body_parts.append(self._buffer[:-partial_length])
+                    self._buffer = self._buffer[-partial_length:]
+                else:
+                    body_parts.append(self._buffer)
+                    self._buffer = ""
+                break
+
+            if marker_index:
+                body_parts.append(self._buffer[:marker_index])
+                self._buffer = self._buffer[marker_index:]
+
+            action_status = self._consume_action(events, final)
+            if action_status == "consumed":
+                continue
+            if action_status == "waiting":
+                break
+
+            body_parts.append(self._buffer[0])
+            self._buffer = self._buffer[1:]
+
+        return events, "".join(body_parts)
+
+    def _partial_action_suffix_length(self) -> int:
+        upper_buffer = self._buffer.upper()
+        maximum = min(len(upper_buffer), len(_ACTION_PREFIX) - 1)
+        for length in range(maximum, 0, -1):
+            if _ACTION_PREFIX.startswith(upper_buffer[-length:]):
+                return length
+        return 0
 
     def _ensure_meta(self, events: list[dict[str, Any]]) -> None:
         if not self._meta_emitted:

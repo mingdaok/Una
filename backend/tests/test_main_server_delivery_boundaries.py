@@ -121,18 +121,13 @@ def compile_live2d_candidate_route():
                 ast.arg(arg="action_director"),
                 ast.arg(arg="motion_director"),
                 ast.arg(arg="ws_manager"),
+                ast.arg(arg="live2d_model"),
             ],
             kwonlyargs=[],
             kw_defaults=[],
-            defaults=[],
+            defaults=[ast.Constant(value=None)],
         ),
-        body=[
-            ast.Assign(
-                targets=[ast.Name(id="live2d_model", ctx=ast.Store())],
-                value=ast.Constant(value=None),
-            ),
-            *copy.deepcopy(candidate_branch.body),
-        ],
+        body=copy.deepcopy(candidate_branch.body),
         decorator_list=[],
     )
     module = ast.fix_missing_locations(ast.Module(
@@ -192,3 +187,30 @@ def test_tracks_candidate_routes_only_to_v3_motion_director():
     assert ws_manager.events == [
         ("test-user", {"type": "live2d_motion_v3"}),
     ]
+
+
+def test_runtime_model_profile_reaches_v3_director_for_each_supported_model():
+    route_live2d_candidate = compile_live2d_candidate_route()
+    motion_plan = {
+        "duration_ms": 1200,
+        "tracks": [{"channel": "head_pitch"}],
+    }
+
+    for model_name in ("hiyori", "panda_cake"):
+        action_director = StubDirector({"type": "live2d_action_v2"})
+        motion_director = StubDirector({"type": "live2d_motion_v3"})
+        ws_manager = StubWebSocketManager()
+
+        asyncio.run(route_live2d_candidate(
+            {"type": "live2d_action_candidate", "plan": motion_plan},
+            "test-user",
+            action_director,
+            motion_director,
+            ws_manager,
+            model_name,
+        ))
+
+        assert action_director.calls == []
+        assert motion_director.calls == [
+            ("test-user", motion_plan, model_name),
+        ]

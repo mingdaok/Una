@@ -265,3 +265,29 @@ def test_panda_demux_removes_hiyori_arm_track_without_leaking_action_json():
 
     assert body == "hello"
     assert events == [{"type": "meta", "emotion": "neutral", "mood_score": 0}]
+
+
+def test_inline_action_control_emits_candidate_without_leaking_from_body():
+    events, body = collect_fragments([
+        "正文开头。",
+        f"ACTION: {MOTION_V3_JSON}",
+        "正文结尾。",
+    ])
+
+    candidates = [
+        event for event in events
+        if event["type"] == "live2d_action_candidate"
+    ]
+    assert body == "正文开头。正文结尾。"
+    assert len(candidates) == 1
+    assert candidates[0]["plan"]["tracks"][0]["channel"] == "head_pitch"
+    assert "ACTION:" not in body
+
+
+def test_sanitizer_removes_action_json_at_every_visible_text_position():
+    for raw, expected in (
+        (f"ACTION: {ACTION_JSON}正文。", "正文。"),
+        (f"正文前。ACTION: {ACTION_JSON}正文后。", "正文前。正文后。"),
+        (f"正文。ACTION: {ACTION_JSON}", "正文。"),
+    ):
+        assert sanitize_reply_text(raw) == expected
