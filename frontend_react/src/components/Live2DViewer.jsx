@@ -199,12 +199,11 @@ export default function Live2DViewer({ lipValue, emotion, motionEvent }) {
 
   // ============================================================
   // 接入 Live2D 高级控制层 Hook
-  // 这个 Hook 内部挂载 PIXI Ticker，统一管理：
-  //   - 情感参数平滑 Lerp（脸部脂肪 0.12，身体 0.04）
-  //   - 身体联动摇摆 / 低头 / 呼吸正弦波
-  //   - 口型同步强制覆写（最高优先级，位于 Ticker 末尾）
-  //   - 自动眨眼周期控制
-  //   - panda_cake 特有参数（JAW, ParamMouthOpenY4, 红晕）兼容
+  // 这个 Hook 负责 post-update 生命周期：
+  //   - 在 Live2D 原生 internalModel.update() 完成后、当前绘制前合成并投影语义参数
+  //   - 统一处理情感、身体联动、动作轨道、自动眨眼与呼吸保留层
+  //   - 在每帧后处理末尾安全投影口型，保持其最高优先级
+  //   - 在模型切换、重复 ready 与卸载时安装或清理后处理，并隔离单帧异常
   // ============================================================
   useLive2DController(appRef, modelRef, currentModel, emotion, lipValue, motionEvent, modelReady);
 
