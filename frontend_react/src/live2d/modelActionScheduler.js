@@ -37,7 +37,7 @@ const SPECIAL_CANDIDATES = Object.freeze({
 });
 
 const HIYORI_EMOTIONS = new Set(['happy', 'joy', 'excited', 'greeting', 'welcome', 'emphasis']);
-const PANDA_EMOTIONS = new Set(['comfort', 'companionship', 'shy', 'surprised', 'praise', 'happy', 'joy']);
+const PANDA_EMOTIONS = new Set(['comfort', 'companionship', 'shy', 'surprised', 'praise']);
 
 function finite(value) {
   return typeof value === 'number' && Number.isFinite(value);

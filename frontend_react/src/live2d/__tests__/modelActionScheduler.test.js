@@ -46,21 +46,24 @@ describe('ModelActionScheduler', () => {
     }
   });
 
-  it('uses a 15–25 second cooldown for eligible model-specific idle events', () => {
+  it('does not schedule the next model-specific event before its selected 25 second cooldown', () => {
     const scheduler = new ModelActionScheduler({ sessionSeed: 'special-cooldown' });
     scheduler.reset({ modelName: 'panda_cake', generation: 5 });
-    const specials = [];
-    for (let nowMs = 0; nowMs <= 90000; nowMs += 1000) {
-      const event = scheduler.schedule({ modelName: 'panda_cake', emotion: 'comfort', nowMs, mixer: sourceGate() });
-      if (event && trackChannels(event).some(channel => ['panda_hug', 'hands_to_face'].includes(channel))) specials.push(event);
-    }
+    scheduler.cooldown = (minimum, maximum) => maximum;
 
-    expect(specials.length).toBeGreaterThan(1);
-    for (let index = 1; index < specials.length; index += 1) {
-      const elapsed = specials[index].created_at_ms - specials[index - 1].created_at_ms;
-      expect(elapsed).toBeGreaterThanOrEqual(15000);
-      expect(elapsed).toBeLessThanOrEqual(25000);
-    }
+    const first = scheduler.schedule({ modelName: 'panda_cake', emotion: 'comfort', nowMs: 0, mixer: sourceGate() });
+    const beforeCooldown = scheduler.schedule({
+      modelName: 'panda_cake', emotion: 'comfort', nowMs: 24999, mixer: sourceGate(),
+    });
+    const afterCooldown = scheduler.schedule({
+      modelName: 'panda_cake', emotion: 'comfort', nowMs: 25000, mixer: sourceGate(),
+    });
+
+    expect(trackChannels(first).some(channel => channel === 'panda_hug' || channel === 'hands_to_face')).toBe(true);
+    expect(beforeCooldown && trackChannels(beforeCooldown).some(channel => (
+      channel === 'panda_hug' || channel === 'hands_to_face'
+    ))).toBeFalsy();
+    expect(trackChannels(afterCooldown).some(channel => channel === 'panda_hug' || channel === 'hands_to_face')).toBe(true);
   });
 
   it('does not let matching model-specific actions slip past their 25 second deadline', () => {
@@ -84,6 +87,16 @@ describe('ModelActionScheduler', () => {
     scheduler.reset({ modelName: 'hiyori', generation: 1 });
     expect(scheduler.schedule({ modelName: 'hiyori', emotion: 'happy', nowMs: 0, mixer: sourceGate(['user_command']) })).toBeNull();
     expect(scheduler.schedule({ modelName: 'hiyori', emotion: 'happy', nowMs: 0, mixer: sourceGate(['ai_reply']) })).toBeNull();
+  });
+
+  it('does not treat happy or joy as panda-specific action contexts', () => {
+    for (const emotion of ['happy', 'joy']) {
+      const scheduler = new ModelActionScheduler({ sessionSeed: `panda-${emotion}` });
+      scheduler.reset({ modelName: 'panda_cake', generation: 1 });
+      const event = scheduler.schedule({ modelName: 'panda_cake', emotion, nowMs: 0, mixer: sourceGate() });
+
+      expect(trackChannels(event).some(channel => channel === 'panda_hug' || channel === 'hands_to_face')).toBe(false);
+    }
   });
 
   it('reset clears cooldown and history when a ready model or generation changes', () => {

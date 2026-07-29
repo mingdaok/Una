@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useLive2DController } from '../useLive2DController';
 
 const protocolControl = vi.hoisted(() => ({ brokenMotionId: null }));
+const schedulerControl = vi.hoisted(() => ({ resets: [] }));
 
 vi.mock('../../live2d/motionProtocol', async (importOriginal) => {
   const original = await importOriginal();
@@ -18,6 +19,19 @@ vi.mock('../../live2d/motionProtocol', async (importOriginal) => {
         };
       }
       return original.compileMotionPlan(plan);
+    },
+  };
+});
+
+vi.mock('../../live2d/modelActionScheduler', async (importOriginal) => {
+  const original = await importOriginal();
+  return {
+    ...original,
+    ModelActionScheduler: class extends original.ModelActionScheduler {
+      reset(args) {
+        schedulerControl.resets.push(args);
+        return super.reset(args);
+      }
     },
   };
 });
@@ -97,6 +111,7 @@ describe('useLive2DController 统一状态混合', () => {
     vi.setSystemTime(new Date('2026-07-29T12:00:00.000Z'));
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     protocolControl.brokenMotionId = null;
+    schedulerControl.resets = [];
     appRef = { current: null };
     modelRef = { current: createModel() };
   });
@@ -386,6 +401,61 @@ describe('useLive2DController 统一状态混合', () => {
     expect(callsFor(coreModel, 'ParamMouthOpenY').at(-1)[1]).toBe(0);
     expect(callsFor(coreModel, 'ParamMouthForm').at(-1)[1]).toBe(0);
     view.unmount();
+  });
+
+  it('在模型切换后重置本地随机调度器', () => {
+    const firstModel = modelRef.current;
+    const view = renderController({ readyToken: { model: firstModel, modelName: 'panda_cake', version: 1 } });
+    const replacement = createModel();
+    modelRef.current = replacement;
+    schedulerControl.resets = [];
+
+    view.rerender({
+      model: 'hiyori', lip: { rhubarb: 'X' }, event: null, generation: 0,
+      ready: { model: replacement, modelName: 'hiyori', version: 2 },
+    });
+
+    expect(schedulerControl.resets.some(reset => reset.modelName === 'hiyori')).toBe(true);
+    view.unmount();
+  });
+
+  it('在重复 ready 时重置本地随机调度器', () => {
+    const readyModel = modelRef.current;
+    const view = renderController({ readyToken: { model: readyModel, modelName: 'panda_cake', version: 1 } });
+    schedulerControl.resets = [];
+
+    view.rerender({
+      model: 'panda_cake', lip: { rhubarb: 'X' }, event: null, generation: 0,
+      ready: { model: readyModel, modelName: 'panda_cake', version: 2 },
+    });
+
+    expect(schedulerControl.resets).toContainEqual(expect.objectContaining({
+      modelName: 'panda_cake', generation: 0,
+    }));
+    view.unmount();
+  });
+
+  it('在 WebSocket generation 变化时重置本地随机调度器', () => {
+    const view = renderController({ motionGeneration: 1 });
+    schedulerControl.resets = [];
+
+    view.rerender({ model: 'panda_cake', lip: { rhubarb: 'X' }, event: null, generation: 2 });
+
+    expect(schedulerControl.resets).toContainEqual(expect.objectContaining({
+      modelName: 'panda_cake', generation: 2,
+    }));
+    view.unmount();
+  });
+
+  it('在卸载时重置本地随机调度器', () => {
+    const view = renderController({ motionGeneration: 4 });
+    schedulerControl.resets = [];
+
+    view.unmount();
+
+    expect(schedulerControl.resets).toContainEqual(expect.objectContaining({
+      modelName: 'panda_cake', generation: 4,
+    }));
   });
 
   it('动作结束后回归基础层，并在卸载时恢复原生 update', () => {
