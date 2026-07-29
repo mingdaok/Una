@@ -116,6 +116,18 @@ describe('buildModelCapabilityMap', () => {
     expect(map.hasChannel('head_pitch')).toBe(false);
   });
 
+  it('exposes only discovered finite parameter metadata for model-specific projection', () => {
+    const coreModel = coreModelWith(['ParamArmLA', 'ParamBroken'], {
+      minimums: [-30, 1], maximums: [30, -1], defaults: [-10, 0],
+    });
+    const map = buildModelCapabilityMap(coreModel, { modelName: 'hiyori' });
+
+    expect(map.hasParameter('ParamArmLA')).toBe(true);
+    expect(map.getParameterInfo('ParamArmLA')).toEqual({ minimum: -30, maximum: 30, defaultValue: -10 });
+    expect(map.hasParameter('ParamBroken')).toBe(false);
+    expect(map.getParameterInfo('ParamBroken')).toBeNull();
+  });
+
   it('safely falls back when a Cubism private ID getter throws', () => {
     const coreModel = coreModelWith([], { idShape: 'none' });
     Object.defineProperty(coreModel, '_parameterIds', {

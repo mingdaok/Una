@@ -147,6 +147,13 @@ export function buildModelCapabilityMap(coreModel, { modelName = 'hiyori' } = {}
 
   return Object.freeze({
     parameterIds,
+    hasParameter(id) {
+      return typeof id === 'string' && ranges.has(id);
+    },
+    getParameterInfo(id) {
+      const range = typeof id === 'string' ? ranges.get(id) : null;
+      return range ? { ...range } : null;
+    },
     hasChannel(channel) {
       return (semanticBindings.get(channel) || []).some(id => ranges.has(id));
     },

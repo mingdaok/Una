@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { compileLegacyAction } from '../live2d/actionComposer';
+import { projectModelSpecificActions } from '../live2d/modelActionProjection';
 import { buildModelCapabilityMap } from '../live2d/modelCapabilities';
 import { compileMotionPlan, normalizeMotionEvent } from '../live2d/motionProtocol';
 import { installPostUpdateHook } from '../live2d/postUpdateHook';
@@ -47,6 +48,17 @@ function writeProjected(coreModel, projected) {
       // 单个模型参数失败不能阻塞本帧其他参数和下一帧。
     }
   }
+}
+
+function readablePartOpacities(coreModel) {
+  const values = new Map();
+  try {
+    const opacity = Number(coreModel?.getPartOpacityById?.('PartArmA'));
+    if (Number.isFinite(opacity)) values.set('PartArmA', opacity);
+  } catch {
+    // Part visibility is optional metadata; unavailable parts simply disable the guarded Hiyori track.
+  }
+  return values;
 }
 
 function emotionFrame(emotion) {
@@ -123,6 +135,7 @@ export function useLive2DController(appRef, modelRef, currentModel, emotion, lip
   const mouthOpenRef = useRef(0);
   const mouthFormRef = useRef(0);
   const applyControllerFrameRef = useRef(() => {});
+  const motionGenerationRef = useRef(null);
   currentModelRef.current = currentModel;
 
   applyControllerFrameRef.current = (deltaMs = 1000 / 60) => {
@@ -174,9 +187,20 @@ export function useLive2DController(appRef, modelRef, currentModel, emotion, lip
       blink: { eye_open: blinkModifier },
       lipSync,
     });
+    if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+      semanticFrame.monotonic_time_ms = performance.now();
+    }
 
     writeProjected(coreModel, capabilityMap.project(semanticFrame));
     writeProjected(coreModel, capabilityMap.projectBreath(breath));
+    const modelSpecific = projectModelSpecificActions({
+      coreModel,
+      modelName: currentModelRef.current,
+      semanticFrame,
+      capabilityMap,
+      partOpacityById: readablePartOpacities(coreModel),
+    });
+    writeProjected(coreModel, modelSpecific.writes);
     writeProjected(coreModel, capabilityMap.projectLipSync(lipSync));
   };
 
@@ -192,7 +216,18 @@ export function useLive2DController(appRef, modelRef, currentModel, emotion, lip
   useEffect(() => {
     capabilityMapRef.current = null;
     mixerRef.current.reset();
+    motionGenerationRef.current = null;
   }, [currentModel]);
+
+  // A newer socket generation cannot retain parameter tracks received by its predecessor.
+  useEffect(() => {
+    const generation = motionEvent?.generation;
+    if (!Number.isFinite(generation)) return;
+    if (motionGenerationRef.current !== null && motionGenerationRef.current !== generation) {
+      mixerRef.current.reset();
+    }
+    motionGenerationRef.current = generation;
+  }, [motionEvent?.generation]);
 
   // 只有 Viewer 宣告“该实例已准备好”后才建表。这替代有限次数轮询，慢加载也能恢复。
   useEffect(() => {
@@ -235,6 +270,7 @@ export function useLive2DController(appRef, modelRef, currentModel, emotion, lip
         capabilityMapRef.current = null;
       }
       mixerRef.current.reset();
+      motionGenerationRef.current = null;
     };
   }, [currentModel, modelReady?.version, modelReady?.model, modelReady?.modelName, modelRef]);
 
@@ -249,7 +285,12 @@ export function useLive2DController(appRef, modelRef, currentModel, emotion, lip
     } else {
       compiled = legacyChatActionToMotion(motionEvent, nowMs);
     }
-    if (compiled) mixerRef.current.enqueue(compiled, nowMs);
+    if (compiled) {
+      const variationSeed = Number.isInteger(motionEvent?.variation_seed)
+        ? motionEvent.variation_seed
+        : 0;
+      mixerRef.current.enqueue({ ...compiled, variationSeed }, nowMs);
+    }
   }, [motionEvent]);
 
 }

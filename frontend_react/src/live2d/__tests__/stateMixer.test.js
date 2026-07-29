@@ -30,6 +30,14 @@ const frameInputs = (overrides = {}) => ({
 });
 
 describe('Live2DStateMixer', () => {
+  it('reports active sources and channels without changing sampled priority', () => {
+    const mixer = createLive2DStateMixer({ clock: () => 1000 });
+    mixer.enqueue(compiled('hiyori-arm', 'user_command', { left_arm_raise: 1 }), 1000);
+
+    expect(mixer.hasActiveSource('user_command', 1000)).toBe(true);
+    expect(mixer.hasActiveChannel('left_arm_raise', 1000)).toBe(true);
+    expect(mixer.hasActiveChannel('right_arm_raise', 1000)).toBe(false);
+  });
   it('用户点头占用 head_pitch，但 AI 仍控制 gaze_x，且口型始终由 TTS 提供', () => {
     const mixer = createLive2DStateMixer({ clock: () => 1000 });
     mixer.enqueue(compiled('ai-1', 'ai_reply', { head_pitch: 0.6, gaze_x: 0.4 }), 1000);

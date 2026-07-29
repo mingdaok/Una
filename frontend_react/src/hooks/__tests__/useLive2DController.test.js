@@ -30,7 +30,7 @@ const IDS = [
   'ParamMouthOpenY', 'ParamMouthForm', 'ParamBreath',
 ];
 
-function createCoreModel(ids = IDS) {
+function createCoreModel(ids = IDS, { partOpacityById = {} } = {}) {
   const values = new Map(ids.map((id, index) => [
     id,
     ids[index].includes('Eye') ? 1 : 0,
@@ -42,6 +42,7 @@ function createCoreModel(ids = IDS) {
     getParameterMaximumValue: index => ids[index].includes('Open') ? 1 : 30,
     getParameterDefaultValue: index => ids[index].includes('Eye') ? 1 : 0,
     getParameterValueById: id => values.get(id),
+    getPartOpacityById: id => partOpacityById[id],
     setParameterValueById: vi.fn((id, value) => values.set(id, value)),
   };
 }
@@ -187,6 +188,72 @@ describe('useLive2DController 统一状态混合', () => {
     const coreModel = modelRef.current.internalModel.coreModel;
     expect(callsFor(coreModel, 'ParamMouthOpenY').at(-1)[1]).toBeGreaterThan(0);
     expect(callsFor(coreModel, 'ParamMouthForm').at(-1)[1]).toBe(0);
+    view.unmount();
+  });
+
+  it('在通用映射之后投影 Hiyori 专属参数，并始终让 TTS 口型最后写入', () => {
+    const coreModel = createCoreModel([...IDS, 'ParamArmLA', 'ParamHandL'], {
+      partOpacityById: { PartArmA: 1 },
+    });
+    const hiyoriModel = createModel(coreModel);
+    hiyoriModel.internalModel.update.mockImplementation(() => {
+      coreModel.setParameterValueById('ParamAngleX', 0);
+      coreModel.setParameterValueById('ParamAngleY', 0);
+      coreModel.setParameterValueById('ParamArmLA', -10);
+    });
+    modelRef.current = hiyoriModel;
+    const event = {
+      type: 'live2d_motion_v3', motion_id: 'hiyori-arm-order', source: 'user_command',
+      created_at_ms: Date.now(), expires_at_ms: Date.now() + 3000, duration_ms: 800,
+      variation_seed: 12, blend: { in_ms: 0, out_ms: 0 },
+      tracks: [
+        { channel: 'head_yaw', mode: 'override', keyframes: [{ t: 0, value: 0.4 }, { t: 1, value: 0.4 }] },
+        { channel: 'left_arm_raise', mode: 'override', keyframes: [{ t: 0, value: 0.5 }, { t: 1, value: 0.5 }] },
+        { channel: 'left_hand_wave', mode: 'override', keyframes: [{ t: 0, value: 1 }, { t: 1, value: 1 }] },
+      ],
+    };
+    const view = renderController({ currentModel: 'hiyori', lipValue: { rhubarb: 'C' }, motionEvent: event });
+    coreModel.setParameterValueById.mockClear();
+
+    renderFrame(hiyoriModel);
+    const writes = coreModel.setParameterValueById.mock.calls;
+    const genericIndex = writes.findLastIndex(([id]) => id === 'ParamAngleX');
+    const armIndex = writes.findLastIndex(([id]) => id === 'ParamArmLA');
+    const handIndex = writes.findLastIndex(([id]) => id === 'ParamHandL');
+    const mouthIndex = writes.findLastIndex(([id]) => id === 'ParamMouthOpenY');
+
+    expect(genericIndex).toBeGreaterThanOrEqual(0);
+    expect(armIndex).toBeGreaterThan(genericIndex);
+    expect(handIndex).toBeGreaterThan(armIndex);
+    expect(mouthIndex).toBeGreaterThan(handIndex);
+    expect(writes.at(-1)[0]).toBe('ParamMouthForm');
+    view.unmount();
+  });
+
+  it('WebSocket generation 变化时清除仍在运行的模型专属轨道', () => {
+    const coreModel = createCoreModel([...IDS, 'ParamArmLA'], { partOpacityById: { PartArmA: 1 } });
+    const hiyoriModel = createModel(coreModel);
+    hiyoriModel.internalModel.update.mockImplementation(() => {
+      coreModel.setParameterValueById('ParamAngleX', 0);
+      coreModel.setParameterValueById('ParamAngleY', 0);
+      coreModel.setParameterValueById('ParamArmLA', -10);
+    });
+    modelRef.current = hiyoriModel;
+    const activeArm = {
+      type: 'live2d_motion_v3', motion_id: 'clear-on-generation', source: 'ai_reply',
+      created_at_ms: Date.now(), expires_at_ms: Date.now() + 3000, duration_ms: 800,
+      blend: { in_ms: 0, out_ms: 0 }, generation: 1,
+      tracks: [{ channel: 'left_arm_raise', mode: 'override', keyframes: [{ t: 0, value: 0.5 }, { t: 1, value: 0.5 }] }],
+    };
+    const view = renderController({ currentModel: 'hiyori', motionEvent: activeArm });
+    renderFrame(hiyoriModel);
+    expect(callsFor(coreModel, 'ParamArmLA').at(-1)[1]).toBe(-5);
+
+    coreModel.setParameterValueById.mockClear();
+    view.rerender({ model: 'hiyori', lip: { rhubarb: 'X' }, event: { generation: 2 } });
+    renderFrame(hiyoriModel);
+
+    expect(callsFor(coreModel, 'ParamArmLA')).toEqual([['ParamArmLA', -10]]);
     view.unmount();
   });
 

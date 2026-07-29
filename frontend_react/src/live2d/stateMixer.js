@@ -1,4 +1,5 @@
 import { SEMANTIC_CHANNELS } from './motionProtocol';
+import { channelsForModel } from './modelActionProfiles';
 
 export const SOURCE_PRIORITY = Object.freeze({
   legacy_fallback: 15,
@@ -9,6 +10,11 @@ export const SOURCE_PRIORITY = Object.freeze({
 
 const MAX_SEEN_MOTION_IDS = 256;
 const DEFAULT_REPLACEMENT_BLEND_MS = 140;
+const MIXER_CHANNELS = Object.freeze([...new Set([
+  ...SEMANTIC_CHANNELS,
+  ...channelsForModel('hiyori'),
+  ...channelsForModel('panda_cake'),
+])]);
 
 function clamp(value) {
   return Math.max(-1, Math.min(1, value));
@@ -25,7 +31,7 @@ function finiteMilliseconds(value) {
 function safeLayer(layer, { rejectOnReadError = false } = {}) {
   if (!layer || typeof layer !== 'object' || Array.isArray(layer)) return {};
   const output = {};
-  for (const channel of SEMANTIC_CHANNELS) {
+  for (const channel of MIXER_CHANNELS) {
     try {
       const value = layer[channel];
       if (finite(value)) output[channel] = clamp(value);
@@ -227,7 +233,29 @@ export function createLive2DStateMixer({ clock = () => Date.now() } = {}) {
         if (finite(lipSync[channel])) frame[channel] = clamp(lipSync[channel]);
       }
     }
+    const latestModelSpecific = [...samples].reverse().find(item => Object.keys(item.frame).some(channel => (
+      channel === 'left_arm_raise' || channel === 'right_arm_raise'
+      || channel === 'left_hand_wave' || channel === 'right_hand_wave'
+      || channel === 'panda_hug' || channel === 'hands_to_face'
+    )));
+    frame.monotonic_time_ms = currentMs;
+    frame.variation_seed = finite(latestModelSpecific?.motion?.variationSeed)
+      ? latestModelSpecific.motion.variationSeed
+      : 0;
     return frame;
+  }
+
+  function hasActiveSource(source, nowMs = clock()) {
+    const currentMs = finite(nowMs) ? nowMs : clock();
+    cleanupActiveMotions(currentMs);
+    return [...active.values()].some(record => record.motion.source === source);
+  }
+
+  function hasActiveChannel(channel, nowMs = clock()) {
+    if (typeof channel !== 'string') return false;
+    const currentMs = finite(nowMs) ? nowMs : clock();
+    cleanupActiveMotions(currentMs);
+    return [...active.values()].some(record => Object.hasOwn(record.motion.trackModes || {}, channel));
   }
 
   function reset() {
@@ -236,5 +264,5 @@ export function createLive2DStateMixer({ clock = () => Date.now() } = {}) {
     sequence = 0;
   }
 
-  return Object.freeze({ enqueue, sample, reset });
+  return Object.freeze({ enqueue, sample, reset, hasActiveSource, hasActiveChannel });
 }
