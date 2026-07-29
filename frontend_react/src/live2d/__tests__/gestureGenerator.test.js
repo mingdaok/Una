@@ -169,11 +169,11 @@ describe('createImmediateMotion', () => {
     });
     const track = motion.tracks[0];
 
-    expect(motion.duration_ms).toBe(2230);
+    expect(motion.duration_ms).toBe(3430);
     expect(track.keyframes).toEqual([
       expect.objectContaining({ t: 0, value: 0 }),
-      expect.objectContaining({ t: 180 / 2230, value: 1 }),
-      expect.objectContaining({ t: 1980 / 2230, value: 1 }),
+      expect.objectContaining({ t: 180 / 3430, value: 1 }),
+      expect.objectContaining({ t: 3180 / 3430, value: 1 }),
       expect.objectContaining({ t: 1, value: 0 }),
     ]);
   });

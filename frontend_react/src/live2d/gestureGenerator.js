@@ -25,7 +25,7 @@ const GESTURE_CHANNELS = Object.freeze({
 });
 
 const SPEED_MS = Object.freeze({ normal: 260, slow: 420, fast: 180 });
-const PANDA_POSE_TIMING = Object.freeze({ enterMs: 180, holdMs: 1800, exitMs: 250 });
+const PANDA_POSE_TIMING = Object.freeze({ enterMs: 180, holdMs: 3000, exitMs: 250 });
 const PANDA_POSE_DURATION_MS = PANDA_POSE_TIMING.enterMs + PANDA_POSE_TIMING.holdMs + PANDA_POSE_TIMING.exitMs;
 const PANDA_POSE_GESTURES = new Set(['panda_hug', 'hands_to_face']);
 const MAX_TRACKS = 8;
