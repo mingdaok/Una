@@ -162,6 +162,22 @@ describe('createImmediateMotion', () => {
     })).toBeNull();
   });
 
+  it('holds panda pose commands before easing them back to rest', () => {
+    const motion = createImmediateMotion(parseImmediateGesture('抱熊猫'), {
+      ...options,
+      modelName: 'panda_cake',
+    });
+    const track = motion.tracks[0];
+
+    expect(motion.duration_ms).toBe(2230);
+    expect(track.keyframes).toEqual([
+      expect.objectContaining({ t: 0, value: 0 }),
+      expect.objectContaining({ t: 180 / 2230, value: 1 }),
+      expect.objectContaining({ t: 1980 / 2230, value: 1 }),
+      expect.objectContaining({ t: 1, value: 0 }),
+    ]);
+  });
+
   it.each([1, 2, 3, 4, 5])('keeps all %i normal nod cycles as neutral-to-peak-to-neutral frames', count => {
     const motion = createImmediateMotion(parseImmediateGesture(`点头${count}次`), options);
     const track = motion.tracks.find(item => item.channel === 'head_pitch');

@@ -25,6 +25,9 @@ const GESTURE_CHANNELS = Object.freeze({
 });
 
 const SPEED_MS = Object.freeze({ normal: 260, slow: 420, fast: 180 });
+const PANDA_POSE_TIMING = Object.freeze({ enterMs: 180, holdMs: 1800, exitMs: 250 });
+const PANDA_POSE_DURATION_MS = PANDA_POSE_TIMING.enterMs + PANDA_POSE_TIMING.holdMs + PANDA_POSE_TIMING.exitMs;
+const PANDA_POSE_GESTURES = new Set(['panda_hug', 'hands_to_face']);
 const MAX_TRACKS = 8;
 let fallbackMotionSequence = 0;
 
@@ -62,6 +65,7 @@ function motionId(nowMs, seed, idFactory) {
 }
 
 function durationForGesture(gesture) {
+  if (PANDA_POSE_GESTURES.has(gesture.kind)) return PANDA_POSE_DURATION_MS;
   const unitMs = SPEED_MS[gesture.speed] ?? SPEED_MS.normal;
   return clampedCount(gesture.count) * unitMs;
 }
@@ -96,6 +100,15 @@ function addGestureCurve(trackFrames, gesture, start, end, seed, groupIndex, ges
   const span = end - start;
 
   mappings.forEach(([channel, direction]) => {
+    if (PANDA_POSE_GESTURES.has(gesture.kind)) {
+      const enterT = start + (span * (PANDA_POSE_TIMING.enterMs / PANDA_POSE_DURATION_MS));
+      const exitT = start + (span * ((PANDA_POSE_TIMING.enterMs + PANDA_POSE_TIMING.holdMs) / PANDA_POSE_DURATION_MS));
+      addFrame(trackFrames, channel, start, 0);
+      addFrame(trackFrames, channel, enterT, direction);
+      addFrame(trackFrames, channel, exitT, direction);
+      addFrame(trackFrames, channel, end, 0);
+      return;
+    }
     addFrame(trackFrames, channel, start, 0);
     for (let index = 0; index < count; index += 1) {
       const cycleStart = start + ((span * index) / count);
