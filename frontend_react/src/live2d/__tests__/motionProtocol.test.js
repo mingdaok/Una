@@ -72,6 +72,14 @@ describe('normalizeMotionEvent', () => {
     expect(normalized.tracks.map(item => item.channel)).toEqual(['left_arm_raise', 'panda_hug']);
   });
 
+  it('rejects negative panda activation instead of accepting a track projection will ignore', () => {
+    const normalized = normalizeMotionEvent(validEvent({
+      tracks: [track('panda_hug', [[0, 0], [0.5, -0.1], [1, 0]])],
+    }), { nowMs: 2000, modelName: 'panda_cake' });
+
+    expect(normalized).toBeNull();
+  });
+
   it('rejects events whose source is outside the v3 protocol source set', () => {
     expect(normalizeMotionEvent(validEvent({ source: 'network_override' }), { nowMs: 2000 })).toBeNull();
   });

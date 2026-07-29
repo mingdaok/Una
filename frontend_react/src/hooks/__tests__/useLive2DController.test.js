@@ -387,17 +387,30 @@ describe('useLive2DController 统一状态混合', () => {
     view.unmount();
   });
 
-  it('在现有 post-update 帧中入队低优先级本地随机动作，且不改写嘴型', () => {
+  it('ready 后先等待首个冷却，再在现有 post-update 帧中入队本地随机动作', () => {
     vi.setSystemTime(new Date('2026-07-29T12:00:00.000Z'));
     const view = renderController({ currentModel: 'hiyori', motionEvent: null });
     const coreModel = modelRef.current.internalModel.coreModel;
+    const motionParameterIds = [
+      'ParamAngleX', 'ParamAngleY', 'ParamBodyAngleX', 'ParamBodyAngleY',
+      'ParamBodyAngleZ', 'ParamEyeBallX', 'ParamEyeBallY',
+    ];
 
     renderFrame(modelRef.current);
-    vi.advanceTimersByTime(500);
+    vi.advanceTimersByTime(2999);
     renderFrame(modelRef.current);
+    expect(motionParameterIds.flatMap(id => callsFor(coreModel, id))
+      .every(([, value]) => value === 0)).toBe(true);
 
-    expect(['ParamAngleX', 'ParamAngleY', 'ParamBodyAngleX', 'ParamBodyAngleY', 'ParamBodyAngleZ', 'ParamEyeBallX', 'ParamEyeBallY']
-      .flatMap(id => callsFor(coreModel, id)).some(([, value]) => value !== 0)).toBe(true);
+    let scheduledWrite = false;
+    for (let elapsed = 3000; elapsed <= 6000 && !scheduledWrite; elapsed += 500) {
+      vi.advanceTimersByTime(500);
+      renderFrame(modelRef.current);
+      scheduledWrite = motionParameterIds.flatMap(id => callsFor(coreModel, id))
+        .some(([, value]) => value !== 0);
+    }
+
+    expect(scheduledWrite).toBe(true);
     expect(callsFor(coreModel, 'ParamMouthOpenY').at(-1)[1]).toBe(0);
     expect(callsFor(coreModel, 'ParamMouthForm').at(-1)[1]).toBe(0);
     view.unmount();

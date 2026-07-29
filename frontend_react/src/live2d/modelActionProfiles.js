@@ -14,8 +14,8 @@ const CHANNEL_RANGES = Object.freeze({
   right_arm_raise: Object.freeze({ min: 0, max: 1 }),
   left_hand_wave: Object.freeze({ min: -1, max: 1 }),
   right_hand_wave: Object.freeze({ min: -1, max: 1 }),
-  panda_hug: Object.freeze({ min: -1, max: 1 }),
-  hands_to_face: Object.freeze({ min: -1, max: 1 }),
+  panda_hug: Object.freeze({ min: 0, max: 1 }),
+  hands_to_face: Object.freeze({ min: 0, max: 1 }),
 });
 
 function freezeProfile(profile) {

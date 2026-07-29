@@ -14,9 +14,9 @@ function trackChannels(event) {
 describe('ModelActionScheduler', () => {
   it('replays the same seed, clock and model inputs as the same safe event sequence', () => {
     const collect = () => {
-      const scheduler = new ModelActionScheduler({ sessionSeed: 'repeatable-session' });
+      const scheduler = new ModelActionScheduler({ sessionSeed: 'repeatable-session', now: () => 0 });
       scheduler.reset({ modelName: 'hiyori', generation: 3 });
-      return [0, 6000, 12000, 18000, 24000].map(nowMs => scheduler.schedule({
+      return [0, 6000, 12000, 18000, 24000, 30000, 36000, 42000].map(nowMs => scheduler.schedule({
         modelName: 'hiyori', emotion: 'happy', nowMs, mixer: sourceGate(),
       })).filter(Boolean).map(event => ({
         motion_id: event.motion_id,
@@ -28,8 +28,32 @@ describe('ModelActionScheduler', () => {
     expect(collect()).toEqual(collect());
   });
 
+  it('stays idle after reset until the seeded first common cooldown expires', () => {
+    const scheduler = new ModelActionScheduler({
+      sessionSeed: 'first-deadline',
+      now: () => 10000,
+    });
+    scheduler.reset({ modelName: 'hiyori', generation: 1 });
+
+    expect(scheduler.schedule({
+      modelName: 'hiyori', emotion: 'neutral', nowMs: 10000, mixer: sourceGate(),
+    })).toBeNull();
+    expect(scheduler.schedule({
+      modelName: 'hiyori', emotion: 'neutral', nowMs: 12999, mixer: sourceGate(),
+    })).toBeNull();
+
+    const first = [13000, 14000, 15000, 16000]
+      .map(nowMs => scheduler.schedule({
+        modelName: 'hiyori', emotion: 'neutral', nowMs, mixer: sourceGate(),
+      }))
+      .find(Boolean);
+    expect(first).not.toBeNull();
+    expect(first.created_at_ms).toBeGreaterThanOrEqual(13000);
+    expect(first.created_at_ms).toBeLessThanOrEqual(16000);
+  });
+
   it('keeps ordinary idle events 3–6 seconds apart and prevents the last three families from repeating', () => {
-    const scheduler = new ModelActionScheduler({ sessionSeed: 'ordinary-cooldown' });
+    const scheduler = new ModelActionScheduler({ sessionSeed: 'ordinary-cooldown', now: () => 0 });
     scheduler.reset({ modelName: 'hiyori', generation: 1 });
     const events = [];
     for (let nowMs = 0; nowMs <= 48000; nowMs += 1000) {
@@ -46,42 +70,34 @@ describe('ModelActionScheduler', () => {
     }
   });
 
-  it('does not schedule the next model-specific event before its selected 25 second cooldown', () => {
-    const scheduler = new ModelActionScheduler({ sessionSeed: 'special-cooldown' });
+  it('applies a deterministic low-probability gate when a model-specific candidate is due', () => {
+    const scheduler = new ModelActionScheduler({ sessionSeed: 'special-cooldown', now: () => 0 });
     scheduler.reset({ modelName: 'panda_cake', generation: 5 });
-    scheduler.cooldown = (minimum, maximum) => maximum;
+    scheduler.random = () => 0.2;
 
-    const first = scheduler.schedule({ modelName: 'panda_cake', emotion: 'comfort', nowMs: 0, mixer: sourceGate() });
-    const beforeCooldown = scheduler.schedule({
-      modelName: 'panda_cake', emotion: 'comfort', nowMs: 24999, mixer: sourceGate(),
-    });
-    const afterCooldown = scheduler.schedule({
+    const declined = scheduler.schedule({
       modelName: 'panda_cake', emotion: 'comfort', nowMs: 25000, mixer: sourceGate(),
     });
-
-    expect(trackChannels(first).some(channel => channel === 'panda_hug' || channel === 'hands_to_face')).toBe(true);
-    expect(beforeCooldown && trackChannels(beforeCooldown).some(channel => (
+    expect(declined && trackChannels(declined).some(channel => (
       channel === 'panda_hug' || channel === 'hands_to_face'
     ))).toBeFalsy();
-    expect(trackChannels(afterCooldown).some(channel => channel === 'panda_hug' || channel === 'hands_to_face')).toBe(true);
-  });
 
-  it('does not let matching model-specific actions slip past their 25 second deadline', () => {
-    const scheduler = new ModelActionScheduler({ sessionSeed: 'special-deadline' });
-    scheduler.reset({ modelName: 'panda_cake', generation: 1 });
-    scheduler.random = () => 0.99;
-    const events = [];
-    for (let nowMs = 0; nowMs <= 25000; nowMs += 1000) {
-      const event = scheduler.schedule({ modelName: 'panda_cake', emotion: 'comfort', nowMs, mixer: sourceGate() });
-      if (event) events.push(event);
-    }
-    expect(events.some(event => trackChannels(event).some(channel => (
-      channel === 'panda_hug' || channel === 'hands_to_face'
-    )))).toBe(true);
+    const acceptedScheduler = new ModelActionScheduler({
+      sessionSeed: 'special-cooldown',
+      now: () => 0,
+    });
+    acceptedScheduler.reset({ modelName: 'panda_cake', generation: 5 });
+    acceptedScheduler.random = () => 0.19;
+    const accepted = acceptedScheduler.schedule({
+      modelName: 'panda_cake', emotion: 'comfort', nowMs: 25000, mixer: sourceGate(),
+    });
+    expect(trackChannels(accepted)).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^(panda_hug|hands_to_face)$/),
+    ]));
   });
 
   it('stays idle for unknown models and active user or AI actions', () => {
-    const scheduler = new ModelActionScheduler({ sessionSeed: 'priority-gate' });
+    const scheduler = new ModelActionScheduler({ sessionSeed: 'priority-gate', now: () => 0 });
 
     expect(scheduler.schedule({ modelName: 'unknown', emotion: 'happy', nowMs: 0, mixer: sourceGate() })).toBeNull();
     scheduler.reset({ modelName: 'hiyori', generation: 1 });
@@ -91,34 +107,37 @@ describe('ModelActionScheduler', () => {
 
   it('does not treat happy or joy as panda-specific action contexts', () => {
     for (const emotion of ['happy', 'joy']) {
-      const scheduler = new ModelActionScheduler({ sessionSeed: `panda-${emotion}` });
+      const scheduler = new ModelActionScheduler({ sessionSeed: `panda-${emotion}`, now: () => 0 });
       scheduler.reset({ modelName: 'panda_cake', generation: 1 });
-      const event = scheduler.schedule({ modelName: 'panda_cake', emotion, nowMs: 0, mixer: sourceGate() });
+      const event = scheduler.schedule({
+        modelName: 'panda_cake', emotion, nowMs: 6000, mixer: sourceGate(),
+      });
 
       expect(trackChannels(event).some(channel => channel === 'panda_hug' || channel === 'hands_to_face')).toBe(false);
     }
   });
 
   it('reset clears cooldown and history when a ready model or generation changes', () => {
-    const scheduler = new ModelActionScheduler({ sessionSeed: 'reset-isolation' });
+    const now = [0];
+    const scheduler = new ModelActionScheduler({
+      sessionSeed: 'reset-isolation',
+      now: () => now[0],
+    });
     scheduler.reset({ modelName: 'hiyori', generation: 1 });
-    expect(scheduler.schedule({ modelName: 'hiyori', emotion: 'happy', nowMs: 0, mixer: sourceGate() })).not.toBeNull();
-    expect(scheduler.schedule({ modelName: 'hiyori', emotion: 'happy', nowMs: 1000, mixer: sourceGate() })).toBeNull();
+    expect(scheduler.schedule({ modelName: 'hiyori', emotion: 'happy', nowMs: 0, mixer: sourceGate() })).toBeNull();
 
+    now[0] = 1000;
     scheduler.reset({ modelName: 'panda_cake', generation: 2 });
     const afterReset = scheduler.schedule({
       modelName: 'panda_cake', emotion: 'comfort', nowMs: 1000, mixer: sourceGate(),
     });
 
-    expect(afterReset).not.toBeNull();
-    expect(trackChannels(afterReset)).not.toEqual(expect.arrayContaining([
-      'left_arm_raise', 'right_arm_raise', 'left_hand_wave', 'right_hand_wave',
-    ]));
+    expect(afterReset).toBeNull();
   });
 
   it('never crosses model action families or emits mouth channels', () => {
-    const hiyori = new ModelActionScheduler({ sessionSeed: 'hiyori-safe' });
-    const panda = new ModelActionScheduler({ sessionSeed: 'panda-safe' });
+    const hiyori = new ModelActionScheduler({ sessionSeed: 'hiyori-safe', now: () => 0 });
+    const panda = new ModelActionScheduler({ sessionSeed: 'panda-safe', now: () => 0 });
     hiyori.reset({ modelName: 'hiyori', generation: 1 });
     panda.reset({ modelName: 'panda_cake', generation: 1 });
     const hiyoriEvents = [0, 6000, 12000, 18000, 24000, 30000].map(nowMs => hiyori.schedule({

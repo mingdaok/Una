@@ -79,6 +79,7 @@ async def test_panda_prompt_allows_generic_and_panda_channels_only():
     assert "right_arm_raise" not in prompt
     assert "left_hand_wave" not in prompt
     assert "right_hand_wave" not in prompt
+    assert "panda_hug、hands_to_face 的值域为 0..1" in prompt
 
 
 @pytest.mark.asyncio

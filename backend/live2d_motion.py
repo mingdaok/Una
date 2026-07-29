@@ -24,6 +24,7 @@ MODEL_CHANNELS = {
     "panda_cake": GENERIC_CHANNELS | PANDA_CAKE_CHANNELS,
 }
 ARM_RAISE_CHANNELS = frozenset({"left_arm_raise", "right_arm_raise"})
+UNIT_INTERVAL_CHANNELS = ARM_RAISE_CHANNELS | PANDA_CAKE_CHANNELS
 ALLOWED_MODES = frozenset({"override", "additive"})
 ALLOWED_EASINGS = frozenset({"linear", "ease_in", "ease_out", "ease_in_out"})
 MAX_TRACKS = 8
@@ -57,7 +58,7 @@ def allowed_channels_for_model(model_name: str | None) -> frozenset[str]:
 
 
 def _allowed_value_range(channel):
-    if channel in ARM_RAISE_CHANNELS:
+    if channel in UNIT_INTERVAL_CHANNELS:
         return 0.0, 1.0
     return -1.0, 1.0
 

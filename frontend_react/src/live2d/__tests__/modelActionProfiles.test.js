@@ -43,7 +43,9 @@ describe('model action profiles', () => {
     expect(isSemanticValueValid('left_arm_raise', -0.1)).toBe(false);
     expect(isSemanticValueValid('left_arm_raise', 1.1)).toBe(false);
     expect(isSemanticValueValid('left_hand_wave', -1)).toBe(true);
-    expect(isSemanticValueValid('panda_hug', -1)).toBe(true);
+    expect(isSemanticValueValid('panda_hug', 0)).toBe(true);
+    expect(isSemanticValueValid('panda_hug', -0.1)).toBe(false);
+    expect(isSemanticValueValid('hands_to_face', -0.1)).toBe(false);
     expect(isSemanticValueValid('panda_hug', 1.1)).toBe(false);
   });
 

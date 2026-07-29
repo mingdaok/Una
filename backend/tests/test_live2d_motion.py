@@ -165,7 +165,7 @@ def test_panda_channels_are_kept_but_hiyori_arm_channels_are_dropped():
     panda_hug = {
         "channel": "panda_hug",
         "mode": "additive",
-        "keyframes": [{"t": 0, "value": -1}, {"t": 1, "value": 1}],
+        "keyframes": [{"t": 0, "value": 0}, {"t": 1, "value": 1}],
     }
     hiyori_arm = {
         "channel": "right_arm_raise",
@@ -178,6 +178,24 @@ def test_panda_channels_are_kept_but_hiyori_arm_channels_are_dropped():
     )
 
     assert [track["channel"] for track in parsed["tracks"]] == ["panda_hug"]
+
+
+def test_panda_channels_reject_negative_activation_values():
+    negative_hug = {
+        "channel": "panda_hug",
+        "mode": "override",
+        "keyframes": [{"t": 0, "value": 0}, {"t": 1, "value": -0.1}],
+    }
+    negative_face = {
+        "channel": "hands_to_face",
+        "mode": "override",
+        "keyframes": [{"t": 0, "value": 0}, {"t": 1, "value": -0.1}],
+    }
+
+    assert parse_motion_plan(
+        valid_motion(tracks=[negative_hug, negative_face]),
+        model_name="panda_cake",
+    ) is None
 
 
 def test_unknown_or_missing_model_keeps_only_generic_channels():

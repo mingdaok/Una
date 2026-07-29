@@ -4,6 +4,7 @@ const COMMON_COOLDOWN_MIN_MS = 3000;
 const COMMON_COOLDOWN_MAX_MS = 6000;
 const SPECIAL_COOLDOWN_MIN_MS = 15000;
 const SPECIAL_COOLDOWN_MAX_MS = 25000;
+const SPECIAL_ACTION_PROBABILITY = 0.2;
 const HISTORY_SIZE = 3;
 
 const COMMON_CANDIDATES = Object.freeze([
@@ -85,10 +86,12 @@ export class ModelActionScheduler {
     this.modelName = normalizeLive2DModel(modelName);
     this.generation = Number.isFinite(generation) ? generation : 0;
     this.randomState = seedFrom(`${this.sessionSeed}:${this.modelName ?? 'unknown'}:${this.generation}`);
-    this.nextCommonAtMs = 0;
-    this.nextSpecialAtMs = 0;
     this.history = [];
     this.sequence = 0;
+    const currentMs = this.now();
+    const resetAtMs = finite(currentMs) ? currentMs : defaultClock();
+    this.nextCommonAtMs = resetAtMs + this.cooldown(COMMON_COOLDOWN_MIN_MS, COMMON_COOLDOWN_MAX_MS);
+    this.nextSpecialAtMs = resetAtMs + this.cooldown(SPECIAL_COOLDOWN_MIN_MS, SPECIAL_COOLDOWN_MAX_MS);
   }
 
   random() {
@@ -157,12 +160,11 @@ export class ModelActionScheduler {
     if (!normalizedModel || normalizedModel !== this.modelName || this.isBlocked(mixer, currentMs)) return null;
 
     const specialDue = currentMs >= this.nextSpecialAtMs && this.supportsSpecial(normalizedModel, emotion);
-    // The 15–25 second cadence is the low-frequency gate. Once its seeded due
-    // time arrives, emit deterministically instead of retrying every frame.
     if (specialDue) {
-      const special = this.choose(SPECIAL_CANDIDATES[normalizedModel]);
-      if (special) {
-        this.nextSpecialAtMs = currentMs + this.cooldown(SPECIAL_COOLDOWN_MIN_MS, SPECIAL_COOLDOWN_MAX_MS);
+      this.nextSpecialAtMs = currentMs + this.cooldown(SPECIAL_COOLDOWN_MIN_MS, SPECIAL_COOLDOWN_MAX_MS);
+      if (this.random() < SPECIAL_ACTION_PROBABILITY) {
+        const special = this.choose(SPECIAL_CANDIDATES[normalizedModel]);
+        if (!special) return null;
         this.nextCommonAtMs = currentMs + this.cooldown(COMMON_COOLDOWN_MIN_MS, COMMON_COOLDOWN_MAX_MS);
         this.history.push(special.family);
         this.history = this.history.slice(-HISTORY_SIZE);
