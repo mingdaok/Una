@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { compileLegacyAction } from '../live2d/actionComposer';
 import { buildModelCapabilityMap } from '../live2d/modelCapabilities';
 import { compileMotionPlan, normalizeMotionEvent } from '../live2d/motionProtocol';
+import { installPostUpdateHook } from '../live2d/postUpdateHook';
 import { createLive2DStateMixer } from '../live2d/stateMixer';
 
 const EMOTION_FRAMES = Object.freeze({
@@ -35,6 +36,17 @@ function clamp(value) {
 
 function lerp(current, target, factor) {
   return current + (target - current) * factor;
+}
+
+function writeProjected(coreModel, projected) {
+  for (const { id, value } of projected) {
+    if (!id || !finite(value)) continue;
+    try {
+      coreModel.setParameterValueById(id, value);
+    } catch {
+      // 单个模型参数失败不能阻塞本帧其他参数和下一帧。
+    }
+  }
 }
 
 function emotionFrame(emotion) {
@@ -110,7 +122,63 @@ export function useLive2DController(appRef, modelRef, currentModel, emotion, lip
   const breathRef = useRef({ phase: 0 });
   const mouthOpenRef = useRef(0);
   const mouthFormRef = useRef(0);
+  const applyControllerFrameRef = useRef(() => {});
   currentModelRef.current = currentModel;
+
+  applyControllerFrameRef.current = (deltaMs = 1000 / 60) => {
+    const model = modelRef.current;
+    const coreModel = model?.internalModel?.coreModel;
+    const capabilityMap = capabilityMapRef.current;
+    if (!coreModel?.setParameterValueById || !capabilityMap) return;
+
+    const frameStep = finite(deltaMs)
+      ? Math.max(0, Math.min(4, deltaMs / (1000 / 60)))
+      : 1;
+    const target = emotionTargetRef.current;
+    const current = emotionCurrentRef.current;
+    for (const key of Object.keys(target)) {
+      current[key] = clamp(lerp(current[key] ?? 0, target[key], 0.12));
+    }
+
+    const blink = blinkRef.current;
+    blink.timer -= frameStep;
+    if (!blink.active && blink.timer <= 0) {
+      blink.active = true;
+      blink.progress = 0;
+      blink.timer = 180 + Math.floor(Math.random() * 240);
+    }
+    let blinkModifier = 0;
+    if (blink.active) {
+      blink.progress += 0.18 * frameStep;
+      blinkModifier = blink.progress < 0.5
+        ? -blink.progress * 2
+        : -(1 - blink.progress) * 2;
+      if (blink.progress >= 1) blink.active = false;
+    }
+
+    breathRef.current.phase = (
+      breathRef.current.phase + (frameStep / 60) * Math.PI
+    ) % (Math.PI * 2);
+    const breath = (Math.sin(breathRef.current.phase) + 1) / 2;
+    const lipSync = lipSyncFrame(lipValueRef.current, mouthOpenRef, mouthFormRef);
+    const semanticFrame = mixerRef.current.sample({
+      nowMs: Date.now(),
+      idle: {
+        head_yaw: 0,
+        head_pitch: 0,
+        body_yaw: 0,
+        body_pitch: 0,
+        body_roll: 0,
+      },
+      emotion: current,
+      blink: { eye_open: blinkModifier },
+      lipSync,
+    });
+
+    writeProjected(coreModel, capabilityMap.project(semanticFrame));
+    writeProjected(coreModel, capabilityMap.projectBreath(breath));
+    writeProjected(coreModel, capabilityMap.projectLipSync(lipSync));
+  };
 
   useEffect(() => {
     lipValueRef.current = lipValue || { rhubarb: 'X' };
@@ -132,13 +200,42 @@ export function useLive2DController(appRef, modelRef, currentModel, emotion, lip
       !modelReady
       || modelReady.modelName !== currentModel
       || modelReady.model !== modelRef.current
-    ) return;
-    const coreModel = modelReady.model?.internalModel?.coreModel;
-    if (!coreModel?.setParameterValueById) return;
+    ) return undefined;
+
+    const internalModel = modelReady.model?.internalModel;
+    const coreModel = internalModel?.coreModel;
+    if (
+      typeof internalModel?.update !== 'function'
+      || typeof coreModel?.setParameterValueById !== 'function'
+    ) return undefined;
 
     const replacesReadyInstance = capabilityMapRef.current !== null;
-    capabilityMapRef.current = buildModelCapabilityMap(coreModel, { modelName: currentModel });
+    capabilityMapRef.current = buildModelCapabilityMap(coreModel, {
+      modelName: currentModel,
+    });
     if (replacesReadyInstance) mixerRef.current.reset();
+
+    const installedModel = modelReady.model;
+    const removePostUpdateHook = installPostUpdateHook(
+      internalModel,
+      deltaMs => applyControllerFrameRef.current(deltaMs),
+      {
+        onAfterUpdateError: error => {
+          console.warn(
+            '[Live2DCtrl] Post-update frame failed and will recover next frame.',
+            error,
+          );
+        },
+      },
+    );
+
+    return () => {
+      removePostUpdateHook();
+      if (modelRef.current === installedModel) {
+        capabilityMapRef.current = null;
+      }
+      mixerRef.current.reset();
+    };
   }, [currentModel, modelReady?.version, modelReady?.model, modelReady?.modelName, modelRef]);
 
   useEffect(() => {
@@ -155,85 +252,4 @@ export function useLive2DController(appRef, modelRef, currentModel, emotion, lip
     if (compiled) mixerRef.current.enqueue(compiled, nowMs);
   }, [motionEvent]);
 
-  useEffect(() => {
-    let pollTimer = null;
-    let removeTicker = null;
-    let disposed = false;
-
-    const writeProjected = (coreModel, projected) => {
-      for (const { id, value } of projected) {
-        if (!id || !finite(value)) continue;
-        try {
-          coreModel.setParameterValueById(id, value);
-        } catch {
-          // 单个模型参数失败不能中断本帧其余保留层和下帧动画。
-        }
-      }
-    };
-
-    const tick = (deltaTime = 1) => {
-      try {
-        const model = modelRef.current;
-        const coreModel = model?.internalModel?.coreModel;
-        const capabilityMap = capabilityMapRef.current;
-        if (!coreModel?.setParameterValueById || !capabilityMap) return;
-
-        const target = emotionTargetRef.current;
-        const current = emotionCurrentRef.current;
-        for (const key of Object.keys(target)) current[key] = clamp(lerp(current[key] ?? 0, target[key], 0.12));
-
-        const blink = blinkRef.current;
-        blink.timer -= 1;
-        if (!blink.active && blink.timer <= 0) {
-          blink.active = true;
-          blink.progress = 0;
-          blink.timer = 180 + Math.floor(Math.random() * 240);
-        }
-        let blinkModifier = 0;
-        if (blink.active) {
-          blink.progress += 0.18;
-          blinkModifier = blink.progress < 0.5 ? -blink.progress * 2 : -(1 - blink.progress) * 2;
-          if (blink.progress >= 1) blink.active = false;
-        }
-
-        const dt = finite(deltaTime) ? Math.max(0, deltaTime) / 60 : 1 / 60;
-        breathRef.current.phase = (breathRef.current.phase + dt * Math.PI) % (Math.PI * 2);
-        const breath = (Math.sin(breathRef.current.phase) + 1) / 2;
-        const lipSync = lipSyncFrame(lipValueRef.current, mouthOpenRef, mouthFormRef);
-        const semanticFrame = mixerRef.current.sample({
-          nowMs: Date.now(),
-          idle: { head_yaw: 0, head_pitch: 0, body_yaw: 0, body_pitch: 0, body_roll: 0 },
-          emotion: current,
-          blink: { eye_open: blinkModifier },
-          lipSync,
-        });
-
-        // 运动层只能经 project() 触达白名单语义参数；嘴与呼吸只走独立保留层。
-        writeProjected(coreModel, capabilityMap.project(semanticFrame));
-        writeProjected(coreModel, capabilityMap.projectBreath(breath));
-        writeProjected(coreModel, capabilityMap.projectLipSync(lipSync));
-      } catch (error) {
-        console.warn('[Live2DCtrl] Ticker frame failed and will recover next frame.', error);
-      }
-    };
-
-    const mountTicker = () => {
-      if (disposed) return;
-      const ticker = appRef.current?.ticker;
-      if (!ticker?.add) {
-        pollTimer = setTimeout(mountTicker, 100);
-        return;
-      }
-      ticker.add(tick, undefined, -25);
-      removeTicker = () => ticker.remove?.(tick);
-    };
-
-    mountTicker();
-    return () => {
-      disposed = true;
-      if (pollTimer) clearTimeout(pollTimer);
-      removeTicker?.();
-      mixerRef.current.reset();
-    };
-  }, [appRef, modelRef]);
 }

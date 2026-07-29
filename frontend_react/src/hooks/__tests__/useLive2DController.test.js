@@ -31,13 +31,38 @@ const IDS = [
 ];
 
 function createCoreModel(ids = IDS) {
+  const values = new Map(ids.map((id, index) => [
+    id,
+    ids[index].includes('Eye') ? 1 : 0,
+  ]));
   return {
     _parameterIds: ids,
     getParameterCount: () => ids.length,
     getParameterMinimumValue: index => ids[index].includes('Open') ? 0 : -30,
     getParameterMaximumValue: index => ids[index].includes('Open') ? 1 : 30,
     getParameterDefaultValue: index => ids[index].includes('Eye') ? 1 : 0,
-    setParameterValueById: vi.fn(),
+    getParameterValueById: id => values.get(id),
+    setParameterValueById: vi.fn((id, value) => values.set(id, value)),
+  };
+}
+
+function createModel(coreModel = createCoreModel()) {
+  const internalModel = {
+    coreModel,
+    update: vi.fn(() => {
+      coreModel.setParameterValueById('ParamAngleX', 0);
+      coreModel.setParameterValueById('ParamAngleY', 0);
+    }),
+  };
+  return { internalModel };
+}
+
+function renderFrame(model, deltaMs = 1000 / 60, elapsedMs = Date.now()) {
+  const result = model.internalModel.update(deltaMs, elapsedMs);
+  return {
+    result,
+    angleX: model.internalModel.coreModel.getParameterValueById('ParamAngleX'),
+    angleY: model.internalModel.coreModel.getParameterValueById('ParamAngleY'),
   };
 }
 
@@ -63,7 +88,6 @@ function callsFor(coreModel, id) {
 }
 
 describe('useLive2DController 统一状态混合', () => {
-  let tickerCallback;
   let appRef;
   let modelRef;
 
@@ -72,11 +96,8 @@ describe('useLive2DController 统一状态混合', () => {
     vi.setSystemTime(new Date('2026-07-29T12:00:00.000Z'));
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     protocolControl.brokenMotionId = null;
-    appRef = { current: { ticker: {
-      add: vi.fn(callback => { tickerCallback = callback; }),
-      remove: vi.fn(),
-    } } };
-    modelRef = { current: { internalModel: { coreModel: createCoreModel() } } };
+    appRef = { current: null };
+    modelRef = { current: createModel() };
   });
 
   afterEach(() => {
@@ -88,14 +109,32 @@ describe('useLive2DController 统一状态混合', () => {
     const initialReadyToken = readyToken === undefined
       ? { model: modelRef.current, modelName: currentModel, version: currentModel }
       : readyToken;
-    return renderHook(({ model, lip, event, ready }) => useLive2DController(
+    return renderHook(({ model, lip, event, ready = initialReadyToken }) => useLive2DController(
       appRef, modelRef, model, 'neutral', lip, event, ready,
     ), { initialProps: { model: currentModel, lip: lipValue, event: motionEvent, ready: initialReadyToken } });
   }
 
+  it('原生更新重置参数后仍在当前绘制前写入可见摇头值', () => {
+    const originalUpdate = modelRef.current.internalModel.update;
+    const view = renderController({
+      motionEvent: motion({
+        id: 'visible-after-native-update',
+        source: 'user_command',
+        channel: 'head_yaw',
+        value: 0.8,
+      }),
+    });
+
+    const frame = renderFrame(modelRef.current);
+
+    expect(originalUpdate).toHaveBeenCalledOnce();
+    expect(frame.angleX).toBeGreaterThan(0);
+    view.unmount();
+  });
+
   it('将 v3 head_pitch 投影写入 ParamAngleY', () => {
     const view = renderController({ motionEvent: motion({ id: 'pitch', channel: 'head_pitch', value: 0.6 }) });
-    tickerCallback(1);
+    renderFrame(modelRef.current);
     expect(callsFor(modelRef.current.internalModel.coreModel, 'ParamAngleY').at(-1)[1]).toBeGreaterThan(0);
     view.unmount();
   });
@@ -103,7 +142,7 @@ describe('useLive2DController 统一状态混合', () => {
   it('用户命令与 AI 回复在不同通道时都会写入', () => {
     const view = renderController({ motionEvent: motion({ id: 'user-pitch', source: 'user_command', channel: 'head_pitch' }) });
     view.rerender({ model: 'panda_cake', lip: { rhubarb: 'X' }, event: motion({ id: 'ai-roll', channel: 'body_roll', value: -0.5 }) });
-    tickerCallback(1);
+    renderFrame(modelRef.current);
     const coreModel = modelRef.current.internalModel.coreModel;
     expect(callsFor(coreModel, 'ParamAngleY').at(-1)[1]).toBeGreaterThan(0);
     expect(callsFor(coreModel, 'ParamBodyAngleZ').at(-1)[1]).toBeLessThan(0);
@@ -117,7 +156,7 @@ describe('useLive2DController 统一状态混合', () => {
         intensity: 1, duration_ms: 800, variation_seed: 1,
       },
     });
-    tickerCallback(1);
+    renderFrame(modelRef.current);
     const coreModel = modelRef.current.internalModel.coreModel;
     expect(callsFor(coreModel, 'ParamAngleY')).not.toHaveLength(0);
 
@@ -128,14 +167,14 @@ describe('useLive2DController 统一状态混合', () => {
         intensity: 1, duration_ms: 800, variation_seed: 2,
       },
     });
-    tickerCallback(1);
+    renderFrame(modelRef.current);
     expect(callsFor(coreModel, 'ParamAngleY')).not.toHaveLength(0);
     view.unmount();
   });
 
   it('动作轨道不能改写口型保留参数', () => {
     const view = renderController({ motionEvent: motion({ id: 'blocked-mouth', channel: 'mouth_open', value: 1 }) });
-    tickerCallback(1);
+    renderFrame(modelRef.current);
     const coreModel = modelRef.current.internalModel.coreModel;
     expect(callsFor(coreModel, 'ParamMouthOpenY').at(-1)[1]).toBe(0);
     expect(callsFor(coreModel, 'ParamMouthForm').at(-1)[1]).toBe(0);
@@ -144,7 +183,7 @@ describe('useLive2DController 统一状态混合', () => {
 
   it('TTS 仍可通过保留层写入口型', () => {
     const view = renderController({ lipValue: { rhubarb: 'C' } });
-    tickerCallback(1);
+    renderFrame(modelRef.current);
     const coreModel = modelRef.current.internalModel.coreModel;
     expect(callsFor(coreModel, 'ParamMouthOpenY').at(-1)[1]).toBeGreaterThan(0);
     expect(callsFor(coreModel, 'ParamMouthForm').at(-1)[1]).toBe(0);
@@ -153,46 +192,49 @@ describe('useLive2DController 统一状态混合', () => {
 
   it('切换模型时重置混合器并重建能力表', () => {
     const view = renderController({ motionEvent: motion({ id: 'old-model-pitch', channel: 'head_pitch' }) });
-    tickerCallback(1);
+    renderFrame(modelRef.current);
     const firstCoreModel = modelRef.current.internalModel.coreModel;
     expect(callsFor(firstCoreModel, 'ParamAngleY').at(-1)[1]).toBeGreaterThan(0);
 
     const replacementCoreModel = createCoreModel(IDS.filter(id => id !== 'ParamAngleY'));
-    const replacementModel = { internalModel: { coreModel: replacementCoreModel } };
+    const replacementModel = createModel(replacementCoreModel);
     modelRef.current = replacementModel;
     view.rerender({
       model: 'hiyori', lip: { rhubarb: 'X' }, event: motion({ id: 'new-model-yaw', channel: 'head_yaw' }),
       ready: { model: replacementModel, modelName: 'hiyori', version: 2 },
     });
-    tickerCallback(1);
+    renderFrame(modelRef.current);
 
-    expect(callsFor(replacementCoreModel, 'ParamAngleY')).toHaveLength(0);
+    expect(callsFor(replacementCoreModel, 'ParamAngleY')).toHaveLength(1);
     expect(callsFor(replacementCoreModel, 'ParamAngleX').at(-1)[1]).toBeGreaterThan(0);
     view.unmount();
   });
 
   it('异步切换期间不会用新模型名绑定旧 CoreModel，新的 ready 实例才会建表', () => {
     const oldCoreModel = createCoreModel(IDS.filter(id => id !== 'ParamAngleX'));
-    const oldModel = { internalModel: { coreModel: oldCoreModel } };
+    const oldModel = createModel(oldCoreModel);
     modelRef.current = oldModel;
     const view = renderController({ readyToken: { model: oldModel, modelName: 'panda_cake', version: 1 } });
-    tickerCallback(1);
+    renderFrame(modelRef.current);
     oldCoreModel.setParameterValueById.mockClear();
 
     view.rerender({ model: 'hiyori', lip: { rhubarb: 'X' }, event: null, ready: null });
-    tickerCallback(1);
-    expect(oldCoreModel.setParameterValueById).not.toHaveBeenCalled();
+    renderFrame(modelRef.current);
+    expect(oldCoreModel.setParameterValueById.mock.calls).toEqual([
+      ['ParamAngleX', 0],
+      ['ParamAngleY', 0],
+    ]);
 
     const newCoreModel = createCoreModel(IDS.filter(id => id !== 'ParamAngleY'));
-    const newModel = { internalModel: { coreModel: newCoreModel } };
+    const newModel = createModel(newCoreModel);
     modelRef.current = newModel;
     view.rerender({
       model: 'hiyori', lip: { rhubarb: 'X' }, event: motion({ id: 'new-ready-yaw', channel: 'head_yaw' }),
       ready: { model: newModel, modelName: 'hiyori', version: 2 },
     });
-    tickerCallback(1);
+    renderFrame(modelRef.current);
     expect(callsFor(newCoreModel, 'ParamAngleX').at(-1)[1]).toBeGreaterThan(0);
-    expect(callsFor(newCoreModel, 'ParamAngleY')).toHaveLength(0);
+    expect(callsFor(newCoreModel, 'ParamAngleY')).toHaveLength(1);
     view.unmount();
   });
 
@@ -201,13 +243,13 @@ describe('useLive2DController 统一状态混合', () => {
     const view = renderController({ motionEvent: null, readyToken: null });
     vi.advanceTimersByTime(6000);
     const coreModel = createCoreModel();
-    const newModel = { internalModel: { coreModel } };
+    const newModel = createModel(coreModel);
     modelRef.current = newModel;
     view.rerender({
       model: 'panda_cake', lip: { rhubarb: 'X' }, event: motion({ id: 'slow-ready', channel: 'head_pitch' }),
       ready: { model: newModel, modelName: 'panda_cake', version: 1 },
     });
-    tickerCallback(1);
+    renderFrame(modelRef.current);
     expect(callsFor(coreModel, 'ParamAngleY').at(-1)[1]).toBeGreaterThan(0);
     view.unmount();
   });
@@ -216,17 +258,17 @@ describe('useLive2DController 统一状态混合', () => {
     const oldModel = modelRef.current;
     const oldEvent = motion({ id: 'do-not-replay', channel: 'head_pitch', value: 0.7 });
     const view = renderController({ readyToken: { model: oldModel, modelName: 'panda_cake', version: 1 }, motionEvent: oldEvent });
-    tickerCallback(1);
+    renderFrame(modelRef.current);
 
     view.rerender({ model: 'hiyori', lip: { rhubarb: 'X' }, event: oldEvent, ready: null });
     const newCoreModel = createCoreModel();
-    const newModel = { internalModel: { coreModel: newCoreModel } };
+    const newModel = createModel(newCoreModel);
     modelRef.current = newModel;
     view.rerender({
       model: 'hiyori', lip: { rhubarb: 'X' }, event: oldEvent,
       ready: { model: newModel, modelName: 'hiyori', version: 2 },
     });
-    tickerCallback(1);
+    renderFrame(modelRef.current);
     expect(callsFor(newCoreModel, 'ParamAngleY').at(-1)[1]).toBe(0);
     view.unmount();
   });
@@ -235,24 +277,26 @@ describe('useLive2DController 统一状态混合', () => {
     protocolControl.brokenMotionId = 'broken-motion';
     const view = renderController({ motionEvent: motion({ id: 'broken-motion', channel: 'head_pitch' }) });
     const coreModel = modelRef.current.internalModel.coreModel;
-    expect(() => tickerCallback(1)).not.toThrow();
+    expect(() => renderFrame(modelRef.current)).not.toThrow();
     const writesAfterFailure = coreModel.setParameterValueById.mock.calls.length;
     expect(writesAfterFailure).toBeGreaterThan(0);
-    expect(() => tickerCallback(1)).not.toThrow();
+    expect(() => renderFrame(modelRef.current)).not.toThrow();
     expect(coreModel.setParameterValueById.mock.calls.length).toBeGreaterThan(writesAfterFailure);
     view.unmount();
   });
 
-  it('动作结束后回归基础层，并在卸载时移除唯一 Ticker', () => {
+  it('动作结束后回归基础层，并在卸载时恢复原生 update', () => {
+    const originalUpdate = modelRef.current.internalModel.update;
     const view = renderController({ motionEvent: motion({ id: 'return-center', channel: 'head_pitch' }) });
-    const coreModel = modelRef.current.internalModel.coreModel;
-    tickerCallback(1);
-    expect(callsFor(coreModel, 'ParamAngleY').at(-1)[1]).toBeGreaterThan(0);
+    const wrappedUpdate = modelRef.current.internalModel.update;
+
+    expect(wrappedUpdate).not.toBe(originalUpdate);
+    expect(renderFrame(modelRef.current).angleY).toBeGreaterThan(0);
     vi.advanceTimersByTime(801);
-    tickerCallback(1);
-    expect(callsFor(coreModel, 'ParamAngleY').at(-1)[1]).toBe(0);
+    expect(renderFrame(modelRef.current).angleY).toBe(0);
+
     view.unmount();
-    expect(appRef.current.ticker.remove).toHaveBeenCalledOnce();
+    expect(modelRef.current.internalModel.update).toBe(originalUpdate);
   });
 
   it('只向能力表中的参数写入有限且范围内的值', () => {
@@ -260,7 +304,7 @@ describe('useLive2DController 统一状态混合', () => {
       lipValue: { rhubarb: 'C' },
       motionEvent: motion({ id: 'bounded', channel: 'body_pitch', value: 1 }),
     });
-    tickerCallback(1);
+    renderFrame(modelRef.current);
     const coreModel = modelRef.current.internalModel.coreModel;
     for (const [id, value] of coreModel.setParameterValueById.mock.calls) {
       const index = IDS.indexOf(id);
@@ -269,6 +313,47 @@ describe('useLive2DController 统一状态混合', () => {
       expect(value).toBeGreaterThanOrEqual(coreModel.getParameterMinimumValue(index));
       expect(value).toBeLessThanOrEqual(coreModel.getParameterMaximumValue(index));
     }
+    view.unmount();
+  });
+
+  it('同实例 ready 更新不会叠加包装，切换后旧实例恢复原生 update', () => {
+    const oldModel = modelRef.current;
+    const oldOriginalUpdate = oldModel.internalModel.update;
+    const view = renderController({
+      readyToken: {
+        model: oldModel,
+        modelName: 'panda_cake',
+        version: 1,
+      },
+    });
+
+    view.rerender({
+      model: 'panda_cake',
+      lip: { rhubarb: 'X' },
+      event: null,
+      ready: {
+        model: oldModel,
+        modelName: 'panda_cake',
+        version: 2,
+      },
+    });
+    oldModel.internalModel.update(16.67, 1000);
+    expect(oldOriginalUpdate).toHaveBeenCalledOnce();
+
+    const newModel = createModel();
+    modelRef.current = newModel;
+    view.rerender({
+      model: 'hiyori',
+      lip: { rhubarb: 'X' },
+      event: null,
+      ready: {
+        model: newModel,
+        modelName: 'hiyori',
+        version: 3,
+      },
+    });
+
+    expect(oldModel.internalModel.update).toBe(oldOriginalUpdate);
     view.unmount();
   });
 });
