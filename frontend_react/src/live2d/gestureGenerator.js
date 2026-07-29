@@ -1,4 +1,13 @@
+import { filterMotionTracksForModel } from './modelActionProfiles';
+
 const GESTURE_CHANNELS = Object.freeze({
+  both_arms_raise: [['left_arm_raise', 1], ['right_arm_raise', 1]],
+  left_arm_raise: ['left_arm_raise', 1],
+  right_arm_raise: ['right_arm_raise', 1],
+  left_hand_wave: ['left_hand_wave', 1],
+  right_hand_wave: ['right_hand_wave', 1],
+  panda_hug: ['panda_hug', 1],
+  hands_to_face: ['hands_to_face', 1],
   nod: ['head_pitch', -1],
   shake: ['head_yaw', 1],
   look_up: ['head_pitch', 1],
@@ -77,7 +86,7 @@ function addGestureCurve(trackFrames, gesture, start, end, seed, groupIndex, ges
   const mapping = GESTURE_CHANNELS[gesture.kind];
   if (!mapping) return;
 
-  const [channel, direction] = mapping;
+  const mappings = Array.isArray(mapping[0]) ? mapping : [mapping];
   const count = clampedCount(gesture.count);
   const amplitudeJitter = (seededUnit(seed, (groupIndex * 17) + gestureIndex) - 0.5) * 0.16;
   const phaseJitter = (seededUnit(seed, groupIndex) - 0.5) * 0.12;
@@ -86,16 +95,18 @@ function addGestureCurve(trackFrames, gesture, start, end, seed, groupIndex, ges
   const amplitude = Math.max(0.05, Math.min(1, baseAmplitude * amplitudeScale * (1 + amplitudeJitter)));
   const span = end - start;
 
-  addFrame(trackFrames, channel, start, 0);
-  for (let index = 0; index < count; index += 1) {
-    const cycleStart = start + ((span * index) / count);
-    const cycleEnd = start + ((span * (index + 1)) / count);
-    const peakT = cycleStart + ((cycleEnd - cycleStart) * (0.4 + phaseJitter));
-    addFrame(trackFrames, channel, peakT, direction * amplitude);
-    addFrame(trackFrames, channel, index === count - 1
-      ? end
-      : cycleStart + ((cycleEnd - cycleStart) * (0.84 + phaseJitter)), 0);
-  }
+  mappings.forEach(([channel, direction]) => {
+    addFrame(trackFrames, channel, start, 0);
+    for (let index = 0; index < count; index += 1) {
+      const cycleStart = start + ((span * index) / count);
+      const cycleEnd = start + ((span * (index + 1)) / count);
+      const peakT = cycleStart + ((cycleEnd - cycleStart) * (0.4 + phaseJitter));
+      addFrame(trackFrames, channel, peakT, direction * amplitude);
+      addFrame(trackFrames, channel, index === count - 1
+        ? end
+        : cycleStart + ((cycleEnd - cycleStart) * (0.84 + phaseJitter)), 0);
+    }
+  });
 }
 
 function normalizeTracks(trackFrames) {
@@ -114,7 +125,11 @@ function normalizeTracks(trackFrames) {
 
 function hasParallelChannelConflict(groups) {
   return groups.some(group => {
-    const channels = group.gestures.map(gesture => GESTURE_CHANNELS[gesture.kind]?.[0]).filter(Boolean);
+    const channels = group.gestures.flatMap(gesture => {
+      const mapping = GESTURE_CHANNELS[gesture.kind];
+      if (!mapping) return [];
+      return Array.isArray(mapping[0]) ? mapping.map(([channel]) => channel) : [mapping[0]];
+    });
     return channels.length !== new Set(channels).size;
   });
 }
@@ -156,8 +171,12 @@ function createPlan(groups, source, { nowMs = Date.now(), idFactory, seed = 0 } 
   };
 }
 
-export function createImmediateMotion(command, options) {
-  return createPlan(command?.groups, 'user_command', options);
+export function createImmediateMotion(command, { modelName, ...options } = {}) {
+  const motion = createPlan(command?.groups, 'user_command', options);
+  if (!motion) return null;
+
+  const allowedTracks = filterMotionTracksForModel(motion.tracks, modelName);
+  return allowedTracks.length === motion.tracks.length ? motion : null;
 }
 
 export function createListeningMotion(options) {

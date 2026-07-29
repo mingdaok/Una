@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { getApiBase, getWebSocketBase } from '../config';
 import { authFetch, createWebSocketTicket } from '../auth/session';
-import { parseImmediateGesture } from '../live2d/gestureParser';
+import { isImmediateGestureRequest, parseImmediateGesture } from '../live2d/gestureParser';
 import { createImmediateMotion, createListeningMotion } from '../live2d/gestureGenerator';
 import { normalizeMotionEvent } from '../live2d/motionProtocol';
+import { readSelectedLive2DModel } from '../live2d/modelSelection';
 
 const MAX_SEEN_MOTION_IDS = 100;
 
@@ -344,12 +345,15 @@ export function useUnaCore(authenticated) {
             const clientMessageId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
             setMessages(prev => [...prev, { role: 'user', text, content: text, clientMessageId, date: new Date() }]);
             const nowMs = Date.now();
+            const modelName = readSelectedLive2DModel();
             const command = parseImmediateGesture(text);
             const localMotion = command
-                ? createImmediateMotion(command, { nowMs })
-                : createListeningMotion({ nowMs });
+                ? createImmediateMotion(command, { nowMs, modelName })
+                : (isImmediateGestureRequest(text) ? null : createListeningMotion({ nowMs }));
             setMotionEvent(localMotion);
-            websocketRef.current.send(JSON.stringify({ type: 'text', content: text, client_message_id: clientMessageId }));
+            websocketRef.current.send(JSON.stringify({
+                type: 'text', content: text, client_message_id: clientMessageId, live2d_model: modelName,
+            }));
         } else {
             // 尝试重连
             if (connectionStatus === "CLOSED") connectWebSocket();

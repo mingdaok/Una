@@ -1,4 +1,11 @@
 const GESTURES = [
+  ['both_arms_raise', /举起?双手/],
+  ['left_arm_raise', /举(?:起)?左手/],
+  ['right_arm_raise', /举(?:起)?右手/],
+  ['left_hand_wave', /左(?:手)?挥手/],
+  ['right_hand_wave', /右(?:手)?挥手/],
+  ['panda_hug', /抱熊猫|熊猫手/],
+  ['hands_to_face', /双手捧脸|捧脸|戳脸/],
   ['nod', /(?:上下)?点头/],
   ['shake', /摇头/],
   ['look_up', /抬头|向上看/],
@@ -89,4 +96,8 @@ export function parseImmediateGesture(text) {
 
   const groups = parseSequentialGroups(text) ?? [parseParallelGroup(text)];
   return groups.every(Boolean) ? { groups } : null;
+}
+
+export function isImmediateGestureRequest(text) {
+  return typeof text === 'string' && GESTURES.some(([, pattern]) => pattern.test(text));
 }

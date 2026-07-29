@@ -1,6 +1,7 @@
-import { act, render, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Live2DViewer from '../Live2DViewer';
+import { readSelectedLive2DModel, writeSelectedLive2DModel } from '../../live2d/modelSelection';
 
 describe('Live2DViewer 参数控制层', () => {
   let app;
@@ -44,5 +45,18 @@ describe('Live2DViewer 参数控制层', () => {
     expect(resetExpression).toHaveBeenCalledOnce();
     expect(model.motion).not.toHaveBeenCalled();
     expect(model.expression).not.toHaveBeenCalled();
+  });
+  it('persists model selection through the shared selection API', async () => {
+    const view = render(<Live2DViewer lipValue={{}} emotion="neutral" motionEvent={null} />);
+    await waitFor(() => expect(app.stage.addChild).toHaveBeenCalled());
+
+    expect(readSelectedLive2DModel()).toBe('panda_cake');
+    expect(writeSelectedLive2DModel('hiyori')).toBe('hiyori');
+    expect(readSelectedLive2DModel()).toBe('hiyori');
+
+    writeSelectedLive2DModel('panda_cake');
+    fireEvent.click(view.container.querySelector('button'));
+    fireEvent.click(view.getByText(/Hiyori/));
+    expect(readSelectedLive2DModel()).toBe('hiyori');
   });
 });

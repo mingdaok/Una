@@ -88,6 +88,11 @@ describe('useUnaCore WebSocket handling', () => {
         });
         expect(result.current.motionEvent.tracks[0].channel).toBe('head_pitch');
         expect(mockWebSocket.send).toHaveBeenCalledOnce();
+        expect(JSON.parse(mockWebSocket.send.mock.calls[0][0])).toMatchObject({
+            type: 'text',
+            content: '上下点头三次',
+            live2d_model: 'panda_cake',
+        });
     });
 
     it('records local motion before a synchronous server event triggered by WebSocket.send', async () => {
@@ -107,23 +112,35 @@ describe('useUnaCore WebSocket handling', () => {
         expect(result.current.motionEvent.motion_id).toBe('reply-after-send');
     });
 
-    it('uses a listening motion for negated and unsupported text instead of a nod', async () => {
+    it('uses listening only for ordinary text, not negated explicit commands', async () => {
         const { result } = renderHook(() => useUnaCore('test_user'));
         await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
         act(() => mockWebSocket.onopen());
 
         act(() => result.current.sendMessage('不要点头'));
-        expect(result.current.motionEvent).toMatchObject({
-            type: 'live2d_motion_v3',
-            source: 'local_micro_reaction',
-        });
-        expect(result.current.motionEvent.tracks.some(track => track.channel === 'head_pitch')).toBe(false);
+        expect(result.current.motionEvent).toBeNull();
 
         act(() => result.current.sendMessage('今天天气怎么样'));
         expect(result.current.motionEvent).toMatchObject({
             type: 'live2d_motion_v3',
             source: 'local_micro_reaction',
         });
+    });
+
+    it('reads the selected model for every message and keeps unsupported explicit commands silent', async () => {
+        const { result } = renderHook(() => useUnaCore('test_user'));
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+        act(() => mockWebSocket.onopen());
+
+        localStorage.setItem('live2d_model', 'panda_cake');
+        act(() => result.current.sendMessage('举左手'));
+        expect(result.current.motionEvent).toBeNull();
+        expect(JSON.parse(mockWebSocket.send.mock.calls.at(-1)[0]).live2d_model).toBe('panda_cake');
+
+        localStorage.setItem('live2d_model', 'hiyori');
+        act(() => result.current.sendMessage('举左手'));
+        expect(result.current.motionEvent.tracks.map(track => track.channel)).toEqual(['left_arm_raise']);
+        expect(JSON.parse(mockWebSocket.send.mock.calls.at(-1)[0]).live2d_model).toBe('hiyori');
     });
 
     it('accepts one valid v3 server motion but ignores its duplicate and expired events', async () => {

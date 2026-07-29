@@ -132,6 +132,36 @@ describe('createImmediateMotion', () => {
     expect(motion).toBeNull();
   });
 
+  it('generates only Hiyori arm and hand channels for its selected model', () => {
+    const motion = createImmediateMotion(parseImmediateGesture('举起双手'), {
+      ...options,
+      modelName: 'hiyori',
+    });
+
+    expect(motion).toMatchObject({ type: 'live2d_motion_v3', source: 'user_command' });
+    expect(motion.tracks.map(track => track.channel).sort()).toEqual([
+      'left_arm_raise', 'right_arm_raise',
+    ]);
+    expect(motion.tracks.some(track => track.channel.startsWith('mouth_'))).toBe(false);
+  });
+
+  it('generates panda actions only for panda_cake and refuses cross-model commands', () => {
+    const pandaMotion = createImmediateMotion(parseImmediateGesture('双手捧脸'), {
+      ...options,
+      modelName: 'panda_cake',
+    });
+
+    expect(pandaMotion.tracks.map(track => track.channel)).toEqual(['hands_to_face']);
+    expect(createImmediateMotion(parseImmediateGesture('抱熊猫'), {
+      ...options,
+      modelName: 'hiyori',
+    })).toBeNull();
+    expect(createImmediateMotion(parseImmediateGesture('左挥手'), {
+      ...options,
+      modelName: 'panda_cake',
+    })).toBeNull();
+  });
+
   it.each([1, 2, 3, 4, 5])('keeps all %i normal nod cycles as neutral-to-peak-to-neutral frames', count => {
     const motion = createImmediateMotion(parseImmediateGesture(`点头${count}次`), options);
     const track = motion.tracks.find(item => item.channel === 'head_pitch');

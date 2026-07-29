@@ -3,6 +3,7 @@ import { Settings } from 'lucide-react';
 import { API_HOST } from '../config';
 import { useLive2DController } from '../hooks/useLive2DController';
 import { resetLive2DModelState } from '../live2d/modelState';
+import { readSelectedLive2DModel, writeSelectedLive2DModel } from '../live2d/modelSelection';
 
 export default function Live2DViewer({ lipValue, emotion, motionEvent }) {
   // 接入 Live2D 高级控制层 (情感驱动 + 口型同步 + 参数冲突调度)
@@ -13,7 +14,7 @@ export default function Live2DViewer({ lipValue, emotion, motionEvent }) {
   const modelReadyVersionRef = useRef(0);
   const [modelReady, setModelReady] = useState(null);
   const [isLoaded, setIsLoaded] = useState(false);
-  const [currentModel, setCurrentModel] = useState(() => localStorage.getItem('live2d_model') || 'panda_cake'); // 默认加载粉色熊猫模型
+  const [currentModel, setCurrentModel] = useState(readSelectedLive2DModel); // 默认加载粉色熊猫模型
   const [showSettings, setShowSettings] = useState(false); // 控制设置面板显示
 
 
@@ -36,7 +37,6 @@ export default function Live2DViewer({ lipValue, emotion, motionEvent }) {
     localStorage.setItem('live2d_scale', modelScale);
     localStorage.setItem('live2d_x', modelX);
     localStorage.setItem('live2d_y', modelY);
-    localStorage.setItem('live2d_model', currentModel);
     
     if (modelRef.current && isLoaded) {
       modelRef.current.scale.set(modelScale);
@@ -91,6 +91,7 @@ export default function Live2DViewer({ lipValue, emotion, motionEvent }) {
   // 切换模型函数
   const switchModel = (newModel) => {
     if (newModel === currentModel) return;
+    if (writeSelectedLive2DModel(newModel) !== newModel) return;
     setCurrentModel(newModel);
     setIsLoaded(false);
     setShowSettings(false); // 切换后自动关闭面板

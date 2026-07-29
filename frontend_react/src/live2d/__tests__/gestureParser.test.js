@@ -47,4 +47,23 @@ describe('parseImmediateGesture', () => {
       groups: [{ gestures: [{ kind: 'nod', count: 1 }] }],
     });
   });
+
+  it.each([
+    '举左手', '举右手', '举起双手', '左挥手', '右挥手',
+    '抱熊猫', '熊猫手', '捧脸', '双手捧脸', '戳脸',
+  ])('rejects negated model-specific command %s', command => {
+    expect(parseImmediateGesture(`不要${command}`)).toBeNull();
+  });
+
+  it('parses model-specific commands into semantic action channels', () => {
+    expect(parseImmediateGesture('举起双手')).toMatchObject({
+      groups: [{ gestures: [{ kind: 'both_arms_raise' }] }],
+    });
+    expect(parseImmediateGesture('抱熊猫')).toMatchObject({
+      groups: [{ gestures: [{ kind: 'panda_hug' }] }],
+    });
+    expect(parseImmediateGesture('戳脸')).toMatchObject({
+      groups: [{ gestures: [{ kind: 'hands_to_face' }] }],
+    });
+  });
 });
