@@ -19,6 +19,7 @@ export function useUnaCore(authenticated) {
     const [connectionStatus, setConnectionStatus] = useState("CONNECTING");
     const [lipValue, setLipValue] = useState({ openY: 0, form: 0, volume: 0 });
     const [motionEvent, setMotionEvent] = useState(null);
+    const [motionGeneration, setMotionGeneration] = useState(0);
 
     const websocketRef = useRef(null);
     const reconnectTimeoutRef = useRef(null);
@@ -94,6 +95,7 @@ export function useUnaCore(authenticated) {
         setConnectionStatus("CONNECTING");
         const connectionGeneration = connectionGenerationRef.current + 1;
         connectionGenerationRef.current = connectionGeneration;
+        setMotionGeneration(connectionGeneration);
 
         try {
             const ticket = await createWebSocketTicket();
@@ -546,6 +548,7 @@ export function useUnaCore(authenticated) {
         sendStopSignal,  // 供 useAudioRecorder 在录音结束后调用
         replayChunks,    // 新增：连续播放音频碎片
         motionEvent,
+        motionGeneration,
         actionOverride: motionEvent, // P1 迁移期兼容旧调用方；Task 9 会统一改用 motionEvent
     };
 }

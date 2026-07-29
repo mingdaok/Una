@@ -106,13 +106,13 @@ describe('useLive2DController 统一状态混合', () => {
     vi.useRealTimers();
   });
 
-  function renderController({ currentModel = 'panda_cake', lipValue = { rhubarb: 'X' }, motionEvent = null, readyToken } = {}) {
+  function renderController({ currentModel = 'panda_cake', lipValue = { rhubarb: 'X' }, motionEvent = null, motionGeneration = 0, readyToken } = {}) {
     const initialReadyToken = readyToken === undefined
       ? { model: modelRef.current, modelName: currentModel, version: currentModel }
       : readyToken;
-    return renderHook(({ model, lip, event, ready = initialReadyToken }) => useLive2DController(
-      appRef, modelRef, model, 'neutral', lip, event, ready,
-    ), { initialProps: { model: currentModel, lip: lipValue, event: motionEvent, ready: initialReadyToken } });
+    return renderHook(({ model, lip, event, generation, ready = initialReadyToken }) => useLive2DController(
+      appRef, modelRef, model, 'neutral', lip, event, ready, generation,
+    ), { initialProps: { model: currentModel, lip: lipValue, event: motionEvent, generation: motionGeneration, ready: initialReadyToken } });
   }
 
   it('原生更新重置参数后仍在当前绘制前写入可见摇头值', () => {
@@ -242,18 +242,38 @@ describe('useLive2DController 统一状态混合', () => {
     const activeArm = {
       type: 'live2d_motion_v3', motion_id: 'clear-on-generation', source: 'ai_reply',
       created_at_ms: Date.now(), expires_at_ms: Date.now() + 3000, duration_ms: 800,
-      blend: { in_ms: 0, out_ms: 0 }, generation: 1,
+      blend: { in_ms: 0, out_ms: 0 },
       tracks: [{ channel: 'left_arm_raise', mode: 'override', keyframes: [{ t: 0, value: 0.5 }, { t: 1, value: 0.5 }] }],
     };
-    const view = renderController({ currentModel: 'hiyori', motionEvent: activeArm });
+    const view = renderController({ currentModel: 'hiyori', motionEvent: activeArm, motionGeneration: 1 });
     renderFrame(hiyoriModel);
     expect(callsFor(coreModel, 'ParamArmLA').at(-1)[1]).toBe(-5);
 
     coreModel.setParameterValueById.mockClear();
-    view.rerender({ model: 'hiyori', lip: { rhubarb: 'X' }, event: { generation: 2 } });
+    view.rerender({ model: 'hiyori', lip: { rhubarb: 'X' }, event: null, generation: 2 });
     renderFrame(hiyoriModel);
 
     expect(callsFor(coreModel, 'ParamArmLA')).toEqual([['ParamArmLA', -10]]);
+    view.unmount();
+  });
+
+  it('smoothly restores panda switches and physics after a real generation reset clears its motion', () => {
+    const coreModel = createCoreModel([...IDS, 'Param3', 'Param5', 'Param6', 'Param150']);
+    const pandaModel = createModel(coreModel);
+    modelRef.current = pandaModel;
+    const hug = motion({ id: 'panda-reset', channel: 'panda_hug', value: 1 });
+    const view = renderController({ motionEvent: hug, motionGeneration: 1 });
+    renderFrame(pandaModel);
+    expect(callsFor(coreModel, 'Param3').at(-1)[1]).toBe(1);
+
+    coreModel.setParameterValueById.mockClear();
+    view.rerender({ model: 'panda_cake', lip: { rhubarb: 'X' }, event: null, generation: 2 });
+    renderFrame(pandaModel, 70);
+    expect(callsFor(coreModel, 'Param3').at(-1)[1]).toBeCloseTo(0.5);
+    renderFrame(pandaModel, 140);
+    expect(callsFor(coreModel, 'Param3').at(-1)[1]).toBe(0);
+    expect(callsFor(coreModel, 'Param6').at(-1)[1]).toBe(0);
+    expect(callsFor(coreModel, 'Param150').at(-1)[1]).toBe(0);
     view.unmount();
   });
 

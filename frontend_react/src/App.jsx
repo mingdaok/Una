@@ -40,7 +40,7 @@ export default function App() {
   const {
     messages, setMessages, sendMessage, sendAudioData, sendImage,
     lipValue, interrupt, playAudio, connectionStatus, replayChunks,
-    sendStopSignal, motionEvent
+    sendStopSignal, motionEvent, motionGeneration
   } = useUnaCore(isLoggedIn);
 
   // 第二个参数 sendStopSignal：录音停止并发送完音频后，自动向后端发 stop 触发识别
@@ -189,6 +189,7 @@ export default function App() {
               lipValue={lipValue}
               emotion={[...messages].reverse().find(message => message.isAI)?.emotion}
               motionEvent={motionEvent}
+              motionGeneration={motionGeneration}
               actionOverride={motionEvent}
             />
 

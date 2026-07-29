@@ -246,10 +246,14 @@ describe('useUnaCore WebSocket handling', () => {
         );
         await waitFor(() => expect(sockets).toHaveLength(1));
         act(() => sockets[0].onopen());
+        const firstGeneration = result.current.motionGeneration;
+        expect(firstGeneration).toEqual(expect.any(Number));
+        expect(firstGeneration).toBeGreaterThan(0);
 
         rerender({ user: 'second-user' });
         await waitFor(() => expect(sockets).toHaveLength(2));
         act(() => sockets[1].onopen());
+        expect(result.current.motionGeneration).toBeGreaterThan(firstGeneration);
         act(() => sockets[1].onmessage({
             data: JSON.stringify(validServerMotion({ motion_id: 'new-connection-motion' })),
         }));

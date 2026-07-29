@@ -96,4 +96,48 @@ describe('projectModelSpecificActions', () => {
       { id: 'Param6', value: 0.5 },
     ]));
   });
+
+  it('uses mixer-selected posture order to cross-fade a new panda pose and restore it after its channel vanishes', () => {
+    const ids = ['Param3', 'Param5', 'Param6', 'Param150', 'Param153'];
+    const coreModel = coreModelWith(ids, {
+      minimums: [0, 0, 0, -10, -10], maximums: [1, 1, 1, 10, 10],
+      defaults: [0, 0, 0, 0, 0], values: [0, 0, 0, 0, 0],
+    });
+    const hug = projectModelSpecificActions({
+      coreModel, modelName: 'panda_cake', capabilityMap: buildModelCapabilityMap(coreModel, { modelName: 'panda_cake' }),
+      semanticFrame: { panda_hug: 1, panda_primary_channel: 'panda_hug' }, pandaState: null, deltaMs: 16,
+    });
+    const switching = projectModelSpecificActions({
+      coreModel, modelName: 'panda_cake', capabilityMap: buildModelCapabilityMap(coreModel, { modelName: 'panda_cake' }),
+      semanticFrame: { panda_hug: 1, hands_to_face: 1, panda_primary_channel: 'hands_to_face' },
+      pandaState: hug.pandaState, deltaMs: 70,
+    });
+    const ending = projectModelSpecificActions({
+      coreModel, modelName: 'panda_cake', capabilityMap: buildModelCapabilityMap(coreModel, { modelName: 'panda_cake' }),
+      semanticFrame: {}, pandaState: switching.pandaState, deltaMs: 140,
+    });
+
+    expect(hug.pandaState).toEqual(expect.any(Object));
+    expect(switching.writes).toEqual(expect.arrayContaining([
+      { id: 'Param3', value: 0.5 },
+      { id: 'Param5', value: 0.5 },
+      { id: 'Param6', value: 0.5 },
+    ]));
+    expect(ending.writes).toEqual(expect.arrayContaining([
+      { id: 'Param3', value: 0 },
+      { id: 'Param5', value: 0 },
+      { id: 'Param6', value: 0 },
+      { id: 'Param150', value: 0 },
+      { id: 'Param153', value: 0 },
+    ]));
+  });
+
+  it('skips an invalid panda semantic value instead of treating it as an active or reset frame', () => {
+    const coreModel = coreModelWith(['Param3', 'Param6'], {
+      minimums: [0, 0], maximums: [1, 1], defaults: [0, 0], values: [0, 0],
+    });
+
+    expect(project(coreModel, 'panda_cake', { panda_hug: 2 }).writes).toEqual([]);
+    expect(project(coreModel, 'panda_cake', { hands_to_face: Number.NaN }).writes).toEqual([]);
+  });
 });

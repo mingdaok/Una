@@ -123,7 +123,7 @@ function legacyChatActionToMotion(event, nowMs) {
  * Live2D 参数写入的唯一入口。
  * 所有动作先编译为语义通道，再由状态混合器合成；口型和呼吸通过保留层独立投影。
  */
-export function useLive2DController(appRef, modelRef, currentModel, emotion, lipValue, motionEvent, modelReady) {
+export function useLive2DController(appRef, modelRef, currentModel, emotion, lipValue, motionEvent, modelReady, motionGeneration) {
   const capabilityMapRef = useRef(null);
   const mixerRef = useRef(createLive2DStateMixer());
   const currentModelRef = useRef(currentModel);
@@ -136,6 +136,7 @@ export function useLive2DController(appRef, modelRef, currentModel, emotion, lip
   const mouthFormRef = useRef(0);
   const applyControllerFrameRef = useRef(() => {});
   const motionGenerationRef = useRef(null);
+  const pandaStateRef = useRef(null);
   currentModelRef.current = currentModel;
 
   applyControllerFrameRef.current = (deltaMs = 1000 / 60) => {
@@ -199,7 +200,10 @@ export function useLive2DController(appRef, modelRef, currentModel, emotion, lip
       semanticFrame,
       capabilityMap,
       partOpacityById: readablePartOpacities(coreModel),
+      pandaState: pandaStateRef.current,
+      deltaMs,
     });
+    pandaStateRef.current = modelSpecific.pandaState;
     writeProjected(coreModel, modelSpecific.writes);
     writeProjected(coreModel, capabilityMap.projectLipSync(lipSync));
   };
@@ -217,17 +221,18 @@ export function useLive2DController(appRef, modelRef, currentModel, emotion, lip
     capabilityMapRef.current = null;
     mixerRef.current.reset();
     motionGenerationRef.current = null;
+    pandaStateRef.current = null;
   }, [currentModel]);
 
   // A newer socket generation cannot retain parameter tracks received by its predecessor.
   useEffect(() => {
-    const generation = motionEvent?.generation;
+    const generation = motionGeneration;
     if (!Number.isFinite(generation)) return;
     if (motionGenerationRef.current !== null && motionGenerationRef.current !== generation) {
       mixerRef.current.reset();
     }
     motionGenerationRef.current = generation;
-  }, [motionEvent?.generation]);
+  }, [motionGeneration]);
 
   // 只有 Viewer 宣告“该实例已准备好”后才建表。这替代有限次数轮询，慢加载也能恢复。
   useEffect(() => {

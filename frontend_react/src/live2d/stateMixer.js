@@ -242,6 +242,14 @@ export function createLive2DStateMixer({ clock = () => Date.now() } = {}) {
     frame.variation_seed = finite(latestModelSpecific?.motion?.variationSeed)
       ? latestModelSpecific.motion.variationSeed
       : 0;
+    const latestPandaPose = [...samples].reverse().find(item => (
+      Object.hasOwn(item.frame, 'panda_hug') || Object.hasOwn(item.frame, 'hands_to_face')
+    ));
+    if (latestPandaPose) {
+      frame.panda_primary_channel = Object.hasOwn(latestPandaPose.frame, 'hands_to_face')
+        ? 'hands_to_face'
+        : 'panda_hug';
+    }
     return frame;
   }
 

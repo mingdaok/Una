@@ -32,11 +32,21 @@ const frameInputs = (overrides = {}) => ({
 describe('Live2DStateMixer', () => {
   it('reports active sources and channels without changing sampled priority', () => {
     const mixer = createLive2DStateMixer({ clock: () => 1000 });
-    mixer.enqueue(compiled('hiyori-arm', 'user_command', { left_arm_raise: 1 }), 1000);
+    mixer.enqueue(compiled('ai-head', 'ai_reply', { head_pitch: 0.2 }), 1000);
+    mixer.enqueue(compiled('user-head-and-arm', 'user_command', { head_pitch: -0.6, left_arm_raise: 1 }), 1000);
 
     expect(mixer.hasActiveSource('user_command', 1000)).toBe(true);
     expect(mixer.hasActiveChannel('left_arm_raise', 1000)).toBe(true);
     expect(mixer.hasActiveChannel('right_arm_raise', 1000)).toBe(false);
+    expect(mixer.sample(frameInputs()).head_pitch).toBeCloseTo(-0.6);
+  });
+
+  it('marks the newest same-priority panda posture as the deterministic transition target', () => {
+    const mixer = createLive2DStateMixer({ clock: () => 1000 });
+    mixer.enqueue(compiled('hug-first', 'ai_reply', { panda_hug: 1 }), 1000);
+    mixer.enqueue(compiled('face-next', 'ai_reply', { hands_to_face: 1 }), 1010);
+
+    expect(mixer.sample(frameInputs({ nowMs: 1010 })).panda_primary_channel).toBe('hands_to_face');
   });
   it('用户点头占用 head_pitch，但 AI 仍控制 gaze_x，且口型始终由 TTS 提供', () => {
     const mixer = createLive2DStateMixer({ clock: () => 1000 });

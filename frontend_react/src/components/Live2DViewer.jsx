@@ -5,7 +5,7 @@ import { useLive2DController } from '../hooks/useLive2DController';
 import { resetLive2DModelState } from '../live2d/modelState';
 import { readSelectedLive2DModel, writeSelectedLive2DModel } from '../live2d/modelSelection';
 
-export default function Live2DViewer({ lipValue, emotion, motionEvent }) {
+export default function Live2DViewer({ lipValue, emotion, motionEvent, motionGeneration }) {
   // 接入 Live2D 高级控制层 (情感驱动 + 口型同步 + 参数冲突调度)
   // 注意：appRef 和 modelRef 在下方 useEffect 中创建，传入 Hook 后 Hook 内部会等待它们就绪
   const canvasRef = useRef(null);
@@ -206,7 +206,7 @@ export default function Live2DViewer({ lipValue, emotion, motionEvent }) {
   //   - 在每帧后处理末尾安全投影口型，保持其最高优先级
   //   - 在模型切换、重复 ready 与卸载时安装或清理后处理，并隔离单帧异常
   // ============================================================
-  useLive2DController(appRef, modelRef, currentModel, emotion, lipValue, motionEvent, modelReady);
+  useLive2DController(appRef, modelRef, currentModel, emotion, lipValue, motionEvent, modelReady, motionGeneration);
 
   // 口型同步和参数覆写已完全迁移至 useLive2DController，
   // 此处不再有任何 lipValue useEffect 或 Ticker，避免双重驱动冲突。

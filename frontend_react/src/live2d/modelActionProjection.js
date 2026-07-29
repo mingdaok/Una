@@ -83,43 +83,111 @@ function projectHiyori({ coreModel, semanticFrame, capabilityMap, partOpacityByI
   }
 }
 
-function projectPanda({ semanticFrame, capabilityMap, profile, writes, claimedChannels }) {
-  const hugPresent = Object.hasOwn(semanticFrame || {}, 'panda_hug');
-  const facePresent = Object.hasOwn(semanticFrame || {}, 'hands_to_face');
-  if (!hugPresent && !facePresent) return;
+const PANDA_CHANNELS = Object.freeze(['panda_hug', 'hands_to_face']);
+const PANDA_SWITCH_IDS = Object.freeze({
+  panda_hug: Object.freeze(['Param3', 'Param6']),
+  hands_to_face: Object.freeze(['Param5', 'Param6']),
+});
+const PANDA_RESTORE_MS = 140;
 
-  const hug = finite(semanticFrame.panda_hug) ? Math.max(0, semanticFrame.panda_hug) : 0;
-  const face = finite(semanticFrame.hands_to_face) ? Math.max(0, semanticFrame.hands_to_face) : 0;
-  const selected = face > hug ? 'hands_to_face' : (hug > 0 ? 'panda_hug' : null);
-  const switchIds = { panda_hug: ['Param3', 'Param6'], hands_to_face: ['Param5', 'Param6'] };
-  const selectedIds = selected ? switchIds[selected] : [];
-  const selectedRanges = selectedIds.map(id => parameterInfo(capabilityMap, id));
-  if (selected && selectedRanges.some(range => !range)) return;
+function pandaLevels(state) {
+  return Object.fromEntries(PANDA_CHANNELS.map(channel => {
+    const value = state?.levels?.[channel];
+    return [channel, finite(value) && value > 0 && value <= 1 ? value : 0];
+  }));
+}
 
-  const allSwitchIds = new Set(['Param3', 'Param5', 'Param6']);
-  const activation = selected === 'panda_hug' ? hug : face;
-  for (const id of allSwitchIds) {
+function hasPandaLevel(levels) {
+  return PANDA_CHANNELS.some(channel => levels[channel] > 0.0001);
+}
+
+function pandaFrameValues(semanticFrame) {
+  const values = {};
+  let hasInvalid = false;
+  for (const channel of PANDA_CHANNELS) {
+    if (!Object.hasOwn(semanticFrame, channel)) continue;
+    const value = semanticFrame[channel];
+    if (!finite(value) || value < 0 || value > 1) {
+      hasInvalid = true;
+      continue;
+    }
+    values[channel] = value;
+  }
+  return { values, hasInvalid };
+}
+
+function selectedPandaChannel(semanticFrame, values) {
+  const primary = semanticFrame.panda_primary_channel;
+  if (PANDA_CHANNELS.includes(primary) && Object.hasOwn(values, primary)) return primary;
+  // A direct unit caller has no mixer ordering metadata. Keep this fallback fixed rather than value-based.
+  return ['hands_to_face', 'panda_hug'].find(channel => Object.hasOwn(values, channel)) || null;
+}
+
+function restoreRate(deltaMs) {
+  return finite(deltaMs) && deltaMs >= 0 ? Math.min(1, deltaMs / PANDA_RESTORE_MS) : 1;
+}
+
+function projectPanda({ semanticFrame, capabilityMap, profile, writes, claimedChannels, pandaState, deltaMs }) {
+  const previousLevels = pandaLevels(pandaState);
+  const hadPreviousPose = hasPandaLevel(previousLevels);
+  const { values, hasInvalid } = pandaFrameValues(semanticFrame);
+  const hasValidFrame = Object.keys(values).length > 0;
+  if (!hasValidFrame && hasInvalid) return pandaState || null;
+  if (!hasValidFrame && !hadPreviousPose) return null;
+
+  const levels = { ...previousLevels };
+  const selected = selectedPandaChannel(semanticFrame, values);
+  if (selected) {
+    const other = selected === 'panda_hug' ? 'hands_to_face' : 'panda_hug';
+    const target = values[selected];
+    if (levels[other] > 0) {
+      const rate = restoreRate(deltaMs);
+      levels[selected] = levels[selected] + ((target - levels[selected]) * rate);
+      levels[other] *= 1 - rate;
+    } else if (target === 0 && levels[selected] > 0) {
+      levels[selected] *= 1 - restoreRate(deltaMs);
+    } else {
+      levels[selected] = target;
+      levels[other] = 0;
+    }
+    claimedChannels.add(selected);
+  } else {
+    const rate = restoreRate(deltaMs);
+    for (const channel of PANDA_CHANNELS) levels[channel] *= 1 - rate;
+  }
+
+  for (const channel of PANDA_CHANNELS) {
+    if (levels[channel] <= 0.0001) levels[channel] = 0;
+  }
+  const hasNextPose = hasPandaLevel(levels);
+  if (hasNextPose) {
+    const requiredIds = PANDA_CHANNELS
+      .filter(channel => levels[channel] > 0)
+      .flatMap(channel => PANDA_SWITCH_IDS[channel]);
+    if (requiredIds.some(id => !parameterInfo(capabilityMap, id))) return pandaState || null;
+  }
+
+  const switchActivation = {
+    Param3: levels.panda_hug,
+    Param5: levels.hands_to_face,
+    Param6: Math.max(levels.panda_hug, levels.hands_to_face),
+  };
+  for (const [id, activation] of Object.entries(switchActivation)) {
     const range = parameterInfo(capabilityMap, id);
     if (!range) continue;
-    const target = selectedIds.includes(id) ? profile.channels[selected].targetValue : range.defaultValue;
-    write(writes, id, range.defaultValue + ((target - range.defaultValue) * activation), range);
+    write(writes, id, range.defaultValue + ((1 - range.defaultValue) * activation), range);
   }
 
   const phase = phaseFor(semanticFrame);
   let physicsOffset = 0;
-  for (const channel of ['panda_hug', 'hands_to_face']) {
-    const channelActivation = selected === channel ? activation : 0;
+  for (const channel of PANDA_CHANNELS) {
     for (const id of profile.channels[channel].optionalPhysicsParameterIds) {
       const range = parameterInfo(capabilityMap, id);
-      if (range) write(writes, id, pandaPhysicsValue(range, channelActivation, phase, physicsOffset), range);
+      if (range) write(writes, id, pandaPhysicsValue(range, levels[channel], phase, physicsOffset), range);
       physicsOffset += 1;
     }
   }
-  if (selected) {
-    claimedChannels.add(selected);
-  }
-  if (hugPresent) claimedChannels.add('panda_hug');
-  if (facePresent) claimedChannels.add('hands_to_face');
+  return hasNextPose ? { levels } : null;
 }
 
 /**
@@ -127,17 +195,19 @@ function projectPanda({ semanticFrame, capabilityMap, profile, writes, claimedCh
  * callers own the actual CoreModel write and therefore preserve TTS as the final layer.
  */
 export function projectModelSpecificActions({
-  coreModel, modelName, semanticFrame = {}, capabilityMap, partOpacityById = new Map(),
+  coreModel, modelName, semanticFrame = {}, capabilityMap, partOpacityById = new Map(), pandaState = null, deltaMs,
 } = {}) {
   const profile = getModelActionProfile(modelName);
   const writes = [];
   const claimedChannels = new Set();
-  if (!profile || !semanticFrame || typeof semanticFrame !== 'object') return { writes, claimedChannels };
+  if (!profile || !semanticFrame || typeof semanticFrame !== 'object') return { writes, claimedChannels, pandaState };
 
   if (profile.model === 'hiyori') {
     projectHiyori({ coreModel, semanticFrame, capabilityMap, partOpacityById, profile, writes, claimedChannels });
   } else if (profile.model === 'panda_cake') {
-    projectPanda({ semanticFrame, capabilityMap, profile, writes, claimedChannels });
+    pandaState = projectPanda({
+      semanticFrame, capabilityMap, profile, writes, claimedChannels, pandaState, deltaMs,
+    });
   }
-  return { writes, claimedChannels };
+  return { writes, claimedChannels, pandaState };
 }
