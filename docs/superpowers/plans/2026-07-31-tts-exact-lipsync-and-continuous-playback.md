@@ -30,9 +30,11 @@
 - `backend/speech_metrics.py`：定义安全的语音追踪标识和阶段耗时日志，不接触 URL 或令牌。
 - `backend/speech_units.py`：定义 `SpeechUnit` 和纯文字聚合器，不调用网络或 WebSocket。
 - `backend/speech_stream.py`：定义单回复有序语音会话与按用户取消/替换的协调器。
+- `backend/speech_delivery.py`：把有序语音会话适配为 start/chunk/end WebSocket 事件，供普通聊天和视觉回复共同使用。
 - `backend/tests/test_tts_service.py`：锁定 GPT-SoVITS 请求参数、回退规则和阶段日志。
 - `backend/tests/test_speech_units.py`：锁定第一短句、200 毫秒窗口、长度边界和封口规则。
 - `backend/tests/test_speech_stream.py`：锁定串行生成、索引顺序、失败继续、取消和结束条件。
+- `backend/tests/test_speech_delivery.py`：通过真实异步回调锁定 reply ID、结束等待、中断和视觉复用行为。
 - `frontend_react/src/audio/audioStreamQueue.js`：管理 `received/loading/ready/playing/done/failed` 状态、有序消费和断粮统计。
 - `frontend_react/src/audio/syncedAudioPlayer.js`：只负责 AudioBuffer 播放与 Rhubarb 时间轴使用同一时钟。
 - `frontend_react/src/audio/__tests__/audioStreamQueue.test.js`：测试乱序到达、预加载、失败跳过、旧回复隔离和断粮耗时。
@@ -347,6 +349,8 @@
 
 **文件：**
 
+- 新建：`backend/speech_delivery.py`
+- 新建：`backend/tests/test_speech_delivery.py`
 - 修改：`backend/main_server.py`
 - 修改：`backend/tests/test_main_server_delivery_boundaries.py`
 - 修改：`docs/功能清单.md`
@@ -354,64 +358,33 @@
 **接口：**
 
 - 消费：任务 3 的 `SpeechStreamCoordinator`。
+- 产出：`SpeechReplyDelivery.start()`、`add_text()`、`finish()` 和 `cancel()`，通过注入的 broadcast/render 回调提供可执行行为测试边界。
 - 修改：`ConnectionManager.send_ai_reply_chunk(reply_text, emotion, user_id, chunk_index, reply_id=None, trace=None) -> bool`。
 - WebSocket：`audio_stream_start/chunk/end` 均携带 `reply_id`；chunk 使用语音单元索引。
 
-- [ ] **步骤 1：先写主链路失败测试。**
+- [ ] **步骤 1：先写真实异步行为失败测试。**
 
-  在 `test_main_server_delivery_boundaries.py` 增加 AST 边界和可执行小函数测试，明确：
-
-  ```python
-  def test_streaming_reply_does_not_spawn_one_untracked_tts_task_per_sentence():
-      source = (BACKEND_DIR / "main_server.py").read_text(encoding="utf-8")
-      assert "asyncio.create_task(\n            ws_manager.send_ai_reply_chunk" not in source
-
-
-  def test_audio_end_waits_for_speech_session_close():
-      source_path = Path(__file__).resolve().parents[1] / "main_server.py"
-      tree = ast.parse(source_path.read_text(encoding="utf-8"))
-      process_function = next(
-          node for node in tree.body
-          if isinstance(node, ast.AsyncFunctionDef)
-          and node.name == "process_and_push_response"
-      )
-      close_await = next(
-          node for node in ast.walk(process_function)
-          if isinstance(node, ast.Await)
-          and isinstance(node.value, ast.Call)
-          and ast.unparse(node.value.func) == "speech_session.close"
-      )
-      audio_end_dict = next(
-          node for node in ast.walk(process_function)
-          if isinstance(node, ast.Dict)
-          and any(
-              isinstance(key, ast.Constant)
-              and key.value == "type"
-              and isinstance(value, ast.Constant)
-              and value.value == "audio_stream_end"
-              for key, value in zip(node.keys, node.values)
-          )
-      )
-      assert close_await.lineno < audio_end_dict.lineno
-  ```
-
-  还需断言：
+  在 `backend/tests/test_speech_delivery.py` 使用真实 `SpeechStreamCoordinator`、受控 render event 和内存 broadcast 列表，验证：
 
   - `audio_stream_start`、每个 `audio_stream_chunk` 和 `audio_stream_end` 使用同一 `reply_id`。
-  - `send_ai_reply_chunk()` 把 `trace` 传给 `generate_audio_file()`，成功返回 `True`，失败返回 `False`。
-  - WebSocket `interrupt` 同时调用 `global_manager.interrupt(user_id)` 和 `speech_stream_coordinator.cancel(user_id)`。
-  - vision 回复通过同一 coordinator 完成单单元 add/close，不绕回旧的直接投递路径。
-  - 日志不打印保护后的完整 `audio_url`。
+  - render 回调被 `asyncio.Event` 阻塞时，`finish()` 不发送 `audio_stream_end`；释放 event 并让全部单元终态后才发送 end。
+  - 第二个 reply `start()` 会取消同一用户的旧 reply，旧 reply 的延迟 render 完成后也不会向 broadcast 追加 chunk/end。
+  - `cancel()` 后不再发送旧 reply 的 chunk/end。
+  - 单个 render 返回 `False` 时仍发送 end，并在 `failed_chunks` 中准确报告失败数量。
+
+  在 `backend/tests/test_main_server_delivery_boundaries.py` 只保留现有可执行边界测试，并新增对公开行为的测试：`ConnectionManager.send_ai_reply_chunk()` 把 `trace` 传给注入的 `generate_audio_file()`，成功返回 `True`、失败返回 `False`；普通聊天与 vision 分别通过同一个 `SpeechReplyDelivery` 构造入口执行。不要读取源码文本或用 AST 锁定内部调用结构。
 
 - [ ] **步骤 2：运行定向测试确认先失败。**
 
   ```powershell
-  & 'D:\ai\GPT文件\GPT-SoVITS\GPT-SoVITS\runtime\python.exe' -m pytest backend\tests\test_main_server_delivery_boundaries.py backend\tests\test_speech_stream.py -q
+  & 'D:\ai\GPT文件\GPT-SoVITS\GPT-SoVITS\runtime\python.exe' -m pytest backend\tests\test_speech_delivery.py backend\tests\test_main_server_delivery_boundaries.py backend\tests\test_speech_stream.py -q
   ```
 
 - [ ] **步骤 3：最小改造 `main_server.py`。**
 
-  创建全局协调器：
+  在 `speech_delivery.py` 实现 `SpeechReplyDelivery`，构造参数只接收 coordinator、user ID、reply ID、broadcast 回调和 render 回调；`start()` 发送 start，`add_text()` 交给 session，`finish()` 先等待 `session.close()` 再发送 end，`cancel()` 使旧回调失效。普通聊天和 vision 都通过该类，不复制调度逻辑。
+
+  在 `main_server.py` 创建全局协调器：
 
   ```python
   speech_stream_coordinator = SpeechStreamCoordinator(
@@ -427,7 +400,7 @@
   )
   ```
 
-  定义当前回复的 render 回调，并开始 session：
+  定义当前回复的 render 回调，并创建 delivery：
 
   ```python
   async def render_speech_unit(unit, trace):
@@ -440,23 +413,20 @@
           trace=trace,
       )
 
-  speech_session = await speech_stream_coordinator.begin(
-      user_id, reply_id, render_speech_unit
+  speech_delivery = SpeechReplyDelivery(
+      coordinator=speech_stream_coordinator,
+      user_id=user_id,
+      reply_id=reply_id,
+      broadcast=ws_manager.broadcast_to_user,
+      render_unit=render_speech_unit,
   )
+  await speech_delivery.start()
   ```
 
-  `publish_text_chunk()` 继续立即上屏和累计完整正文，但改为 `await speech_session.add_text(text_chunk, current_emotion)`，不再直接 `create_task(send_ai_reply_chunk)`。LLM 结束后：
+  `publish_text_chunk()` 继续立即上屏和累计完整正文，但改为 `await speech_delivery.add_text(text_chunk, current_emotion)`，不再直接创建未跟踪的逐句 TTS task。LLM 结束后：
 
   ```python
-  summary = await speech_session.close()
-  if speech_stream_coordinator.is_current(user_id, reply_id):
-      await ws_manager.broadcast_to_user(user_id, {
-          "type": "audio_stream_end",
-          "reply_id": reply_id,
-          "full_text": full_reply_text,
-          "total_chunks": summary.total,
-          "failed_chunks": summary.failed,
-      })
+  summary = await speech_delivery.finish(full_text=full_reply_text)
   ```
 
   新文字回复开始时 `begin()` 自动取消旧 reply；显式 interrupt 立即取消。视觉回复复用同一 begin/add/close 流程。`send_ai_reply_chunk()` 只记录 reply/chunk 和阶段耗时，不打印 ticket URL。
@@ -464,8 +434,8 @@
 - [ ] **步骤 4：运行后端相关回归、更新清单并提交。**
 
   ```powershell
-  & 'D:\ai\GPT文件\GPT-SoVITS\GPT-SoVITS\runtime\python.exe' -m pytest backend\tests\test_tts_service.py backend\tests\test_speech_units.py backend\tests\test_speech_stream.py backend\tests\test_main_server_delivery_boundaries.py -q
-  git add -- backend/main_server.py backend/tests/test_main_server_delivery_boundaries.py docs/功能清单.md
+  & 'D:\ai\GPT文件\GPT-SoVITS\GPT-SoVITS\runtime\python.exe' -m pytest backend\tests\test_tts_service.py backend\tests\test_speech_units.py backend\tests\test_speech_stream.py backend\tests\test_speech_delivery.py backend\tests\test_main_server_delivery_boundaries.py -q
+  git add -- backend/speech_delivery.py backend/main_server.py backend/tests/test_speech_delivery.py backend/tests/test_main_server_delivery_boundaries.py docs/功能清单.md
   git commit -m "feat: deliver speech through ordered sessions"
   ```
 
