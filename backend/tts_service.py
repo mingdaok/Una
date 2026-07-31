@@ -3,12 +3,17 @@ tts_service.py - GPT-SoVITS 语音合成服务封装
 调用本地运行的 GPT-SoVITS api_v2.py (默认端口 9880)，合成你自己训练好的声音。
 如果 GPT-SoVITS 服务不可用，自动降级回 edge-tts。
 """
+from __future__ import annotations
+
 import os
 import uuid
 import yaml
 import asyncio
 import aiohttp
 import subprocess
+import time
+
+from speech_metrics import SpeechTrace, log_speech_stage
 
 # === 读取配置 ===
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -51,6 +56,28 @@ def _emotion_to_speed(emotion) -> float:
     if emotion in ("happy", "joy", "excited", "laugh", "funny"):
         return SPEED_HAPPY
     return SPEED_NORMAL
+
+
+def build_gsv_payload(clean_text: str, emotion="neutral") -> dict:
+    """构建 GPT-SoVITS 请求载荷，并避免短语音的二次切分静音。"""
+    return {
+        "text": clean_text,
+        "text_lang": "zh",
+        "ref_audio_path": REF_AUDIO_PATH,
+        "prompt_text": PROMPT_TEXT,
+        "prompt_lang": PROMPT_LANG,
+        "media_type": "wav",
+        "streaming_mode": False,
+        "speed_factor": _emotion_to_speed(emotion),
+        "top_k": 35,
+        "top_p": 0.95,
+        "temperature": 0.75,
+        "text_split_method": "cut0" if len(clean_text) <= 80 else "cut5",
+        "fragment_interval": 0.05,
+        "batch_size": 3,
+        "repetition_penalty": 1.42,
+        "sample_steps": 12,
+    }
 
 
 import json
@@ -114,7 +141,9 @@ async def _run_rhubarb(audio_filepath: str) -> list:
         print(f"❌ [Rhubarb] 异常: {e}")
         return []
 
-async def generate_audio_gsv(text: str, emotion="neutral") -> tuple[str | None, list]:
+async def generate_audio_gsv(
+    text: str, emotion="neutral", *, trace: SpeechTrace | None = None
+) -> tuple[str | None, list]:
     """
     调用 GPT-SoVITS 合成语音，并绑定时间戳返回。
     """
@@ -142,23 +171,7 @@ async def generate_audio_gsv(text: str, emotion="neutral") -> tuple[str | None, 
 
     print(f"🗣️ [GSV] 合成语音: 「{clean_text[:20]}...」 速度={_emotion_to_speed(emotion)}")
 
-    payload = {
-        "text":              clean_text,
-        "text_lang":         "zh",
-        "ref_audio_path":    REF_AUDIO_PATH,
-        "prompt_text":       PROMPT_TEXT,
-        "prompt_lang":       PROMPT_LANG,
-        "media_type":        "wav",
-        "streaming_mode":    False,
-        "speed_factor":      _emotion_to_speed(emotion),
-        "top_k":             35,
-        "top_p":             0.95,
-        "temperature":       0.75,
-        "text_split_method": "cut2",
-        "batch_size":        3,   # 🔥 提升并行片段数，加速合成
-        "repetition_penalty": 1.42,
-        "sample_steps":      12,  # 🔥 从 16 进一步降至 12，极大合成速度
-    }
+    payload = build_gsv_payload(clean_text, emotion)
 
     # 校验参考音频配置
     if not REF_AUDIO_PATH:
@@ -173,26 +186,75 @@ async def generate_audio_gsv(text: str, emotion="neutral") -> tuple[str | None, 
         print(f"🗣️ [GSV] 合成语音: 「{clean_text[:20]}...」 速度={_emotion_to_speed(emotion)}")
         # 注意：GPT-SoVITS 合成耗时较长，timeout 设长一点
         timeout = aiohttp.ClientTimeout(total=120)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(GSV_URL, json=payload) as resp:
-                if resp.status == 200:
-                    content = await resp.read()
-                    with open(filepath, "wb") as f:
-                        f.write(content)
-                    print(f"✅ [GSV] 合成成功: {filename}")
-                    visemes = await _run_rhubarb(filepath)
-                    mp3_filename = filename.replace('.wav', '.mp3')
-                    mp3_filepath = os.path.join(AUDIO_DIR, mp3_filename)
-                    if await _convert_wav_to_mp3(filepath, mp3_filepath):
-                        try:
-                            os.remove(filepath)
-                        except:
-                            pass
-                        return f"/static/voice/{mp3_filename}", visemes
-                    return f"/static/voice/{filename}", visemes
-                else:
-                    text = await resp.text()
-                    print(f"❌ [GSV] API 返回错误 {resp.status}: {text[:200]}")
+        http_started = time.perf_counter()
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(GSV_URL, json=payload) as resp:
+                    if resp.status == 200:
+                        content = await resp.read()
+                    else:
+                        text = await resp.text()
+                        print(f"❌ [GSV] API 返回错误 {resp.status}: {text[:200]}")
+                        content = None
+        except Exception:
+            log_speech_stage(
+                trace, "gpt_http", (time.perf_counter() - http_started) * 1000, status="failed"
+            )
+            raise
+        log_speech_stage(
+            trace,
+            "gpt_http",
+            (time.perf_counter() - http_started) * 1000,
+            status="ok" if content is not None else "failed",
+        )
+
+        if content is not None:
+            write_started = time.perf_counter()
+            try:
+                with open(filepath, "wb") as f:
+                    f.write(content)
+            except Exception:
+                log_speech_stage(
+                    trace, "write_file", (time.perf_counter() - write_started) * 1000, status="failed"
+                )
+                raise
+            log_speech_stage(
+                trace, "write_file", (time.perf_counter() - write_started) * 1000
+            )
+            print(f"✅ [GSV] 合成成功: {filename}")
+            rhubarb_started = time.perf_counter()
+            try:
+                visemes = await _run_rhubarb(filepath)
+            except Exception:
+                log_speech_stage(
+                    trace, "rhubarb", (time.perf_counter() - rhubarb_started) * 1000, status="failed"
+                )
+                raise
+            log_speech_stage(trace, "rhubarb", (time.perf_counter() - rhubarb_started) * 1000)
+
+            mp3_filename = filename.replace('.wav', '.mp3')
+            mp3_filepath = os.path.join(AUDIO_DIR, mp3_filename)
+            transcode_started = time.perf_counter()
+            try:
+                transcoded = await _convert_wav_to_mp3(filepath, mp3_filepath)
+            except Exception:
+                log_speech_stage(
+                    trace, "transcode", (time.perf_counter() - transcode_started) * 1000, status="failed"
+                )
+                raise
+            log_speech_stage(
+                trace,
+                "transcode",
+                (time.perf_counter() - transcode_started) * 1000,
+                status="ok" if transcoded else "failed",
+            )
+            if transcoded:
+                try:
+                    os.remove(filepath)
+                except:
+                    pass
+                return f"/static/voice/{mp3_filename}", visemes
+            return f"/static/voice/{filename}", visemes
 
     except aiohttp.ClientConnectorError:
         print(f"❌ [GSV] 无法连接 GPT-SoVITS ({GSV_URL})，请确保 api_v2.py 已启动")
