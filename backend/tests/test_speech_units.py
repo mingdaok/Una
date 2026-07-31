@@ -12,6 +12,18 @@ def test_first_readable_chunk_is_emitted_immediately():
     assert units[0].aggregate_wait_ms == 0
 
 
+def test_first_chunk_seals_at_the_first_readable_sentence_boundary():
+    aggregator = SpeechUnitAggregator()
+    source = "第一句。第二句。"
+
+    first_units = aggregator.add(source, "neutral", now_ms=0)
+    tail_units = aggregator.close(now_ms=1)
+
+    assert [(unit.index, unit.text) for unit in first_units] == [(0, "第一句。")]
+    assert [(unit.index, unit.text) for unit in tail_units] == [(1, "第二句。")]
+    assert "".join(unit.text for unit in first_units + tail_units) == source
+
+
 def test_later_chunks_merge_until_debounce_expires():
     aggregator = SpeechUnitAggregator()
     aggregator.add("首句。", "neutral", now_ms=0)

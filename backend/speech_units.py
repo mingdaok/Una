@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 
 _SAFE_SPLIT_CHARS = frozenset("。！？!?；;,，、\n")
+_FIRST_SENTENCE_END_CHARS = frozenset("。！？!?")
 
 
 @dataclass(frozen=True)
@@ -39,7 +40,11 @@ class SpeechUnitAggregator:
             return []
 
         if self._next_index == 0:
-            first_text, remainder = self._split_at_safe_boundary(text, self.hard_max_chars)
+            first_sentence, remainder = self._split_first_sentence(text)
+            first_text, overflow = self._split_at_safe_boundary(
+                first_sentence, self.hard_max_chars
+            )
+            remainder = overflow + remainder
             units = [self._create_unit(first_text, emotion, now_ms, 0.0)]
             if remainder:
                 self._start_pending(remainder, emotion, now_ms)
@@ -155,3 +160,10 @@ class SpeechUnitAggregator:
                 split_at = index + 1
                 break
         return text[:split_at], text[split_at:]
+
+    @staticmethod
+    def _split_first_sentence(text: str) -> tuple[str, str]:
+        for index, character in enumerate(text):
+            if character in _FIRST_SENTENCE_END_CHARS:
+                return text[:index + 1], text[index + 1:]
+        return text, ""
