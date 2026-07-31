@@ -102,6 +102,10 @@ async def _convert_wav_to_mp3(wav_filepath: str, mp3_filepath: str) -> bool:
         return False
 
 
+class RhubarbStageError(RuntimeError):
+    """Rhubarb 未能生成可用口型数据，但合成音频仍可播放。"""
+
+
 async def _run_rhubarb(audio_filepath: str) -> list:
     """运行 Rhubarb 分析音轨并返回 visemes 序列"""
     try:
@@ -109,7 +113,7 @@ async def _run_rhubarb(audio_filepath: str) -> list:
         rhubarb_exe = os.path.join(CURRENT_DIR, "rhubarb", "rhubarb.exe")
         if not os.path.exists(rhubarb_exe):
             print("⚠️ [Rhubarb] 引擎未找到，跳过口型生成的离线对齐")
-            return []
+            raise RhubarbStageError("Rhubarb engine not found")
             
         print(f"👄 [Rhubarb] 开始进行唇形对齐分析：{os.path.basename(audio_filepath)}")
         # 运行 Rhubarb 命令行
@@ -124,7 +128,7 @@ async def _run_rhubarb(audio_filepath: str) -> list:
         if proc.returncode != 0:
             stderr_text = stderr.decode('utf-8', errors='ignore') if isinstance(stderr, bytes) else str(stderr)
             print(f"❌ [Rhubarb] 执行失败: {stderr_text[:200]}")
-            return []
+            raise RhubarbStageError("Rhubarb process failed")
             
         with open(json_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
@@ -137,9 +141,11 @@ async def _run_rhubarb(audio_filepath: str) -> list:
         
         print(f"✅ [Rhubarb] 共提取 {len(visemes)} 个音素切片")
         return visemes
+    except RhubarbStageError:
+        raise
     except Exception as e:
         print(f"❌ [Rhubarb] 异常: {e}")
-        return []
+        raise RhubarbStageError("Rhubarb analysis failed") from e
 
 async def generate_audio_gsv(
     text: str, emotion="neutral", *, trace: SpeechTrace | None = None
@@ -225,12 +231,18 @@ async def generate_audio_gsv(
             rhubarb_started = time.perf_counter()
             try:
                 visemes = await _run_rhubarb(filepath)
+            except RhubarbStageError:
+                visemes = []
+                log_speech_stage(
+                    trace, "rhubarb", (time.perf_counter() - rhubarb_started) * 1000, status="failed"
+                )
             except Exception:
                 log_speech_stage(
                     trace, "rhubarb", (time.perf_counter() - rhubarb_started) * 1000, status="failed"
                 )
                 raise
-            log_speech_stage(trace, "rhubarb", (time.perf_counter() - rhubarb_started) * 1000)
+            else:
+                log_speech_stage(trace, "rhubarb", (time.perf_counter() - rhubarb_started) * 1000)
 
             mp3_filename = filename.replace('.wav', '.mp3')
             mp3_filepath = os.path.join(AUDIO_DIR, mp3_filename)

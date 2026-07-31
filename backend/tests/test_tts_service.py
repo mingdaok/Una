@@ -95,3 +95,63 @@ async def test_generate_audio_records_each_successful_external_stage(monkeypatch
         "transcode",
     ]
     assert all(recorded_trace == trace and status == "ok" for recorded_trace, _, status in stages)
+
+
+@pytest.mark.asyncio
+async def test_generate_audio_marks_missing_rhubarb_as_failed_but_returns_audio(monkeypatch, tmp_path):
+    import tts_service
+
+    stages = []
+
+    class FakeResponse:
+        status = 200
+
+        async def read(self):
+            return b"wav-content"
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+    class FakeSession:
+        def __init__(self, *, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        def post(self, url, *, json):
+            return FakeResponse()
+
+    async def fake_transcode(wav_filepath, mp3_filepath):
+        return True
+
+    monkeypatch.setattr(tts_service.aiohttp, "ClientSession", FakeSession)
+    monkeypatch.setattr(tts_service, "_convert_wav_to_mp3", fake_transcode)
+    monkeypatch.setattr(tts_service, "AUDIO_DIR", str(tmp_path))
+    monkeypatch.setattr(tts_service, "CURRENT_DIR", str(tmp_path))
+    monkeypatch.setattr(tts_service, "REF_AUDIO_PATH", "reference.wav")
+    monkeypatch.setattr(
+        tts_service,
+        "log_speech_stage",
+        lambda trace, stage, duration_ms, *, status="ok": stages.append((stage, status)),
+    )
+
+    audio_url, visemes = await tts_service.generate_audio_gsv(
+        "测试语音", "neutral", trace=SpeechTrace(reply_id="reply-1", chunk_index=2)
+    )
+
+    assert audio_url is not None
+    assert audio_url.endswith(".mp3")
+    assert visemes == []
+    assert stages == [
+        ("gpt_http", "ok"),
+        ("write_file", "ok"),
+        ("rhubarb", "failed"),
+        ("transcode", "ok"),
+    ]
