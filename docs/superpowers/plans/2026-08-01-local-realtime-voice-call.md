@@ -1058,7 +1058,7 @@ it('voice 查询参数只加载语音页，不加载主应用模块', async () =
 });
 ```
 
-增加源码边界测试：递归读取 `VoiceCallPage.jsx`、`useVoiceCall.js` 和 `src/voice-call/*.js`，断言不存在 `pixi`、`Live2D`、`useUnaCore`、`rhubarb`、`gestureGenerator`。现有 Live2D props 测试迁移到 `MainUnaPage.test.jsx`，行为保持不变。
+增加运行时与构建边界测试：在 `/?view=voice` 渲染期间记录动态模块加载和资源请求，断言不会加载主应用模块、PixiJS、Live2D 模型或 Rhubarb 资源；构建后读取 Vite manifest/依赖关系，断言 voice 入口 chunk 不依赖 `pixi`、`Live2D`、`useUnaCore`、`rhubarb` 或 `gestureGenerator` 所在 chunk。不得通过递归扫描源码字符串实现该测试。现有 Live2D props 测试迁移到 `MainUnaPage.test.jsx`，行为保持不变。
 
 - [ ] **Step 2: 写页面交互失败测试**
 
