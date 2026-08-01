@@ -10,7 +10,7 @@ const EVENT_FIELDS = Object.freeze({
   user_speech_start: ['session_id', 'turn_id'],
   input_audio_chunk: ['session_id', 'turn_id', 'direction', 'sequence', 'byte_length'],
   user_speech_end: ['session_id', 'turn_id'],
-  interrupt: ['session_id'],
+  interrupt: ['session_id', 'turn_id'],
   call_end: ['session_id'],
   pong: [],
 });

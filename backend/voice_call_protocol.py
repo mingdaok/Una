@@ -82,7 +82,7 @@ _EVENT_FIELDS: dict[str, frozenset[str]] = {
     "user_speech_start": frozenset({"session_id", "turn_id"}),
     "input_audio_chunk": frozenset({"session_id", "turn_id", "direction", "sequence", "byte_length"}),
     "user_speech_end": frozenset({"session_id", "turn_id"}),
-    "interrupt": frozenset({"session_id"}),
+    "interrupt": frozenset({"session_id", "turn_id"}),
     "call_end": frozenset({"session_id"}),
     "pong": frozenset(),
 }

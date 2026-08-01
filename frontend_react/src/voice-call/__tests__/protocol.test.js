@@ -36,6 +36,14 @@ describe('voice-call protocol', () => {
     expect(() => makeClientEvent('call_end', { session_id: 'x'.repeat(8192) })).toThrow(/8192/);
   });
 
+  it('serializes interrupt with the positive safe integer turn it cancels', () => {
+    expect(makeClientEvent('interrupt', { session_id: 's1', turn_id: MAX_TURN_ID }))
+      .toBe(`{"type":"interrupt","session_id":"s1","turn_id":${MAX_TURN_ID}}`);
+    expect(() => makeClientEvent('interrupt', { session_id: 's1' })).toThrow(/缺少字段/);
+    expect(() => makeClientEvent('interrupt', { session_id: 's1', turn_id: 0 })).toThrow(/turn_id/);
+    expect(() => makeClientEvent('interrupt', { session_id: 's1', turn_id: MAX_TURN_ID + 1 })).toThrow(/turn_id/);
+  });
+
   it('parses only documented server events with exact fields and value domains', () => {
     expect(parseServerEvent('{"type":"call_ready","session_id":"s1"}'))
       .toEqual({ type: 'call_ready', session_id: 's1' });

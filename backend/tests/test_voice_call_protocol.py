@@ -122,7 +122,7 @@ def test_client_events_accept_only_documented_fields_and_value_domains():
         ('{"type":"user_speech_start","session_id":"s1","turn_id":1}', {"type": "user_speech_start", "session_id": "s1", "turn_id": 1}),
         ('{"type":"input_audio_chunk","session_id":"s1","turn_id":1,"direction":"input","sequence":0,"byte_length":320}', {"type": "input_audio_chunk", "session_id": "s1", "turn_id": 1, "direction": "input", "sequence": 0, "byte_length": 320}),
         ('{"type":"user_speech_end","session_id":"s1","turn_id":1}', {"type": "user_speech_end", "session_id": "s1", "turn_id": 1}),
-        ('{"type":"interrupt","session_id":"s1"}', {"type": "interrupt", "session_id": "s1"}),
+        ('{"type":"interrupt","session_id":"s1","turn_id":1}', {"type": "interrupt", "session_id": "s1", "turn_id": 1}),
         ('{"type":"call_end","session_id":"s1"}', {"type": "call_end", "session_id": "s1"}),
         ('{"type":"pong"}', {"type": "pong"}),
     ],
@@ -165,3 +165,18 @@ def test_total_input_cap_is_a_protocol_constant():
 def test_client_event_rejects_non_string_type_as_protocol_error(invalid_type):
     with pytest.raises(ProtocolError, match="未知事件"):
         parse_client_event(json.dumps({"type": invalid_type}))
+
+
+def test_interrupt_requires_the_positive_safe_integer_turn_it_cancels():
+    assert parse_client_event(
+        f'{{"type":"interrupt","session_id":"s1","turn_id":{MAX_TURN_ID}}}'
+    ) == {"type": "interrupt", "session_id": "s1", "turn_id": MAX_TURN_ID}
+
+    with pytest.raises(ProtocolError, match="缺少字段"):
+        parse_client_event('{"type":"interrupt","session_id":"s1"}')
+    with pytest.raises(ProtocolError, match="turn_id"):
+        parse_client_event('{"type":"interrupt","session_id":"s1","turn_id":0}')
+    with pytest.raises(ProtocolError, match="turn_id"):
+        parse_client_event(
+            f'{{"type":"interrupt","session_id":"s1","turn_id":{MAX_TURN_ID + 1}}}'
+        )
