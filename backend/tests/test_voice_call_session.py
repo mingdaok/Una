@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from voice_call_protocol import BinaryFrameHeader, ProtocolError
+from voice_call_protocol import MAX_TURN_ID, BinaryFrameHeader, ProtocolError
 from voice_call_session import VoiceCallSender, VoiceCallSession
 
 
@@ -48,6 +48,63 @@ async def test_start_turn_rejects_repeated_or_decreasing_turn_ids():
         await session.start_turn(3)
     with pytest.raises(ProtocolError, match="严格递增"):
         await session.start_turn(2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("turn_id", [True, 1.0, MAX_TURN_ID + 1])
+async def test_start_turn_rejects_values_outside_task_1_safe_integer_domain(turn_id):
+    session = VoiceCallSession(user_id="u1", session_id="s1", sender=RecordingSender())
+
+    with pytest.raises(ProtocolError, match="turn_id"):
+        await session.start_turn(turn_id)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_start_turns_do_not_finish_out_of_lifecycle_order():
+    session = VoiceCallSession(user_id="u1", session_id="s1", sender=RecordingSender())
+    await session.start_turn(1)
+    cancellation_started = asyncio.Event()
+    release_cancelled_task = asyncio.Event()
+
+    async def block_cancellation():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancellation_started.set()
+            await release_cancelled_task.wait()
+            raise
+
+    blocker = asyncio.create_task(block_cancellation())
+    session.track(blocker)
+    await asyncio.sleep(0)
+    second_start = asyncio.create_task(session.start_turn(2))
+    await cancellation_started.wait()
+    third_start = asyncio.create_task(session.start_turn(3))
+
+    try:
+        await asyncio.sleep(0)
+        assert third_start.done() is False
+    finally:
+        release_cancelled_task.set()
+
+    second = await second_start
+    third = await third_start
+
+    assert second.turn_id == 2
+    assert third.turn_id == 3
+    assert session.is_current(3) is True
+
+
+@pytest.mark.asyncio
+async def test_completed_tracked_task_is_released_from_session_ownership():
+    session = VoiceCallSession(user_id="u1", session_id="s1", sender=RecordingSender())
+    await session.start_turn(1)
+    task = asyncio.create_task(asyncio.sleep(0))
+    session.track(task)
+
+    await task
+
+    assert task not in session._tasks
 
 
 @pytest.mark.asyncio
@@ -123,3 +180,30 @@ async def test_send_pcm_rejects_a_payload_with_a_different_declared_length():
 
     with pytest.raises(ProtocolError, match="byte_length"):
         await sender.send_pcm(header, b"\x00\x01\x02\x03")
+
+
+@pytest.mark.asyncio
+async def test_send_pcm_rejects_input_direction_headers():
+    sender = VoiceCallSender(YieldingConnection())
+    header = BinaryFrameHeader("s1", "input", 1, 0, 2)
+
+    with pytest.raises(ProtocolError, match="direction"):
+        await sender.send_pcm(header, b"\x00\x01")
+
+
+@pytest.mark.asyncio
+async def test_send_json_cannot_interleave_a_pcm_metadata_and_bytes_pair():
+    connection = YieldingConnection()
+    sender = VoiceCallSender(connection)
+    header = BinaryFrameHeader("s1", "output", 1, 0, 2)
+
+    pcm_send = asyncio.create_task(sender.send_pcm(header, b"\x00\x01"))
+    await asyncio.sleep(0)
+    json_send = asyncio.create_task(sender.send_json({"type": "pong"}))
+    await asyncio.gather(pcm_send, json_send)
+
+    assert connection.messages == [
+        ("json", {"type": "output_audio_chunk", "session_id": "s1", "turn_id": 1, "direction": "output", "sequence": 0, "byte_length": 2}),
+        ("bytes", b"\x00\x01"),
+        ("json", {"type": "pong"}),
+    ]
