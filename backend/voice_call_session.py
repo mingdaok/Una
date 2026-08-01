@@ -54,6 +54,7 @@ class VoiceCallSession:
         self._lifecycle_lock = asyncio.Lock()
         self._lock = asyncio.Lock()
         self._tasks: set[asyncio.Task[Any]] = set()
+        self._task_turns: dict[asyncio.Task[Any], int] = {}
         self._current: TurnHandle | None = None
         self._last_turn_id = 0
         self._closed = False
@@ -72,17 +73,28 @@ class VoiceCallSession:
                 self._last_turn_id = turn_id
                 new_handle = TurnHandle(turn_id, asyncio.Event())
                 self._current = new_handle
-            if old_handle is not None:
-                old_handle.cancel_event.set()
-            await self._cancel_and_wait(old_tasks)
-            return new_handle
+        if old_handle is not None:
+            old_handle.cancel_event.set()
+        await self._cancel_and_wait(old_tasks)
+        async with self._lifecycle_lock:
+            async with self._lock:
+                if self._current is not new_handle:
+                    raise ProtocolError("轮次已失效")
+        return new_handle
 
     def track(self, task: asyncio.Task[Any]) -> None:
-        if self._closed:
+        current = self._current
+        if self._closed or current is None:
+            task.cancel()
+            return
+        parent = asyncio.current_task()
+        parent_turn_id = self._task_turns.get(parent) if parent is not None else None
+        if parent_turn_id is not None and parent_turn_id != current.turn_id:
             task.cancel()
             return
         self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        self._task_turns[task] = current.turn_id
+        task.add_done_callback(self._untrack)
 
     async def cancel_turn(self, turn_id: int, reason: str) -> bool:
         _ = reason
@@ -94,9 +106,9 @@ class VoiceCallSession:
                 tasks = tuple(self._tasks)
                 self._tasks.clear()
                 self._current = None
-            current.cancel_event.set()
-            await self._cancel_and_wait(tasks)
-            return True
+        current.cancel_event.set()
+        await self._cancel_and_wait(tasks)
+        return True
 
     def is_current(self, turn_id: int) -> bool:
         return self._current is not None and self._current.turn_id == turn_id
@@ -111,9 +123,13 @@ class VoiceCallSession:
                 tasks = tuple(self._tasks)
                 self._current = None
                 self._tasks.clear()
-            if current is not None:
-                current.cancel_event.set()
-            await self._cancel_and_wait(tasks)
+        if current is not None:
+            current.cancel_event.set()
+        await self._cancel_and_wait(tasks)
+
+    def _untrack(self, task: asyncio.Task[Any]) -> None:
+        self._tasks.discard(task)
+        self._task_turns.pop(task, None)
 
     @staticmethod
     def _validate_turn_id(turn_id: object) -> None:

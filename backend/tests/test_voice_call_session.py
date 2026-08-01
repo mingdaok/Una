@@ -60,7 +60,7 @@ async def test_start_turn_rejects_values_outside_task_1_safe_integer_domain(turn
 
 
 @pytest.mark.asyncio
-async def test_concurrent_start_turns_do_not_finish_out_of_lifecycle_order():
+async def test_start_turn_rejects_a_handle_superseded_while_waiting_for_old_tasks():
     session = VoiceCallSession(user_id="u1", session_id="s1", sender=RecordingSender())
     await session.start_turn(1)
     cancellation_started = asyncio.Event()
@@ -80,17 +80,13 @@ async def test_concurrent_start_turns_do_not_finish_out_of_lifecycle_order():
     second_start = asyncio.create_task(session.start_turn(2))
     await cancellation_started.wait()
     third_start = asyncio.create_task(session.start_turn(3))
+    await asyncio.sleep(0)
+    release_cancelled_task.set()
 
-    try:
-        await asyncio.sleep(0)
-        assert third_start.done() is False
-    finally:
-        release_cancelled_task.set()
-
-    second = await second_start
+    with pytest.raises(ProtocolError, match="已失效"):
+        await second_start
     third = await third_start
 
-    assert second.turn_id == 2
     assert third.turn_id == 3
     assert session.is_current(3) is True
 
@@ -105,6 +101,54 @@ async def test_completed_tracked_task_is_released_from_session_ownership():
     await task
 
     assert task not in session._tasks
+
+
+@pytest.mark.asyncio
+async def test_cancelled_task_can_close_the_session_from_finally_without_deadlocking():
+    session = VoiceCallSession(user_id="u1", session_id="s1", sender=RecordingSender())
+    await session.start_turn(1)
+
+    async def close_in_cancellation_cleanup():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await session.close()
+
+    task = asyncio.create_task(close_in_cancellation_cleanup())
+    session.track(task)
+    await asyncio.sleep(0)
+
+    with pytest.raises(ProtocolError, match="已失效"):
+        await asyncio.wait_for(session.start_turn(2), timeout=0.1)
+
+    assert task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_old_task_cleanup_cannot_track_a_child_into_the_new_turn():
+    session = VoiceCallSession(user_id="u1", session_id="s1", sender=RecordingSender())
+    await session.start_turn(1)
+    children = []
+
+    async def create_child_in_cancellation_cleanup():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            child = asyncio.create_task(asyncio.Event().wait())
+            children.append(child)
+            session.track(child)
+
+    task = asyncio.create_task(create_child_in_cancellation_cleanup())
+    session.track(task)
+    await asyncio.sleep(0)
+
+    current = await session.start_turn(2)
+    child = children[0]
+    await asyncio.sleep(0)
+
+    assert child.cancelled()
+    assert child not in session._tasks
+    assert session.is_current(current.turn_id)
 
 
 @pytest.mark.asyncio
