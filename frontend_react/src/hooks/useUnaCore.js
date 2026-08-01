@@ -10,6 +10,25 @@ import { createAudioBufferLoader, startSyncedPlayback } from '../audio/syncedAud
 
 const MAX_SEEN_MOTION_IDS = 100;
 const AUDIO_RUNTIME_UNAVAILABLE = 'AUDIO_RUNTIME_UNAVAILABLE';
+const SPEECH_METRIC_FIELDS = ['replyId', 'chunkIndex', 'stage', 'durationMs', 'status'];
+
+export function reportSpeechMetric(metric) {
+    try {
+        const source = metric && typeof metric === 'object' ? metric : {};
+        const safeMetric = {};
+        for (const field of SPEECH_METRIC_FIELDS) safeMetric[field] = source[field];
+        console.info('[SpeechMetric]', safeMetric);
+    } catch {
+        // Telemetry must never interrupt queueing or playback.
+    }
+}
+
+function findReplyMessageIndex(messages, replyId) {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+        if (messages[index]?.replyId === replyId) return index;
+    }
+    return -1;
+}
 
 class AudioRuntimeUnavailableError extends Error {
     constructor() {
@@ -221,7 +240,7 @@ export function useUnaCore(authenticated) {
                 prepareChunk: prepareAudioChunk,
                 playChunk: playPreparedChunk,
                 now: () => globalThis.performance?.now?.() ?? Date.now(),
-                reportMetric: () => {},
+                reportMetric: reportSpeechMetric,
             });
         }
         return streamQueueRef.current;
@@ -425,19 +444,25 @@ export function useUnaCore(authenticated) {
 
                     // 🔥 [优化] 收到文字碎片：立即上屏显示，不等音频
                     if (data.type === 'text_stream_chunk') {
+                        if (
+                            typeof data.reply_id !== 'string'
+                            || data.reply_id.trim().length === 0
+                            || data.reply_id !== activeStreamReplyRef.current
+                        ) return;
                         const chunkText = data.text || '';
-                        const chunkIdx = data.chunk_index;
                         if (chunkText) {
                             setMessages(prev => {
-                                const lastMsg = prev[prev.length - 1];
-                                if (lastMsg && lastMsg.isStreamingAI) {
+                                const messageIndex = findReplyMessageIndex(prev, data.reply_id);
+                                if (messageIndex >= 0) {
+                                    const message = prev[messageIndex];
+                                    if (!message.isStreamingAI) return prev;
                                     // 追加到已有的流式气泡
                                     const updated = [...prev];
-                                    updated[updated.length - 1] = {
-                                        ...lastMsg,
-                                        text: lastMsg.text + chunkText,
-                                        content: (lastMsg.content || '') + chunkText,
-                                        emotion: data.emotion || lastMsg.emotion
+                                    updated[messageIndex] = {
+                                        ...message,
+                                        text: message.text + chunkText,
+                                        content: (message.content || '') + chunkText,
+                                        emotion: data.emotion || message.emotion
                                     };
                                     return updated;
                                 } else {
@@ -450,6 +475,7 @@ export function useUnaCore(authenticated) {
                                         emotion: data.emotion || 'neutral',
                                         date: new Date(),
                                         isStreamingAI: true,
+                                        replyId: data.reply_id,
                                         chunkList: []
                                     }];
                                 }
@@ -460,19 +486,17 @@ export function useUnaCore(authenticated) {
 
                     // 🌊 开始处理流式分段音频
                     if (data.type === 'audio_stream_start') {
-                        if (typeof data.reply_id !== 'string' || data.reply_id.length === 0) return;
+                        if (typeof data.reply_id !== 'string' || data.reply_id.trim().length === 0) return;
                         replayAbortRef.current?.abort();
                         replayAbortRef.current = null;
                         activePlaybackRef.current?.stop();
                         activePlaybackRef.current = null;
                         setLipSyncValue('X');
-                        setMessages(prev => {
-                            const lastMsg = prev[prev.length - 1];
-                            if (!lastMsg?.isStreamingAI) return prev;
-                            const updated = [...prev];
-                            updated[updated.length - 1] = { ...lastMsg, isStreamingAI: false };
-                            return updated;
-                        });
+                        setMessages(prev => prev.map(message => (
+                            message.isStreamingAI && message.replyId !== data.reply_id
+                                ? { ...message, isStreamingAI: false }
+                                : message
+                        )));
                         activeStreamReplyRef.current = data.reply_id;
                         getStreamQueue().start(data.reply_id);
                         return;
@@ -499,12 +523,13 @@ export function useUnaCore(authenticated) {
 
                         // 🔥 将音频碎片关联到当前流式气泡的 chunkList（供回放用）
                         setMessages(prev => {
-                            const lastMsg = prev[prev.length - 1];
-                            if (lastMsg && lastMsg.isStreamingAI) {
+                            const messageIndex = findReplyMessageIndex(prev, data.reply_id);
+                            const message = prev[messageIndex];
+                            if (message?.isStreamingAI) {
                                 const updated = [...prev];
-                                updated[updated.length - 1] = {
-                                    ...lastMsg,
-                                    chunkList: lastMsg.chunkList ? [...lastMsg.chunkList, chunk] : [chunk]
+                                updated[messageIndex] = {
+                                    ...message,
+                                    chunkList: message.chunkList ? [...message.chunkList, chunk] : [chunk]
                                 };
                                 return updated;
                             }
@@ -521,13 +546,15 @@ export function useUnaCore(authenticated) {
                         ) return;
                         const sealResult = getStreamQueue().seal(data.reply_id);
                         if (!sealResult.accepted) return;
+                        activeStreamReplyRef.current = null;
                         setMessages(prev => {
-                            const lastMsg = prev[prev.length - 1];
-                            if (lastMsg && lastMsg.isStreamingAI) {
-                                const completeText = data.full_text || lastMsg.text;
+                            const messageIndex = findReplyMessageIndex(prev, data.reply_id);
+                            const message = prev[messageIndex];
+                            if (message?.isStreamingAI) {
+                                const completeText = data.full_text || message.text;
                                 const updated = [...prev];
-                                updated[updated.length - 1] = {
-                                    ...lastMsg,
+                                updated[messageIndex] = {
+                                    ...message,
                                     isStreamingAI: false,
                                     text: completeText,
                                     content: completeText,

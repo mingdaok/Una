@@ -1,3 +1,7 @@
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
 import pytest
 
 from speech_metrics import SpeechTrace, log_speech_stage
@@ -155,3 +159,105 @@ async def test_generate_audio_marks_missing_rhubarb_as_failed_but_returns_audio(
         ("rhubarb", "failed"),
         ("transcode", "ok"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_edge_rhubarb_failure_removes_temporary_wav_and_keeps_mp3(monkeypatch, tmp_path):
+    import tts_service
+
+    stages = []
+
+    class FakeCommunicate:
+        def __init__(self, text, voice, *, rate):
+            pass
+
+        async def save(self, filepath):
+            Path(filepath).write_bytes(b"mp3-content")
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        Path(args[-1]).write_bytes(b"wav-content")
+        return FakeProcess()
+
+    async def failing_rhubarb(wav_filepath):
+        assert Path(wav_filepath).exists()
+        raise tts_service.RhubarbStageError("alignment failed")
+
+    monkeypatch.setitem(
+        sys.modules, "edge_tts", SimpleNamespace(Communicate=FakeCommunicate)
+    )
+    monkeypatch.setattr(tts_service.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(tts_service, "_run_rhubarb", failing_rhubarb)
+    monkeypatch.setattr(tts_service, "AUDIO_DIR", str(tmp_path))
+    monkeypatch.setattr(tts_service, "REF_AUDIO_PATH", "")
+    monkeypatch.setattr(
+        tts_service,
+        "log_speech_stage",
+        lambda trace, stage, duration_ms, *, status="ok": stages.append((stage, status)),
+    )
+
+    audio_url, visemes = await tts_service.generate_audio_gsv(
+        "Edge 降级语音", "neutral", trace=SpeechTrace("reply-edge", 4)
+    )
+
+    assert audio_url is not None
+    assert audio_url.endswith(".mp3")
+    assert visemes == []
+    assert list(tmp_path.glob("*.mp3"))
+    assert list(tmp_path.glob("*.wav")) == []
+    assert stages == [("rhubarb", "failed")]
+
+
+@pytest.mark.asyncio
+async def test_edge_wav_cleanup_failure_does_not_discard_playable_mp3(monkeypatch, tmp_path):
+    import tts_service
+
+    cleanup_attempts = []
+
+    class FakeCommunicate:
+        def __init__(self, text, voice, *, rate):
+            pass
+
+        async def save(self, filepath):
+            Path(filepath).write_bytes(b"mp3-content")
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        Path(args[-1]).write_bytes(b"wav-content")
+        return FakeProcess()
+
+    async def successful_rhubarb(wav_filepath):
+        return [{"value": "A", "start": 0.0, "end": 0.1}]
+
+    def failing_remove(filepath):
+        cleanup_attempts.append(Path(filepath).suffix)
+        raise OSError("cleanup denied")
+
+    monkeypatch.setitem(
+        sys.modules, "edge_tts", SimpleNamespace(Communicate=FakeCommunicate)
+    )
+    monkeypatch.setattr(tts_service.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(tts_service, "_run_rhubarb", successful_rhubarb)
+    monkeypatch.setattr(tts_service.os, "remove", failing_remove)
+    monkeypatch.setattr(tts_service, "AUDIO_DIR", str(tmp_path))
+    monkeypatch.setattr(tts_service, "REF_AUDIO_PATH", "")
+
+    audio_url, visemes = await tts_service.generate_audio_gsv(
+        "Edge 降级语音", "neutral", trace=SpeechTrace("reply-edge", 5)
+    )
+
+    assert audio_url is not None
+    assert audio_url.endswith(".mp3")
+    assert visemes == [{"value": "A", "start": 0.0, "end": 0.1}]
+    assert list(tmp_path.glob("*.mp3"))
+    assert cleanup_attempts == [".wav"]

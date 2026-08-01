@@ -382,12 +382,71 @@ describe('useUnaCore WebSocket handling', () => {
         act(() => sockets[1].onmessage({
             data: JSON.stringify(validServerMotion({ motion_id: 'new-connection-motion' })),
         }));
+        act(() => {
+            sockets[1].onmessage({
+                data: JSON.stringify({ type: 'audio_stream_start', reply_id: 'reply-new' }),
+            });
+            sockets[1].onmessage({
+                data: JSON.stringify({
+                    type: 'text_stream_chunk', reply_id: 'reply-new', text: '新连接文字',
+                }),
+            });
+        });
         const activeMotion = result.current.motionEvent;
 
-        act(() => sockets[0].onmessage({
-            data: JSON.stringify(validServerMotion({ motion_id: 'stale-connection-motion' })),
-        }));
+        act(() => {
+            sockets[0].onmessage({
+                data: JSON.stringify(validServerMotion({ motion_id: 'stale-connection-motion' })),
+            });
+            sockets[0].onmessage({
+                data: JSON.stringify({ type: 'audio_stream_start', reply_id: 'reply-stale' }),
+            });
+            sockets[0].onmessage({
+                data: JSON.stringify({
+                    type: 'text_stream_chunk', reply_id: 'reply-stale', text: '旧连接迟到文字',
+                }),
+            });
+        });
         expect(result.current.motionEvent).toBe(activeMotion);
+        expect(result.current.messages).toHaveLength(1);
+        expect(result.current.messages[0]).toMatchObject({
+            replyId: 'reply-new',
+            text: '新连接文字',
+        });
+    });
+
+    it('reports only allowlisted speech fields and isolates a throwing console sink', async () => {
+        const module = await import('../useUnaCore');
+        expect(module.reportSpeechMetric).toEqual(expect.any(Function));
+        const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+
+        module.reportSpeechMetric({
+            replyId: 'reply-safe',
+            chunkIndex: 7,
+            stage: 'prepare',
+            durationMs: 12.5,
+            status: 'failed',
+            url: '/api/media/private?ticket=secret',
+            ticket: 'secret-ticket',
+            Authorization: 'Bearer secret',
+            chunk: { text: 'private text' },
+            text: 'private text',
+        });
+
+        expect(info).toHaveBeenCalledWith('[SpeechMetric]', {
+            replyId: 'reply-safe',
+            chunkIndex: 7,
+            stage: 'prepare',
+            durationMs: 12.5,
+            status: 'failed',
+        });
+        const recorded = JSON.stringify(info.mock.calls);
+        expect(recorded).not.toContain('private');
+        expect(recorded).not.toContain('secret');
+        expect(recorded).not.toContain('Authorization');
+
+        info.mockImplementation(() => { throw new Error('sink unavailable'); });
+        expect(() => module.reportSpeechMetric({ stage: 'play', status: 'failed' })).not.toThrow();
     });
 
     it('closes the React mouth state when authenticated effect dependencies switch', async () => {
@@ -530,7 +589,7 @@ describe('useUnaCore WebSocket handling', () => {
             data: JSON.stringify({ type: 'audio_stream_start', reply_id: 'reply-1' }),
         }));
         act(() => mockWebSocket.onmessage({
-            data: JSON.stringify({ type: 'text_stream_chunk', text: '分段文字' }),
+            data: JSON.stringify({ type: 'text_stream_chunk', reply_id: 'reply-1', text: '分段文字' }),
         }));
         for (const event of [
             { type: 'audio_stream_chunk', reply_id: 'reply-stale', chunk_index: 0, audio_url: '/voice/stale.wav' },
@@ -878,7 +937,7 @@ describe('useUnaCore WebSocket handling', () => {
         expect(audio.sources[1].start).toHaveBeenCalledOnce();
     });
 
-    it('closes the old streaming bubble before text for a new reply arrives', async () => {
+    it('isolates streaming text and end events by reply id', async () => {
         installFakeAudioRuntime();
         const { result } = renderHook(() => useUnaCore('test_user'));
         await waitFor(() => expect(mockWebSocket.onmessage).toEqual(expect.any(Function)));
@@ -889,24 +948,53 @@ describe('useUnaCore WebSocket handling', () => {
                 data: JSON.stringify({ type: 'audio_stream_start', reply_id: 'reply-old' }),
             });
             mockWebSocket.onmessage({
-                data: JSON.stringify({ type: 'text_stream_chunk', text: '旧回复文字' }),
+                data: JSON.stringify({
+                    type: 'text_stream_chunk', reply_id: 'reply-old', text: '旧回复文字',
+                }),
             });
             mockWebSocket.onmessage({
                 data: JSON.stringify({ type: 'audio_stream_start', reply_id: 'reply-new' }),
             });
             mockWebSocket.onmessage({
-                data: JSON.stringify({ type: 'text_stream_chunk', text: '新回复文字' }),
+                data: JSON.stringify({
+                    type: 'text_stream_chunk', reply_id: 'reply-old', text: '不应出现的迟到文字',
+                }),
+            });
+            mockWebSocket.onmessage({
+                data: JSON.stringify({ type: 'text_stream_chunk', text: '缺少代次的文字' }),
+            });
+            mockWebSocket.onmessage({
+                data: JSON.stringify({
+                    type: 'text_stream_chunk', reply_id: 42, text: '非法代次的文字',
+                }),
+            });
+            mockWebSocket.onmessage({
+                data: JSON.stringify({
+                    type: 'text_stream_chunk', reply_id: 'reply-new', text: '新回复文字',
+                }),
+            });
+            mockWebSocket.onmessage({
+                data: JSON.stringify({
+                    type: 'audio_stream_end', reply_id: 'reply-old', full_text: '旧回复错误封口',
+                }),
+            });
+            mockWebSocket.onmessage({
+                data: JSON.stringify({
+                    type: 'audio_stream_end', reply_id: 'reply-new', full_text: '新回复完整文字',
+                }),
             });
         });
 
         expect(result.current.messages).toHaveLength(2);
         expect(result.current.messages[0]).toMatchObject({
+            replyId: 'reply-old',
             text: '旧回复文字',
             isStreamingAI: false,
         });
         expect(result.current.messages[1]).toMatchObject({
-            text: '新回复文字',
-            isStreamingAI: true,
+            replyId: 'reply-new',
+            text: '新回复完整文字',
+            isStreamingAI: false,
         });
     });
 
@@ -943,6 +1031,61 @@ describe('useUnaCore WebSocket handling', () => {
         await waitFor(() => expect(audio.sources).toHaveLength(2));
         expect(audio.sources[1].start).toHaveBeenCalledOnce();
         expect(audio.contexts).toHaveLength(1);
+    });
+
+    it('reports queue starvation through the production speech metric sink', async () => {
+        let nowMs = 100;
+        vi.spyOn(globalThis.performance, 'now').mockImplementation(() => nowMs);
+        const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+        const secondDecode = deferred();
+        let decodeCount = 0;
+        const audio = installFakeAudioRuntime({
+            decodeAudioData: async bytes => {
+                decodeCount += 1;
+                if (decodeCount === 2) return secondDecode.promise;
+                return { bytes };
+            },
+        });
+        renderHook(() => useUnaCore('test_user'));
+        await waitFor(() => expect(mockWebSocket.onmessage).toEqual(expect.any(Function)));
+        act(() => mockWebSocket.onopen());
+
+        act(() => {
+            mockWebSocket.onmessage({
+                data: JSON.stringify({ type: 'audio_stream_start', reply_id: 'reply-starved' }),
+            });
+            for (const [chunk_index, audio_url] of [
+                [0, '/voice/ready.wav'],
+                [1, '/voice/loading.wav'],
+            ]) {
+                mockWebSocket.onmessage({
+                    data: JSON.stringify({
+                        type: 'audio_stream_chunk', reply_id: 'reply-starved', chunk_index,
+                        audio_url, visemes: [],
+                    }),
+                });
+            }
+        });
+        await waitFor(() => expect(audio.sources).toHaveLength(1));
+
+        await act(async () => {
+            audio.sources[0].onended();
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+        nowMs = 139;
+        await act(async () => {
+            secondDecode.resolve({ bytes: new ArrayBuffer(8) });
+            await Promise.resolve();
+        });
+
+        await waitFor(() => expect(info).toHaveBeenCalledWith('[SpeechMetric]', {
+            replyId: 'reply-starved',
+            chunkIndex: 1,
+            stage: 'queue_starvation',
+            durationMs: 39,
+            status: 'ready',
+        }));
     });
 
     it('aborts the old reply before playing a new reply and ignores its late chunks', async () => {
@@ -1107,6 +1250,7 @@ describe('useUnaCore WebSocket handling', () => {
     });
 
     it('skips prepare and play failures while preserving the complete message', async () => {
+        const info = vi.spyOn(console, 'info').mockImplementation(() => {});
         const audio = installFakeAudioRuntime({
             responseForAudio: async url => url.includes('prepare-fail')
                 ? { ok: false, status: 503, arrayBuffer: vi.fn() }
@@ -1126,7 +1270,9 @@ describe('useUnaCore WebSocket handling', () => {
                 data: JSON.stringify({ type: 'audio_stream_start', reply_id: 'reply-1' }),
             });
             mockWebSocket.onmessage({
-                data: JSON.stringify({ type: 'text_stream_chunk', text: '到达中的文字' }),
+                data: JSON.stringify({
+                    type: 'text_stream_chunk', reply_id: 'reply-1', text: '到达中的文字',
+                }),
             });
             for (const [chunk_index, audio_url] of [
                 [0, '/voice/prepare-fail.wav'],
@@ -1148,6 +1294,12 @@ describe('useUnaCore WebSocket handling', () => {
         });
 
         await waitFor(() => expect(audio.sources).toHaveLength(2));
+        await waitFor(() => expect(info.mock.calls.some(([, metric]) => (
+            metric.stage === 'prepare' && metric.status === 'failed'
+        ))).toBe(true));
+        await waitFor(() => expect(info.mock.calls.some(([, metric]) => (
+            metric.stage === 'play' && metric.status === 'failed'
+        ))).toBe(true));
         expect(audio.sources[0].start).toHaveBeenCalledOnce();
         expect(audio.sources[1].start).toHaveBeenCalledOnce();
         expect(result.current.messages.at(-1)).toMatchObject({

@@ -268,6 +268,13 @@ def test_chat_reply_waits_for_speech_delivery_before_end(main_server, monkeypatc
         await response_task
 
     run_scenario(scenario())
+    text_event = next(event for event in events if event["type"] == "text_stream_chunk")
+    start_event = next(event for event in events if event["type"] == "audio_stream_start")
+    audio_event = next(event for event in events if event["type"] == "audio_stream_chunk")
+    end_event = next(event for event in events if event["type"] == "audio_stream_end")
+    assert text_event["reply_id"] == start_event["reply_id"]
+    assert text_event["reply_id"] == audio_event["reply_id"]
+    assert text_event["reply_id"] == end_event["reply_id"]
     assert [event["type"] for event in events].index("audio_stream_chunk") < [
         event["type"] for event in events
     ].index("audio_stream_end")
@@ -314,7 +321,13 @@ def test_vision_reply_uses_ordered_delivery_and_sanitizes_text(main_server, monk
 
     run_scenario(scenario())
     text_event = next(event for event in events if event["type"] == "text_stream_chunk")
+    start_event = next(event for event in events if event["type"] == "audio_stream_start")
+    audio_event = next(event for event in events if event["type"] == "audio_stream_chunk")
+    end_event = next(event for event in events if event["type"] == "audio_stream_end")
     assert text_event["text"] == "看见你啦。"
+    assert text_event["reply_id"] == start_event["reply_id"]
+    assert text_event["reply_id"] == audio_event["reply_id"]
+    assert text_event["reply_id"] == end_event["reply_id"]
     assert events[-1]["type"] == "audio_stream_end"
 
 

@@ -182,7 +182,7 @@ async def generate_audio_gsv(
     # 校验参考音频配置
     if not REF_AUDIO_PATH:
         print("⚠️ [GSV] ref_audio_path 未配置，跳过 GPT-SoVITS")
-        return await _fallback_edge(text, emotion) if FALLBACK_EDGE else None
+        return await _fallback_edge(text, emotion, trace=trace) if FALLBACK_EDGE else None
 
     # 生成文件名
     filename = f"{uuid.uuid4()}.wav"
@@ -280,11 +280,13 @@ async def generate_audio_gsv(
     # ——— 降级处理 ———
     if FALLBACK_EDGE:
         print("⬇️ [GSV] 降级到 edge-tts...")
-        return await _fallback_edge(text, emotion)
+        return await _fallback_edge(text, emotion, trace=trace)
     return None, []
 
 
-async def _fallback_edge(text: str, emotion="neutral") -> tuple[str | None, list]:
+async def _fallback_edge(
+    text: str, emotion="neutral", *, trace: SpeechTrace | None = None
+) -> tuple[str | None, list]:
     """降级方案：使用 edge-tts 合成"""
     try:
         import edge_tts
@@ -305,23 +307,41 @@ async def _fallback_edge(text: str, emotion="neutral") -> tuple[str | None, list
         # 将 mp3 转为 wav 给 rhubarb
         wav_filepath = filepath.replace(".mp3", ".wav")
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "ffmpeg", "-y", "-i", filepath, "-ac", "1", "-ar", "16000", wav_filepath,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await proc.communicate()
-            if proc.returncode != 0:
-                err_text = stderr.decode('utf-8', errors='ignore') if isinstance(stderr, bytes) else str(stderr)
-                print(f"⚠️ [FFmpeg/Rhubarb] 转换失败: {err_text[:200]}")
-                visemes = []
-            else:
-                visemes = await _run_rhubarb(wav_filepath)
-                # 清理转换格式产生的 wav 临时文件，节省空间，前端始终播放 mp3 即可
-                try:
-                    os.remove(wav_filepath)
-                except:
-                    pass
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "ffmpeg", "-y", "-i", filepath, "-ac", "1", "-ar", "16000", wav_filepath,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                _, stderr = await proc.communicate()
+                if proc.returncode != 0:
+                    err_text = stderr.decode('utf-8', errors='ignore') if isinstance(stderr, bytes) else str(stderr)
+                    print(f"⚠️ [FFmpeg/Rhubarb] 转换失败: {err_text[:200]}")
+                    visemes = []
+                else:
+                    rhubarb_started = time.perf_counter()
+                    try:
+                        visemes = await _run_rhubarb(wav_filepath)
+                    except Exception:
+                        log_speech_stage(
+                            trace,
+                            "rhubarb",
+                            (time.perf_counter() - rhubarb_started) * 1000,
+                            status="failed",
+                        )
+                        raise
+                    else:
+                        log_speech_stage(
+                            trace,
+                            "rhubarb",
+                            (time.perf_counter() - rhubarb_started) * 1000,
+                        )
+            finally:
+                if os.path.exists(wav_filepath):
+                    try:
+                        os.remove(wav_filepath)
+                    except Exception:
+                        print("⚠️ [EdgeTTS] 临时 WAV 清理失败")
         except Exception as e:
             print(f"⚠️ [FFmpeg/Rhubarb] 转换或解析报错: {e}")
             visemes = []

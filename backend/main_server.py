@@ -437,6 +437,7 @@ async def process_and_push_response(user_text, user_id, live2d_model=None):
         full_reply_text += text_chunk
         await ws_manager.broadcast_to_user(user_id, {
             "type": "text_stream_chunk",
+            "reply_id": reply_id,
             "chunk_index": chunk_index,
             "text": text_chunk,
             "emotion": current_emotion
@@ -703,6 +704,7 @@ async def vision_chat_api(req: PhotoRequest, current_user: dict = Depends(get_cu
             # 文字先行上屏
             await ws_manager.broadcast_to_user(user_id, {
                 "type": "text_stream_chunk",
+                "reply_id": reply_id,
                 "chunk_index": 0,
                 "text": reply_text,
                 "emotion": emotion
