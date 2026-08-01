@@ -1,5 +1,6 @@
 import asyncio
 import importlib
+import json
 import sys
 import types
 from types import SimpleNamespace
@@ -457,3 +458,71 @@ def test_live2d_candidate_routes_to_v3_director_with_runtime_model(
         assert {"type": "live2d_motion_v3"} in events
 
     run_scenario(scenario())
+
+
+@pytest.mark.parametrize(
+    ("received_model", "expected_model"),
+    (("panda_cake", "panda_cake"), ("PANDA_CAKE", None)),
+)
+def test_websocket_normalizes_and_forwards_live2d_model(
+    main_server, monkeypatch, tmp_path, received_model, expected_model
+):
+    process_calls = []
+
+    async def scenario():
+        processed = asyncio.Event()
+
+        class WebSocketManager:
+            async def connect(self, websocket, user_id):
+                await websocket.accept()
+
+            async def broadcast_to_user(self, user_id, event):
+                pass
+
+            def disconnect(self, websocket, user_id):
+                pass
+
+        class ControlledWebSocket:
+            def __init__(self):
+                self.receive_count = 0
+
+            async def accept(self):
+                pass
+
+            async def receive(self):
+                self.receive_count += 1
+                if self.receive_count == 1:
+                    return {"text": json.dumps({
+                        "type": "text",
+                        "content": "测试模型传递",
+                        "live2d_model": received_model,
+                    })}
+                await processed.wait()
+                raise main_server.WebSocketDisconnect()
+
+        async def process_response(
+            user_text, user_id, live2d_model=None
+        ):
+            process_calls.append((user_text, user_id, live2d_model))
+            processed.set()
+
+        monkeypatch.setattr(main_server, "CURRENT_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            main_server.auth_service,
+            "consume_ws_ticket",
+            lambda ticket: "user-1",
+            raising=False,
+        )
+        monkeypatch.setattr(main_server, "ws_manager", WebSocketManager())
+        monkeypatch.setattr(
+            main_server, "process_and_push_response", process_response
+        )
+
+        await main_server.websocket_endpoint(
+            ControlledWebSocket(), ticket="valid-ticket"
+        )
+
+    run_scenario(scenario())
+    assert process_calls == [
+        ("测试模型传递", "user-1", expected_model),
+    ]

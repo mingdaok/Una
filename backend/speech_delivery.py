@@ -61,7 +61,20 @@ class SpeechReplyDelivery:
     async def finish(self, *, full_text: str) -> SpeechStreamSummary:
         if self._session is None:
             raise RuntimeError("speech delivery must be started before finish")
-        summary = await self._session.close()
+        try:
+            summary = await self._session.close()
+        except asyncio.CancelledError:
+            self._invalidate()
+            cleanup_task = asyncio.create_task(
+                self._cancel_session_and_release()
+            )
+            while not cleanup_task.done():
+                try:
+                    await asyncio.shield(cleanup_task)
+                except asyncio.CancelledError:
+                    continue
+            await cleanup_task
+            raise
         try:
             if self._active and not summary.cancelled:
                 await self._broadcast_if_active({
@@ -79,9 +92,14 @@ class SpeechReplyDelivery:
         if not self._active:
             return
         self._invalidate()
-        if self._session is not None:
-            await self._session.cancel()
-        self._coordinator.release_reply(self._user_id, self._reply_id)
+        await self._cancel_session_and_release()
+
+    async def _cancel_session_and_release(self) -> None:
+        try:
+            if self._session is not None:
+                await self._session.cancel()
+        finally:
+            self._coordinator.release_reply(self._user_id, self._reply_id)
 
     async def _broadcast_if_active(self, event: dict) -> None:
         if not self._active:
@@ -91,6 +109,8 @@ class SpeechReplyDelivery:
         try:
             result = (await asyncio.gather(task, return_exceptions=True))[0]
             if isinstance(result, asyncio.CancelledError):
+                if self._active:
+                    raise result
                 return
             if isinstance(result, BaseException):
                 raise result

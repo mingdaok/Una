@@ -309,3 +309,143 @@ def test_non_cancellation_broadcast_failure_is_not_silenced():
             await delivery.start()
 
     run_scenario(scenario())
+
+
+def test_active_start_broadcast_cancellation_is_propagated():
+    async def scenario():
+        coordinator = SpeechStreamCoordinator()
+        cancellation_raised = False
+
+        async def broadcast(user_id, event):
+            raise asyncio.CancelledError()
+
+        async def render(unit, trace):
+            return True
+
+        delivery = delivery_class()(
+            coordinator=coordinator, user_id="user-1", reply_id="reply-1",
+            broadcast=broadcast, render_unit=render,
+        )
+        try:
+            await delivery.start()
+        except asyncio.CancelledError:
+            cancellation_raised = True
+        finally:
+            await delivery.cancel()
+
+        assert cancellation_raised
+        assert not coordinator.is_current("user-1", "reply-1")
+
+    run_scenario(scenario())
+
+
+def test_cancelling_finish_while_render_is_blocked_cleans_up_session():
+    events = []
+
+    async def scenario():
+        render_started = asyncio.Event()
+        render_cancelled = asyncio.Event()
+        release_cancelled_render = asyncio.Event()
+        coordinator = SpeechStreamCoordinator()
+        current_task = asyncio.current_task()
+        baseline_tasks = set(asyncio.all_tasks())
+
+        async def broadcast(user_id, event):
+            events.append(event)
+
+        async def render(unit, trace):
+            render_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                render_cancelled.set()
+                while not release_cancelled_render.is_set():
+                    try:
+                        await release_cancelled_render.wait()
+                    except asyncio.CancelledError:
+                        continue
+                raise
+
+        delivery = delivery_class()(
+            coordinator=coordinator, user_id="user-1", reply_id="reply-1",
+            broadcast=broadcast, render_unit=render,
+        )
+        await delivery.start()
+        await delivery.add_text("等待取消。", "neutral")
+        finish_task = asyncio.create_task(delivery.finish(full_text="等待取消。"))
+        await render_started.wait()
+
+        finish_task.cancel()
+        await render_cancelled.wait()
+        finish_task.cancel()
+        await asyncio.sleep(0)
+        release_cancelled_render.set()
+        with pytest.raises(asyncio.CancelledError):
+            await finish_task
+        await asyncio.sleep(0)
+
+        try:
+            assert finish_task.cancelled()
+            assert render_cancelled.is_set()
+            assert not coordinator.is_current("user-1", "reply-1")
+            leaked_tasks = {
+                task
+                for task in asyncio.all_tasks()
+                if task is not current_task
+                and task not in baseline_tasks
+                and not task.done()
+            }
+            assert leaked_tasks == set()
+        finally:
+            await delivery.cancel()
+
+    run_scenario(scenario())
+    assert [event["type"] for event in events] == ["audio_stream_start"]
+
+
+def test_cancelling_finish_during_end_broadcast_propagates_and_cleans_up():
+    async def scenario():
+        end_started = asyncio.Event()
+        end_cancelled = asyncio.Event()
+        coordinator = SpeechStreamCoordinator()
+        current_task = asyncio.current_task()
+        baseline_tasks = set(asyncio.all_tasks())
+
+        async def broadcast(user_id, event):
+            if event["type"] != "audio_stream_end":
+                return
+            end_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                end_cancelled.set()
+                raise
+
+        async def render(unit, trace):
+            return True
+
+        delivery = delivery_class()(
+            coordinator=coordinator, user_id="user-1", reply_id="reply-1",
+            broadcast=broadcast, render_unit=render,
+        )
+        await delivery.start()
+        finish_task = asyncio.create_task(delivery.finish(full_text="结束广播。"))
+        await end_started.wait()
+
+        finish_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await finish_task
+        await asyncio.sleep(0)
+
+        assert end_cancelled.is_set()
+        assert not coordinator.is_current("user-1", "reply-1")
+        leaked_tasks = {
+            task
+            for task in asyncio.all_tasks()
+            if task is not current_task
+            and task not in baseline_tasks
+            and not task.done()
+        }
+        assert leaked_tasks == set()
+
+    run_scenario(scenario())
