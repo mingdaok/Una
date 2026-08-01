@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 import sys
@@ -93,6 +95,9 @@ from settings import settings
 from live2d_action import ActionDirector
 from live2d_motion import MotionDirectorV3, is_motion_v3_candidate, normalize_live2d_model
 from chat_control import ControlPrefixDemux, sanitize_reply_text
+from speech_delivery import SpeechReplyDelivery
+from speech_metrics import log_speech_stage
+from speech_stream import SpeechStreamCoordinator
 
 # === 加载配置 ===
 if os.path.exists(CONFIG_PATH):
@@ -229,8 +234,12 @@ class ConnectionManager:
             if isinstance(message, dict) and message.get('audio_url'):
                 message['audio_url'] = make_absolute_audio_url(message['audio_url'])
             for connection in list(self.active_connections[user_id]):
-                try: await connection.send_json(message)
-                except: self.disconnect(connection, user_id)
+                try:
+                    await connection.send_json(message)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    self.disconnect(connection, user_id)
     
     async def send_ai_reply(self, reply_text, emotion, user_id, mood_score=0, is_proactive=False, audio_url=None, visemes=None):
         reply_text = sanitize_reply_text(reply_text)
@@ -250,16 +259,38 @@ class ConnectionManager:
         })
 
     # 🔥 新增：用于单独发送一小段语音碎片的通道
-    async def send_ai_reply_chunk(self, reply_text, emotion, user_id, chunk_index):
+    async def send_ai_reply_chunk(
+        self,
+        reply_text,
+        emotion,
+        user_id,
+        chunk_index,
+        reply_id=None,
+        trace=None,
+    ) -> bool:
         reply_text = sanitize_reply_text(reply_text)
         if not reply_text:
-            return
-        print(f"🎵 [Chunk] 开始生成碎片 {chunk_index}: '{reply_text}'")
-        audio_url, visemes = await generate_audio_file(reply_text, emotion)
+            return False
+        if reply_id is not None and not speech_stream_coordinator.is_current(
+            user_id, reply_id
+        ):
+            return False
+        print(f"🎵 [Chunk] reply={reply_id} chunk={chunk_index} 开始生成")
+        try:
+            audio_url, visemes = await generate_audio_file(
+                reply_text, emotion, trace=trace
+            )
+        except Exception:
+            print(f"❌ [Chunk] reply={reply_id} chunk={chunk_index} 生成异常")
+            return False
+        if reply_id is not None and not speech_stream_coordinator.is_current(
+            user_id, reply_id
+        ):
+            return False
         audio_url = protect_generated_audio(user_id, audio_url)
         if not audio_url:
-            print(f"❌ [Chunk] 音频生成失败，跳过碎片 {chunk_index}: '{reply_text}'")
-            return
+            print(f"❌ [Chunk] reply={reply_id} chunk={chunk_index} 生成失败")
+            return False
         
         message = {
             "type": "audio_stream_chunk", 
@@ -267,10 +298,27 @@ class ConnectionManager:
             "text": reply_text, 
             "audio_url": audio_url,
             "visemes": visemes or [],
-            "emotion": emotion
+            "emotion": emotion,
+            "reply_id": reply_id,
         }
-        print(f"📤 [Chunk] 发送音频碎片 {chunk_index} 给用户 {user_id}: {audio_url}")
-        await self.broadcast_to_user(user_id, message)
+        delivery_started = time.perf_counter()
+        try:
+            await self.broadcast_to_user(user_id, message)
+        except Exception:
+            log_speech_stage(
+                trace,
+                "ws_delivery",
+                (time.perf_counter() - delivery_started) * 1000,
+                status="failed",
+            )
+            return False
+        log_speech_stage(
+            trace,
+            "ws_delivery",
+            (time.perf_counter() - delivery_started) * 1000,
+        )
+        print(f"📤 [Chunk] reply={reply_id} chunk={chunk_index} 已发送")
+        return True
 
     async def trigger_welcome_back(self, user_id: str):
         last_time, last_content, last_mood = database.get_last_interaction(user_id)
@@ -288,6 +336,7 @@ class ConnectionManager:
         except Exception as e: print(f"Welcome Error: {e}")
 
 ws_manager = ConnectionManager()
+speech_stream_coordinator = SpeechStreamCoordinator(max_parallel_synthesis=1)
 
 class AsyncInteractionManager:
     def __init__(self, wait_interval=3.0):
@@ -321,9 +370,10 @@ class AsyncInteractionManager:
         except asyncio.CancelledError: pass 
 
     async def interrupt(self, user_id):
+        await speech_stream_coordinator.cancel(user_id)
         async with self.lock:
             if user_id in self.timers and self.timers[user_id]: self.timers[user_id].cancel()
-            self.buffers[user_id] = [] 
+            self.buffers[user_id] = []
 
 global_manager = AsyncInteractionManager(wait_interval=3.0)
 
@@ -357,6 +407,26 @@ async def process_and_push_response(user_text, user_id, live2d_model=None):
     current_mood_score = 0
     chunk_index = 0
     delivery_demux = ControlPrefixDemux(live2d_model=live2d_model)
+    reply_id = uuid.uuid4().hex
+
+    async def render_speech_unit(unit, trace):
+        return await ws_manager.send_ai_reply_chunk(
+            unit.text,
+            unit.emotion,
+            user_id,
+            unit.index,
+            reply_id=reply_id,
+            trace=trace,
+        )
+
+    speech_delivery = SpeechReplyDelivery(
+        coordinator=speech_stream_coordinator,
+        user_id=user_id,
+        reply_id=reply_id,
+        broadcast=ws_manager.broadcast_to_user,
+        render_unit=render_speech_unit,
+    )
+    await speech_delivery.start()
 
     async def publish_text_chunk(raw_text):
         nonlocal full_reply_text, chunk_index
@@ -373,13 +443,10 @@ async def process_and_push_response(user_text, user_id, live2d_model=None):
         })
         print(f"📝 [Stream] 发送文字碎片 {chunk_index} 给用户 {user_id}: '{text_chunk[:30]}...'")
 
-        asyncio.create_task(
-            ws_manager.send_ai_reply_chunk(text_chunk, current_emotion, user_id, chunk_index)
-        )
+        await speech_delivery.add_text(text_chunk, current_emotion)
         chunk_index += 1
-    
-    await ws_manager.broadcast_to_user(user_id, {"type": "audio_stream_start"})
-    print(f"🎬 [Stream] 开始流式音频给用户 {user_id}")
+
+    print(f"🎬 [Stream] reply={reply_id} 开始流式音频给用户 {user_id}")
 
     try:
         # 使用流式接口获取片段
@@ -407,13 +474,12 @@ async def process_and_push_response(user_text, user_id, live2d_model=None):
     await publish_text_chunk(safe_tail)
     full_reply_text = sanitize_reply_text(full_reply_text)
 
-    # 所有碎片合成任务虽然已经派发，这里发送文字终点标记（但不影响后面的声音飞过来）
     database.add_message(user_id, "ai", full_reply_text, current_mood_score, None)
-    await ws_manager.broadcast_to_user(user_id, {
-        "type": "audio_stream_end", 
-        "full_text": full_reply_text
-    })
-    print(f"🏁 [Stream] 流式音频结束给用户 {user_id}, 总文本长度: {len(full_reply_text)}")
+    summary = await speech_delivery.finish(full_text=full_reply_text)
+    print(
+        f"🏁 [Stream] reply={reply_id} 流式音频结束给用户 {user_id}, "
+        f"总文本长度: {len(full_reply_text)}, failed_chunks={summary.failed}"
+    )
 
     asyncio.create_task(brain.update_profile_task(user_id, user_text))
     threading.Thread(target=memory_service.remember, args=(user_id, user_text, full_reply_text, current_emotion)).start()
@@ -610,10 +676,29 @@ async def vision_chat_api(req: PhotoRequest, current_user: dict = Depends(get_cu
 
     # 2. 🔥 [优化] 通过 WebSocket 流式推送，复用前端已有的音频队列播放逻辑
     async def _push_vision_audio():
+        speech_delivery = None
         try:
             emotion = "happy"
-            # 发送流式开始标记
-            await ws_manager.broadcast_to_user(user_id, {"type": "audio_stream_start"})
+            reply_id = uuid.uuid4().hex
+
+            async def render_speech_unit(unit, trace):
+                return await ws_manager.send_ai_reply_chunk(
+                    unit.text,
+                    unit.emotion,
+                    user_id,
+                    unit.index,
+                    reply_id=reply_id,
+                    trace=trace,
+                )
+
+            speech_delivery = SpeechReplyDelivery(
+                coordinator=speech_stream_coordinator,
+                user_id=user_id,
+                reply_id=reply_id,
+                broadcast=ws_manager.broadcast_to_user,
+                render_unit=render_speech_unit,
+            )
+            await speech_delivery.start()
 
             # 文字先行上屏
             await ws_manager.broadcast_to_user(user_id, {
@@ -623,18 +708,15 @@ async def vision_chat_api(req: PhotoRequest, current_user: dict = Depends(get_cu
                 "emotion": emotion
             })
 
-            # 后台合成 TTS + Rhubarb
-            await ws_manager.send_ai_reply_chunk(reply_text, emotion, user_id, 0)
+            await speech_delivery.add_text(reply_text, emotion)
 
             # 写入数据库
             database.add_message(user_id, "ai", reply_text, 0, None)
 
-            # 发送流式结束标记
-            await ws_manager.broadcast_to_user(user_id, {
-                "type": "audio_stream_end",
-                "full_text": reply_text
-            })
+            await speech_delivery.finish(full_text=reply_text)
         except Exception as e:
+            if speech_delivery is not None:
+                await speech_delivery.cancel()
             print(f"❌ [Vision TTS Push] 推送失败: {e}")
 
     # 启动异步推送任务，不阻塞 HTTP 响应

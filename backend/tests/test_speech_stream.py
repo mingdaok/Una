@@ -288,3 +288,27 @@ def test_coordinator_cancel_stops_render_and_leaves_no_session_tasks():
         assert session_tasks == set()
 
     run_scenario(scenario())
+
+
+def test_new_reply_invalidates_guard_after_previous_session_is_terminal():
+    invalidated = []
+
+    async def render(unit, trace):
+        return True
+
+    async def scenario():
+        coordinator = SpeechStreamCoordinator()
+        first = await coordinator.begin(
+            "user-1",
+            "reply-old",
+            render,
+            on_superseded=lambda: invalidated.append("reply-old"),
+        )
+        await first.close()
+
+        second = await coordinator.begin("user-1", "reply-new", render)
+
+        assert invalidated == ["reply-old"]
+        await second.cancel()
+
+    run_scenario(scenario())

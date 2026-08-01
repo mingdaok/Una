@@ -1,216 +1,459 @@
-import ast
 import asyncio
-import copy
-from pathlib import Path
+import importlib
+import sys
+import types
+from types import SimpleNamespace
 
-from live2d_motion import is_motion_v3_candidate
+import pytest
+from fastapi import APIRouter
 
-
-def test_websocket_model_is_normalized_and_propagated_to_all_delivery_boundaries():
-    source_path = Path(__file__).resolve().parents[1] / "main_server.py"
-    tree = ast.parse(source_path.read_text(encoding="utf-8"))
-    process_function = next(
-        node for node in tree.body
-        if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "process_and_push_response"
-    )
-    websocket_function = next(
-        node for node in tree.body
-        if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "websocket_endpoint"
-    )
-
-    process_args = [argument.arg for argument in process_function.args.args]
-    assert process_args == ["user_text", "user_id", "live2d_model"]
-    assert isinstance(process_function.args.defaults[-1], ast.Constant)
-    assert process_function.args.defaults[-1].value is None
-
-    chat_stream_call = next(
-        node for node in ast.walk(process_function)
-        if isinstance(node, ast.Call)
-        and ast.unparse(node.func) == "brain.chat_stream"
-    )
-    assert any(
-        keyword.arg == "live2d_model" and ast.unparse(keyword.value) == "live2d_model"
-        for keyword in chat_stream_call.keywords
-    )
-
-    delivery_demux_call = next(
-        node for node in ast.walk(process_function)
-        if isinstance(node, ast.Call)
-        and ast.unparse(node.func) == "ControlPrefixDemux"
-    )
-    assert any(
-        keyword.arg == "live2d_model" and ast.unparse(keyword.value) == "live2d_model"
-        for keyword in delivery_demux_call.keywords
-    )
-
-    motion_decide_call = next(
-        node for node in ast.walk(process_function)
-        if isinstance(node, ast.Call)
-        and ast.unparse(node.func) == "motion_director.decide"
-    )
-    assert [ast.unparse(argument) for argument in motion_decide_call.args] == [
-        "user_id", "plan", "live2d_model",
-    ]
-
-    normalize_calls = [
-        node for node in ast.walk(websocket_function)
-        if isinstance(node, ast.Call)
-        and ast.unparse(node.func) == "normalize_live2d_model"
-    ]
-    assert any(
-        ast.unparse(node.args[0]) == "data.get('live2d_model')"
-        for node in normalize_calls
-    )
-    response_calls = [
-        node for node in ast.walk(websocket_function)
-        if isinstance(node, ast.Call)
-        and ast.unparse(node.func) == "process_and_push_response"
-    ]
-    assert any(
-        any(
-            keyword.arg == "live2d_model"
-            and ast.unparse(keyword.value) == "live2d_model"
-            for keyword in node.keywords
-        )
-        for node in response_calls
-    )
+from speech_metrics import SpeechTrace
 
 
-class StubDirector:
-    def __init__(self, event):
-        self.calls = []
-        self.event = event
-
-    def decide(self, user_id, plan, model_name=None):
-        self.calls.append((user_id, plan, model_name))
-        return self.event
+def module_with(name, **attributes):
+    module = types.ModuleType(name)
+    for key, value in attributes.items():
+        setattr(module, key, value)
+    return module
 
 
-class StubWebSocketManager:
-    def __init__(self):
-        self.events = []
-
-    async def broadcast_to_user(self, user_id, event):
-        self.events.append((user_id, event))
+class EmptyService:
+    def __init__(self, *args, **kwargs):
+        pass
 
 
-def compile_live2d_candidate_route():
-    source_path = Path(__file__).resolve().parents[1] / "main_server.py"
-    tree = ast.parse(source_path.read_text(encoding="utf-8"))
-    response_function = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "process_and_push_response"
-    )
-    candidate_branch = next(
-        node
-        for node in ast.walk(response_function)
-        if isinstance(node, ast.If)
-        and ast.unparse(node.test) == "item['type'] == 'live2d_action_candidate'"
-    )
-    route_function = ast.AsyncFunctionDef(
-        name="route_live2d_candidate",
-        args=ast.arguments(
-            posonlyargs=[],
-            args=[
-                ast.arg(arg="item"),
-                ast.arg(arg="user_id"),
-                ast.arg(arg="action_director"),
-                ast.arg(arg="motion_director"),
-                ast.arg(arg="ws_manager"),
-                ast.arg(arg="live2d_model"),
-            ],
-            kwonlyargs=[],
-            kw_defaults=[],
-            defaults=[ast.Constant(value=None)],
+@pytest.fixture
+def main_server(monkeypatch):
+    class FakeBrain:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def update_profile_task(self, *args):
+            pass
+
+    async def fake_generate_audio(*args, **kwargs):
+        return None, []
+
+    class FakeScheduler:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def add_job(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+        def shutdown(self):
+            pass
+
+    memory_package = module_with("memory")
+    memory_package.__path__ = []
+    apscheduler_package = module_with("apscheduler")
+    apscheduler_package.__path__ = []
+    schedulers_package = module_with("apscheduler.schedulers")
+    schedulers_package.__path__ = []
+    triggers_package = module_with("apscheduler.triggers")
+    triggers_package.__path__ = []
+    fake_modules = {
+        "apscheduler": apscheduler_package,
+        "apscheduler.schedulers": schedulers_package,
+        "apscheduler.schedulers.asyncio": module_with(
+            "apscheduler.schedulers.asyncio", AsyncIOScheduler=FakeScheduler
         ),
-        body=copy.deepcopy(candidate_branch.body),
-        decorator_list=[],
-    )
-    module = ast.fix_missing_locations(ast.Module(
-        body=[route_function],
-        type_ignores=[],
-    ))
-    namespace = {"is_motion_v3_candidate": is_motion_v3_candidate}
-    exec(compile(module, str(source_path), "exec"), namespace)
-    return namespace["route_live2d_candidate"]
+        "apscheduler.triggers": triggers_package,
+        "apscheduler.triggers.cron": module_with(
+            "apscheduler.triggers.cron", CronTrigger=EmptyService
+        ),
+        "memory": memory_package,
+        "memory.service": module_with("memory.service", MemoryService=EmptyService),
+        "database": module_with(
+            "database", get_recent_mood_scores=lambda *args: [],
+            add_message=lambda *args: None,
+        ),
+        "social_db": module_with("social_db"),
+        "diary_service": module_with("diary_service", DiaryService=EmptyService),
+        "vision_service": module_with("vision_service", VisionService=EmptyService),
+        "social_api": module_with("social_api", router=APIRouter()),
+        "auth_api": module_with(
+            "auth_api", auth_service=SimpleNamespace(), get_current_user=lambda: None,
+            router=APIRouter(),
+        ),
+        "media_service": module_with(
+            "media_service", register_media=lambda *args: {"id": "media"},
+            media_url=lambda media_id, user_id: f"/api/media/{media_id}",
+            sign_history_audio_urls=lambda history, user_id: history, router=APIRouter(),
+        ),
+        "settings": module_with("settings", settings=SimpleNamespace(cors_origins=())),
+        "brain_engine": module_with("brain_engine", UnaBrain=FakeBrain),
+        "asr_engine": module_with("asr_engine", SenseVoiceASR=EmptyService),
+        "tts_service": module_with("tts_service", generate_audio_gsv=fake_generate_audio),
+    }
+    for name, fake_module in fake_modules.items():
+        monkeypatch.setitem(sys.modules, name, fake_module)
+
+    import_loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(import_loop)
+    sys.modules.pop("main_server", None)
+    imported = importlib.import_module("main_server")
+    yield imported
+    imported.executor.shutdown(wait=False, cancel_futures=True)
+    sys.modules.pop("main_server", None)
+    asyncio.set_event_loop(None)
+    import_loop.close()
 
 
-def test_vision_reply_is_sanitized_before_any_async_delivery():
-    source_path = Path(__file__).resolve().parents[1] / "main_server.py"
-    tree = ast.parse(source_path.read_text(encoding="utf-8"))
-    vision_function = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "vision_chat_api"
-    )
+def run_scenario(coroutine):
+    asyncio.run(asyncio.wait_for(coroutine, timeout=2.0))
 
-    reply_assignment = next(
-        node
-        for node in vision_function.body
-        if isinstance(node, ast.Assign)
-        and any(
-            isinstance(target, ast.Name) and target.id == "reply_text"
-            for target in node.targets
+
+def test_send_ai_reply_chunk_forwards_trace_and_returns_true(main_server, monkeypatch):
+    broadcasts = []
+    received_traces = []
+
+    async def scenario():
+        async def generate(text, emotion, *, trace=None):
+            received_traces.append(trace)
+            return "/static/voice/test.wav", [{"start": 0.0, "end": 0.1}]
+
+        async def broadcast(user_id, event):
+            broadcasts.append((user_id, event))
+
+        monkeypatch.setattr(main_server, "generate_audio_file", generate)
+        monkeypatch.setattr(main_server, "protect_generated_audio", lambda user_id, path: path)
+        manager = main_server.ConnectionManager()
+        manager.broadcast_to_user = broadcast
+        session = await main_server.speech_stream_coordinator.begin(
+            "user-1", "reply-1", lambda unit, trace: asyncio.sleep(0, result=True)
         )
+        trace = SpeechTrace(reply_id="reply-1", chunk_index=3)
+
+        rendered = await manager.send_ai_reply_chunk(
+            "可播放。", "happy", "user-1", 3, reply_id="reply-1", trace=trace
+        )
+
+        assert rendered is True
+        await session.cancel()
+
+    run_scenario(scenario())
+    assert received_traces == [SpeechTrace(reply_id="reply-1", chunk_index=3)]
+    assert broadcasts[0][1]["reply_id"] == "reply-1"
+    assert broadcasts[0][1]["chunk_index"] == 3
+
+
+def test_send_ai_reply_chunk_returns_false_when_generation_fails(main_server, monkeypatch):
+    broadcasts = []
+
+    async def scenario():
+        async def generate(text, emotion, *, trace=None):
+            return None, []
+
+        monkeypatch.setattr(main_server, "generate_audio_file", generate)
+        manager = main_server.ConnectionManager()
+        manager.broadcast_to_user = lambda user_id, event: broadcasts.append(event)
+        session = await main_server.speech_stream_coordinator.begin(
+            "user-1", "reply-1", lambda unit, trace: asyncio.sleep(0, result=True)
+        )
+        rendered = await manager.send_ai_reply_chunk(
+            "失败。", "neutral", "user-1", 0,
+            reply_id="reply-1", trace=SpeechTrace("reply-1", 0),
+        )
+        assert rendered is False
+        await session.cancel()
+
+    run_scenario(scenario())
+    assert broadcasts == []
+
+
+def test_send_ai_reply_chunk_returns_false_when_generation_raises(main_server, monkeypatch):
+    async def scenario():
+        async def generate(text, emotion, *, trace=None):
+            raise RuntimeError("controlled synthesis failure")
+
+        monkeypatch.setattr(main_server, "generate_audio_file", generate)
+        manager = main_server.ConnectionManager()
+        session = await main_server.speech_stream_coordinator.begin(
+            "user-1", "reply-1", lambda unit, trace: asyncio.sleep(0, result=True)
+        )
+        rendered = await manager.send_ai_reply_chunk(
+            "异常。", "neutral", "user-1", 0,
+            reply_id="reply-1", trace=SpeechTrace("reply-1", 0),
+        )
+        assert rendered is False
+        await session.cancel()
+
+    run_scenario(scenario())
+
+
+def test_send_ai_reply_chunk_drops_result_if_reply_is_cancelled_during_generation(
+    main_server, monkeypatch
+):
+    broadcasts = []
+
+    async def scenario():
+        generation_started = asyncio.Event()
+        release_generation = asyncio.Event()
+
+        async def generate(text, emotion, *, trace=None):
+            generation_started.set()
+            await release_generation.wait()
+            return "/static/voice/stale.wav", []
+
+        async def broadcast(user_id, event):
+            broadcasts.append(event)
+
+        monkeypatch.setattr(main_server, "generate_audio_file", generate)
+        monkeypatch.setattr(main_server, "protect_generated_audio", lambda user_id, path: path)
+        manager = main_server.ConnectionManager()
+        manager.broadcast_to_user = broadcast
+        session = await main_server.speech_stream_coordinator.begin(
+            "user-1", "reply-1", lambda unit, trace: asyncio.sleep(0, result=True)
+        )
+        render_task = asyncio.create_task(manager.send_ai_reply_chunk(
+            "旧回复。", "neutral", "user-1", 0,
+            reply_id="reply-1", trace=SpeechTrace("reply-1", 0),
+        ))
+        await generation_started.wait()
+        await session.cancel()
+        release_generation.set()
+
+        assert await render_task is False
+
+    run_scenario(scenario())
+    assert broadcasts == []
+
+
+def test_chat_reply_waits_for_speech_delivery_before_end(main_server, monkeypatch):
+    events = []
+
+    async def scenario():
+        render_started = asyncio.Event()
+        release_render = asyncio.Event()
+
+        class Brain:
+            async def update_profile_task(self, *args):
+                pass
+
+            async def chat_stream(self, *args, **kwargs):
+                yield {"type": "sentence", "text": "聊天回复。"}
+
+        async def broadcast(user_id, event):
+            events.append(event)
+
+        async def send_chunk(text, emotion, user_id, chunk_index, **kwargs):
+            render_started.set()
+            await release_render.wait()
+            events.append({
+                "type": "audio_stream_chunk", "reply_id": kwargs["reply_id"],
+                "chunk_index": chunk_index,
+            })
+            return True
+
+        monkeypatch.setattr(main_server, "brain", Brain())
+        monkeypatch.setattr(main_server.memory_service, "recall", lambda *args: "", raising=False)
+        monkeypatch.setattr(main_server.memory_service, "remember", lambda *args: None, raising=False)
+        monkeypatch.setattr(main_server.database, "get_recent_mood_scores", lambda *args: [])
+        monkeypatch.setattr(main_server.database, "add_message", lambda *args: None)
+        monkeypatch.setattr(main_server.ws_manager, "broadcast_to_user", broadcast)
+        monkeypatch.setattr(main_server.ws_manager, "send_ai_reply_chunk", send_chunk)
+
+        response_task = asyncio.create_task(
+            main_server.process_and_push_response("你好", "user-chat")
+        )
+        await render_started.wait()
+        await asyncio.sleep(0)
+        assert "audio_stream_end" not in [event["type"] for event in events]
+        release_render.set()
+        await response_task
+
+    run_scenario(scenario())
+    assert [event["type"] for event in events].index("audio_stream_chunk") < [
+        event["type"] for event in events
+    ].index("audio_stream_end")
+
+
+def test_vision_reply_uses_ordered_delivery_and_sanitizes_text(main_server, monkeypatch):
+    events = []
+
+    async def scenario():
+        render_started = asyncio.Event()
+        release_render = asyncio.Event()
+
+        class Vision:
+            def see_and_reply(self, image, text):
+                return "EMOTION: happy\nACTION: null\n看见你啦。"
+
+        async def broadcast(user_id, event):
+            events.append(event)
+
+        async def send_chunk(text, emotion, user_id, chunk_index, **kwargs):
+            render_started.set()
+            await release_render.wait()
+            events.append({
+                "type": "audio_stream_chunk", "reply_id": kwargs["reply_id"],
+                "chunk_index": chunk_index, "text": text,
+            })
+            return True
+
+        monkeypatch.setattr(main_server, "vision_service", Vision())
+        monkeypatch.setattr(main_server.ws_manager, "broadcast_to_user", broadcast)
+        monkeypatch.setattr(main_server.ws_manager, "send_ai_reply_chunk", send_chunk)
+        monkeypatch.setattr(main_server.database, "add_message", lambda *args: None)
+
+        result = await main_server.vision_chat_api(
+            main_server.PhotoRequest(image="data"), {"id": "user-vision"}
+        )
+        assert result == {"status": "accepted"}
+        await render_started.wait()
+        await asyncio.sleep(0)
+        assert "audio_stream_end" not in [event["type"] for event in events]
+        release_render.set()
+        while "audio_stream_end" not in [event["type"] for event in events]:
+            await asyncio.sleep(0)
+
+    run_scenario(scenario())
+    text_event = next(event for event in events if event["type"] == "text_stream_chunk")
+    assert text_event["text"] == "看见你啦。"
+    assert events[-1]["type"] == "audio_stream_end"
+
+
+def test_interrupt_cancels_the_current_speech_session(main_server):
+    async def scenario():
+        render_started = asyncio.Event()
+        render_cancelled = asyncio.Event()
+        main_server.global_manager.lock = asyncio.Lock()
+
+        async def render(unit, trace):
+            render_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                render_cancelled.set()
+                raise
+
+        session = await main_server.speech_stream_coordinator.begin(
+            "user-1", "reply-1", render
+        )
+        await session.add_text("等待中断。", "neutral")
+        await render_started.wait()
+
+        await main_server.global_manager.lock.acquire()
+        interrupt_task = asyncio.create_task(
+            main_server.global_manager.interrupt("user-1")
+        )
+        try:
+            await asyncio.wait_for(render_cancelled.wait(), timeout=0.5)
+        finally:
+            main_server.global_manager.lock.release()
+        await interrupt_task
+        summary = await session.close()
+
+        assert render_cancelled.is_set()
+        assert summary.cancelled
+
+    run_scenario(scenario())
+
+
+def test_superseding_reply_stops_old_end_before_later_websocket(
+    main_server,
+):
+    second_connection_events = []
+
+    async def scenario():
+        old_end_started = asyncio.Event()
+        coordinator = main_server.SpeechStreamCoordinator()
+        manager = main_server.ConnectionManager()
+
+        class BlockingConnection:
+            async def send_json(self, event):
+                if (
+                    event["type"] == "audio_stream_end"
+                    and event["reply_id"] == "reply-old"
+                ):
+                    old_end_started.set()
+                    await asyncio.Event().wait()
+
+        class RecordingConnection:
+            async def send_json(self, event):
+                second_connection_events.append(event)
+
+        manager.active_connections["user-1"] = [
+            BlockingConnection(), RecordingConnection()
+        ]
+
+        async def render(unit, trace):
+            return True
+
+        old = main_server.SpeechReplyDelivery(
+            coordinator=coordinator, user_id="user-1", reply_id="reply-old",
+            broadcast=manager.broadcast_to_user, render_unit=render,
+        )
+        new = main_server.SpeechReplyDelivery(
+            coordinator=coordinator, user_id="user-1", reply_id="reply-new",
+            broadcast=manager.broadcast_to_user, render_unit=render,
+        )
+        await old.start()
+        await old.add_text("旧回复。", "neutral")
+        old_finish = asyncio.create_task(old.finish(full_text="旧回复。"))
+        await old_end_started.wait()
+
+        await new.start()
+        await old_finish
+        await new.cancel()
+
+    run_scenario(scenario())
+    assert not any(
+        event["type"] == "audio_stream_end"
+        and event["reply_id"] == "reply-old"
+        for event in second_connection_events
     )
 
-    assert isinstance(reply_assignment.value, ast.Call)
-    assert isinstance(reply_assignment.value.func, ast.Name)
-    assert reply_assignment.value.func.id == "sanitize_reply_text"
 
+@pytest.mark.parametrize(
+    ("model_name", "channel"),
+    (("hiyori", "head_pitch"), ("panda_cake", "panda_hug")),
+)
+def test_live2d_candidate_routes_to_v3_director_with_runtime_model(
+    main_server, monkeypatch, model_name, channel
+):
+    class Brain:
+        async def update_profile_task(self, *args):
+            pass
 
-def test_tracks_candidate_routes_only_to_v3_motion_director():
-    route_live2d_candidate = compile_live2d_candidate_route()
-    motion_plan = {
-        "duration_ms": 1200,
-        "tracks": [{"channel": "head_pitch"}],
-    }
-    action_director = StubDirector({"type": "live2d_action_v2"})
-    motion_director = StubDirector({"type": "live2d_motion_v3"})
-    ws_manager = StubWebSocketManager()
+        async def chat_stream(self, *args, **kwargs):
+            assert kwargs["live2d_model"] == model_name
+            yield {
+                "type": "live2d_action_candidate",
+                "plan": {"duration_ms": 900, "tracks": [{"channel": channel}]},
+            }
 
-    asyncio.run(route_live2d_candidate(
-        {"type": "live2d_action_candidate", "plan": motion_plan},
-        "test-user",
-        action_director,
-        motion_director,
-        ws_manager,
-    ))
+    class MotionDirector:
+        def __init__(self):
+            self.calls = []
 
-    assert action_director.calls == []
-    assert motion_director.calls == [("test-user", motion_plan, None)]
-    assert ws_manager.events == [
-        ("test-user", {"type": "live2d_motion_v3"}),
-    ]
+        def decide(self, user_id, plan, model_name=None):
+            self.calls.append((user_id, plan, model_name))
+            return {"type": "live2d_motion_v3"}
 
+    async def scenario():
+        events = []
+        director = MotionDirector()
+        monkeypatch.setattr(main_server, "brain", Brain())
+        monkeypatch.setattr(main_server, "motion_director", director)
+        monkeypatch.setattr(main_server, "is_motion_v3_candidate", lambda plan: True)
+        monkeypatch.setattr(main_server.memory_service, "recall", lambda *args: "", raising=False)
+        monkeypatch.setattr(main_server.memory_service, "remember", lambda *args: None, raising=False)
+        monkeypatch.setattr(main_server.database, "get_recent_mood_scores", lambda *args: [])
+        monkeypatch.setattr(main_server.database, "add_message", lambda *args: None)
+        monkeypatch.setattr(
+            main_server.ws_manager, "broadcast_to_user",
+            lambda user_id, event: asyncio.sleep(0, result=events.append(event)),
+        )
+        await main_server.process_and_push_response(
+            "动作", "user-1", live2d_model=model_name
+        )
+        assert director.calls[0][0] == "user-1"
+        assert director.calls[0][2] == model_name
+        assert {"type": "live2d_motion_v3"} in events
 
-def test_runtime_model_profile_reaches_v3_director_for_each_supported_model():
-    route_live2d_candidate = compile_live2d_candidate_route()
-    motion_plan = {
-        "duration_ms": 1200,
-        "tracks": [{"channel": "head_pitch"}],
-    }
-
-    for model_name in ("hiyori", "panda_cake"):
-        action_director = StubDirector({"type": "live2d_action_v2"})
-        motion_director = StubDirector({"type": "live2d_motion_v3"})
-        ws_manager = StubWebSocketManager()
-
-        asyncio.run(route_live2d_candidate(
-            {"type": "live2d_action_candidate", "plan": motion_plan},
-            "test-user",
-            action_director,
-            motion_director,
-            ws_manager,
-            model_name,
-        ))
-
-        assert action_director.calls == []
-        assert motion_director.calls == [
-            ("test-user", motion_plan, model_name),
-        ]
+    run_scenario(scenario())

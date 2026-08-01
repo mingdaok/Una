@@ -18,6 +18,7 @@ class SpeechStreamSummary:
 
 
 RenderUnit = Callable[[SpeechUnit, SpeechTrace], Awaitable[bool]]
+InvalidateReply = Callable[[], None]
 
 
 _QUEUE_SENTINEL = object()
@@ -208,12 +209,19 @@ class SpeechStreamCoordinator:
     def __init__(self, *, max_parallel_synthesis: int = 1):
         self._render_semaphore = asyncio.Semaphore(max_parallel_synthesis)
         self._sessions: dict[str, SpeechStreamSession] = {}
+        self._reply_invalidators: dict[str, tuple[str, InvalidateReply]] = {}
         self._state_lock = asyncio.Lock()
 
     async def begin(
-        self, user_id: str, reply_id: str, render_unit: RenderUnit
+        self,
+        user_id: str,
+        reply_id: str,
+        render_unit: RenderUnit,
+        *,
+        on_superseded: InvalidateReply | None = None,
     ) -> SpeechStreamSession:
         async with self._state_lock:
+            self._invalidate_reply(user_id)
             previous = self._sessions.get(user_id)
             if previous is not None:
                 await previous.cancel()
@@ -225,13 +233,21 @@ class SpeechStreamCoordinator:
                 on_terminal=self._remove_if_current,
             )
             self._sessions[user_id] = session
+            if on_superseded is not None:
+                self._reply_invalidators[user_id] = (reply_id, on_superseded)
             return session
 
     async def cancel(self, user_id: str) -> None:
         async with self._state_lock:
+            self._invalidate_reply(user_id)
             session = self._sessions.get(user_id)
             if session is not None:
                 await session.cancel()
+
+    def release_reply(self, user_id: str, reply_id: str) -> None:
+        registered = self._reply_invalidators.get(user_id)
+        if registered is not None and registered[0] == reply_id:
+            self._reply_invalidators.pop(user_id, None)
 
     def is_current(self, user_id: str, reply_id: str) -> bool:
         session = self._sessions.get(user_id)
@@ -244,3 +260,9 @@ class SpeechStreamCoordinator:
     def _remove_if_current(self, session: SpeechStreamSession) -> None:
         if self._sessions.get(session.user_id) is session:
             self._sessions.pop(session.user_id, None)
+
+    def _invalidate_reply(self, user_id: str) -> None:
+        registered = self._reply_invalidators.pop(user_id, None)
+        if registered is not None:
+            _, invalidate = registered
+            invalidate()
