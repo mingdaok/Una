@@ -55,12 +55,15 @@ class VoiceCallSession:
         self._lock = asyncio.Lock()
         self._tasks: set[asyncio.Task[Any]] = set()
         self._retiring_tasks: set[asyncio.Task[Any]] = set()
+        self._finalizers: set[asyncio.Task[Any]] = set()
+        self._finalizer_grace_seconds: dict[asyncio.Task[Any], float] = {}
         self._task_turns: dict[asyncio.Task[Any], int] = {}
         self._current: TurnHandle | None = None
         self._last_turn_id = 0
         self._closed = False
         self._close_complete: asyncio.Event | None = None
         self._close_waiting_tasks: frozenset[asyncio.Task[Any]] = frozenset()
+        self._close_waiting_finalizers: frozenset[asyncio.Task[Any]] = frozenset()
 
     async def start_turn(self, turn_id: int) -> TurnHandle:
         async with self._lifecycle_lock:
@@ -101,6 +104,17 @@ class VoiceCallSession:
         self._task_turns[task] = current.turn_id
         task.add_done_callback(self._untrack)
 
+    def track_finalizer(self, task: asyncio.Task[Any], grace_seconds: float = 2.0) -> None:
+        """Keep a session-level persistence task alive across turn changes."""
+        if grace_seconds < 0:
+            raise ValueError("grace_seconds must be non-negative")
+        if self._closed:
+            task.cancel()
+            return
+        self._finalizers.add(task)
+        self._finalizer_grace_seconds[task] = min(grace_seconds, 2.0)
+        task.add_done_callback(self._untrack_finalizer)
+
     async def cancel_turn(self, turn_id: int, reason: str) -> bool:
         _ = reason
         async with self._lifecycle_lock:
@@ -129,9 +143,12 @@ class VoiceCallSession:
                     wait_for_close = (
                         caller not in self._close_waiting_tasks
                         and caller not in self._retiring_tasks
+                        and caller not in self._close_waiting_finalizers
+                        and caller not in self._finalizers
                     )
                     current = None
                     tasks = ()
+                    finalizers = ()
                     first_close = False
                 else:
                     self._closed = True
@@ -139,10 +156,12 @@ class VoiceCallSession:
                     active_tasks = tuple(self._tasks)
                     self._retiring_tasks.update(active_tasks)
                     tasks = self._all_tasks_except_current()
+                    finalizers = self._without_current(tuple(self._finalizers))
                     self._current = None
                     self._tasks.clear()
                     self._close_complete = asyncio.Event()
                     self._close_waiting_tasks = frozenset(tasks)
+                    self._close_waiting_finalizers = frozenset(finalizers)
                     close_complete = self._close_complete
                     wait_for_close = False
                     first_close = True
@@ -154,16 +173,23 @@ class VoiceCallSession:
             current.cancel_event.set()
         try:
             await self._cancel_and_wait(tasks)
+            await self._wait_for_finalizers(finalizers)
         finally:
             async with self._lifecycle_lock:
                 async with self._lock:
                     self._close_waiting_tasks = frozenset()
+                    self._close_waiting_finalizers = frozenset()
                     self._complete_close_if_quiescent()
 
     def _untrack(self, task: asyncio.Task[Any]) -> None:
         self._tasks.discard(task)
         self._retiring_tasks.discard(task)
         self._task_turns.pop(task, None)
+        self._complete_close_if_quiescent()
+
+    def _untrack_finalizer(self, task: asyncio.Task[Any]) -> None:
+        self._finalizers.discard(task)
+        self._finalizer_grace_seconds.pop(task, None)
         self._complete_close_if_quiescent()
 
     @staticmethod
@@ -196,3 +222,10 @@ class VoiceCallSession:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _wait_for_finalizers(self, tasks: tuple[asyncio.Task[Any], ...]) -> None:
+        if not tasks:
+            return
+        timeout = max(self._finalizer_grace_seconds.get(task, 0.0) for task in tasks)
+        _, pending = await asyncio.wait(tasks, timeout=timeout)
+        await self._cancel_and_wait(tuple(pending))

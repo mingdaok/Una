@@ -389,6 +389,68 @@ async def test_close_waits_for_tracked_tasks_to_reach_a_terminal_state():
 
 
 @pytest.mark.asyncio
+async def test_finalizer_survives_a_new_turn_and_close_waits_for_it_to_finish():
+    session = VoiceCallSession(user_id="u1", session_id="s1", sender=RecordingSender())
+    await session.start_turn(1)
+    release = asyncio.Event()
+    finished = asyncio.Event()
+
+    async def finalize_memory():
+        await release.wait()
+        finished.set()
+
+    finalizer = asyncio.create_task(finalize_memory())
+    session.track_finalizer(finalizer)
+    await session.start_turn(2)
+    closing = asyncio.create_task(session.close())
+    await asyncio.sleep(0)
+
+    assert finalizer.cancelled() is False
+    assert closing.done() is False
+    release.set()
+    await closing
+
+    assert finished.is_set()
+    assert finalizer.cancelled() is False
+
+
+@pytest.mark.asyncio
+async def test_close_cancels_a_finalizer_that_exceeds_its_two_second_grace_period():
+    session = VoiceCallSession(user_id="u1", session_id="s1", sender=RecordingSender())
+    await session.start_turn(1)
+    finalizer = asyncio.create_task(asyncio.Event().wait())
+    session.track_finalizer(finalizer)
+
+    await asyncio.wait_for(session.close(), timeout=2.2)
+
+    assert finalizer.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_close_waits_for_the_same_finalizer_completion():
+    session = VoiceCallSession(user_id="u1", session_id="s1", sender=RecordingSender())
+    await session.start_turn(1)
+    release = asyncio.Event()
+
+    async def finalize_memory():
+        await release.wait()
+
+    finalizer = asyncio.create_task(finalize_memory())
+    session.track_finalizer(finalizer)
+    first_close = asyncio.create_task(session.close())
+    await asyncio.sleep(0)
+    second_close = asyncio.create_task(session.close())
+    await asyncio.sleep(0)
+
+    assert first_close.done() is False
+    assert second_close.done() is False
+    release.set()
+    await first_close
+    await second_close
+    assert finalizer.done()
+
+
+@pytest.mark.asyncio
 async def test_cancelling_a_missing_old_turn_leaves_the_current_turn_running():
     session = VoiceCallSession(user_id="u1", session_id="s1", sender=RecordingSender())
     current = await session.start_turn(2)

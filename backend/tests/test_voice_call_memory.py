@@ -6,6 +6,7 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 from voice_call_memory import CallMemorySnapshot, VoiceCallMemory
+from voice_call_session import VoiceCallSession
 
 
 class FakeDatabase:
@@ -49,18 +50,63 @@ class BlockingMemoryService:
         self.remembered_event.set()
 
 
+class FailingMemoryService:
+    def recall(self, user_id, query):
+        raise RuntimeError("vector store unavailable")
+
+    def remember(self, user_id, user_text, ai_text, emotion):
+        raise RuntimeError("vector write unavailable")
+
+
+class WaitingMemoryService:
+    def __init__(self):
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def recall(self, user_id, query):
+        return ""
+
+    def remember(self, user_id, user_text, ai_text, emotion):
+        self.started.set()
+        self.release.wait()
+
+
+class RecordingSender:
+    async def send_json(self, payload):
+        return None
+
+
 @pytest.mark.asyncio
 async def test_slow_vector_recall_does_not_block_snapshot():
     storage = FakeDatabase(profile="喜欢猫", history=[{"role": "user", "content": "早安"}])
     memory = BlockingMemoryService()
     service = VoiceCallMemory(storage, memory, recall_timeout_ms=10)
 
+    started = time.monotonic()
     snapshot = await service.load("u1")
+    elapsed = time.monotonic() - started
 
     assert snapshot.user_id == "u1"
     assert snapshot.profile == "喜欢猫"
     assert snapshot.long_term_memory == ""
     assert memory.queries == [("u1", "早安")]
+    assert elapsed < 0.04
+
+
+@pytest.mark.asyncio
+async def test_vector_recall_exception_degrades_to_an_empty_memory_snapshot():
+    service = VoiceCallMemory(FakeDatabase(profile="档案"), FailingMemoryService())
+
+    snapshot = await service.load("u1")
+
+    assert snapshot.profile == "档案"
+    assert snapshot.long_term_memory == ""
+
+
+def test_default_recall_budget_is_150_milliseconds():
+    service = VoiceCallMemory(FakeDatabase(), BlockingMemoryService())
+
+    assert service.recall_timeout_ms == 150
 
 
 @pytest.mark.asyncio
@@ -146,3 +192,40 @@ async def test_complete_ai_reply_reaches_sqlite_before_background_memory():
 
     assert await asyncio.to_thread(memory.remembered_event.wait, 0.2)
     assert memory.remembered == [("u1", "用户文本", "完整回复", "happy")]
+
+
+@pytest.mark.asyncio
+async def test_background_remember_exception_is_consumed_by_its_done_callback():
+    service = VoiceCallMemory(FakeDatabase(), FailingMemoryService())
+    snapshot = CallMemorySnapshot("u1", "", (), "")
+    loop = asyncio.get_running_loop()
+    unhandled = []
+    original_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
+
+    try:
+        await service.persist_ai_completion(snapshot, "用户文本", "完整回复", "happy", 9)
+        await asyncio.sleep(0.05)
+    finally:
+        loop.set_exception_handler(original_handler)
+
+    assert unhandled == []
+
+
+@pytest.mark.asyncio
+async def test_memory_task_tracker_uses_session_finalizer_across_turn_changes():
+    session = VoiceCallSession(user_id="u1", session_id="s1", sender=RecordingSender())
+    await session.start_turn(1)
+    memory = WaitingMemoryService()
+    service = VoiceCallMemory(FakeDatabase(), memory, task_tracker=session.track_finalizer)
+    snapshot = CallMemorySnapshot("u1", "", (), "")
+
+    await service.persist_ai_completion(snapshot, "用户文本", "完整回复", "happy", 9)
+    assert await asyncio.to_thread(memory.started.wait, 0.2)
+    await session.start_turn(2)
+    closing = asyncio.create_task(session.close())
+    await asyncio.sleep(0)
+
+    assert closing.done() is False
+    memory.release.set()
+    await closing

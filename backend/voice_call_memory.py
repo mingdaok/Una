@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Sequence
@@ -10,6 +11,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 HistoryItem = Mapping[str, Any]
 TaskTracker = Callable[[asyncio.Task[None]], None]
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -66,6 +68,8 @@ class VoiceCallMemory:
         except asyncio.TimeoutError:
             long_term_memory = ""
             recall_task.add_done_callback(self._consume_task_exception)
+        except Exception:
+            long_term_memory = ""
         return CallMemorySnapshot(
             user_id=user_id,
             profile=profile or "",
@@ -139,14 +143,19 @@ class VoiceCallMemory:
 
     def _track_background_task(self, task: asyncio.Task[None]) -> None:
         self._background_tasks.add(task)
+        task.add_done_callback(self._consume_task_exception)
         task.add_done_callback(self._background_tasks.discard)
         if self._task_tracker is not None:
             self._task_tracker(task)
 
     @staticmethod
     def _consume_task_exception(task: asyncio.Task[Any]) -> None:
-        if not task.cancelled():
-            task.exception()
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except Exception:
+            logger.exception("Voice call memory background task failed")
 
     @staticmethod
     def _freeze_history(history: Sequence[Mapping[str, Any]]) -> tuple[HistoryItem, ...]:
