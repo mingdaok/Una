@@ -2,6 +2,7 @@ export const INPUT_SAMPLE_RATE = 16000;
 export const MAX_INPUT_BYTES = 960000;
 export const MAX_PCM_CHUNK_BYTES = 65536;
 export const MAX_SEQUENCE = 4095;
+export const MAX_TURN_ID = 9007199254740991;
 export const MAX_CONTROL_MESSAGE_BYTES = 8192;
 
 const EVENT_FIELDS = Object.freeze({
@@ -12,6 +13,18 @@ const EVENT_FIELDS = Object.freeze({
   interrupt: ['session_id'],
   call_end: ['session_id'],
   pong: [],
+});
+
+const SERVER_EVENT_FIELDS = Object.freeze({
+  call_ready: ['session_id'],
+  transcript_final: ['session_id', 'turn_id', 'text'],
+  assistant_text_delta: ['session_id', 'turn_id', 'text'],
+  assistant_text_end: ['session_id', 'turn_id'],
+  tts_start: ['session_id', 'turn_id', 'sample_rate', 'channels', 'sample_width'],
+  tts_end: ['session_id', 'turn_id'],
+  turn_cancelled: ['session_id', 'turn_id'],
+  call_error: ['session_id', 'code', 'message'],
+  call_ended: ['session_id'],
 });
 
 function protocolError(message) {
@@ -28,7 +41,9 @@ function requireNonemptyString(value, field) {
 }
 
 function requirePositiveInteger(value, field) {
-  if (!Number.isSafeInteger(value) || value <= 0) throw protocolError(`${field} 必须为正整数`);
+  if (!Number.isSafeInteger(value) || value <= 0 || value > MAX_TURN_ID) {
+    throw protocolError(`${field} 必须为正整数`);
+  }
   return value;
 }
 
@@ -108,6 +123,27 @@ export function parseServerEvent(raw) {
     throw protocolError('控制消息不是合法 JSON');
   }
   if (!isPlainObject(event)) throw protocolError('控制消息必须是对象');
-  if (typeof event.type !== 'string' || !event.type) throw protocolError('控制消息缺少 type');
-  return event;
+  if (typeof event.type !== 'string' || !Object.hasOwn(SERVER_EVENT_FIELDS, event.type)) {
+    throw protocolError('未知事件类型');
+  }
+
+  const fields = SERVER_EVENT_FIELDS[event.type];
+  requireExactFields(event, ['type', ...fields]);
+  const normalized = { type: event.type };
+  if (fields.includes('session_id')) normalized.session_id = requireNonemptyString(event.session_id, 'session_id');
+  if (fields.includes('turn_id')) normalized.turn_id = requirePositiveInteger(event.turn_id, 'turn_id');
+  if (fields.includes('text')) normalized.text = requireNonemptyString(event.text, 'text');
+  if (fields.includes('code')) normalized.code = requireNonemptyString(event.code, 'code');
+  if (fields.includes('message')) normalized.message = requireNonemptyString(event.message, 'message');
+  if (event.type === 'tts_start') {
+    if (!Number.isSafeInteger(event.sample_rate) || event.sample_rate < 8000 || event.sample_rate > 48000) {
+      throw protocolError('sample_rate 必须在 8000..48000');
+    }
+    if (event.channels !== 1) throw protocolError('channels 必须为 1');
+    if (event.sample_width !== 2) throw protocolError('sample_width 必须为 2');
+    normalized.sample_rate = event.sample_rate;
+    normalized.channels = event.channels;
+    normalized.sample_width = event.sample_width;
+  }
+  return normalized;
 }

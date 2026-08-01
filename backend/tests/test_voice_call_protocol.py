@@ -7,6 +7,7 @@ from voice_call_protocol import (
     MAX_INPUT_BYTES,
     MAX_PCM_CHUNK_BYTES,
     MAX_SEQUENCE,
+    MAX_TURN_ID,
     BinaryFrameHeader,
     PcmFormat,
     ProtocolError,
@@ -28,6 +29,12 @@ def test_pcm_format_rejects_values_outside_the_fixed_contract(field, value):
 
     with pytest.raises(ProtocolError, match=field):
         PcmFormat(**values)
+
+
+@pytest.mark.parametrize("value", [True, 16000.0])
+def test_pcm_format_rejects_non_integer_sample_rate_before_fixed_value_check(value):
+    with pytest.raises(ProtocolError, match="sample_rate.*整数"):
+        PcmFormat(sample_rate=value, channels=1, sample_width=2)
 
 
 def test_binary_header_accepts_the_largest_valid_pcm16_chunk():
@@ -92,6 +99,18 @@ def test_speech_start_requires_positive_monotonic_turn_id():
     assert event == {"type": "user_speech_start", "session_id": "s1", "turn_id": 7}
     with pytest.raises(ProtocolError, match="turn_id"):
         parse_client_event('{"type":"user_speech_start","session_id":"s1","turn_id":0}')
+
+
+def test_speech_start_requires_a_positive_safe_integer_turn_id():
+    event = parse_client_event(
+        f'{{"type":"user_speech_start","session_id":"s1","turn_id":{MAX_TURN_ID}}}'
+    )
+
+    assert event["turn_id"] == MAX_TURN_ID
+    with pytest.raises(ProtocolError, match="turn_id"):
+        parse_client_event(
+            f'{{"type":"user_speech_start","session_id":"s1","turn_id":{MAX_TURN_ID + 1}}}'
+        )
 
 
 def test_client_control_messages_are_limited_to_8kib():

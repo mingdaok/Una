@@ -11,6 +11,7 @@ INPUT_SAMPLE_RATE = 16000
 MAX_INPUT_BYTES = 960000
 MAX_PCM_CHUNK_BYTES = 65536
 MAX_SEQUENCE = 4095
+MAX_TURN_ID = 9007199254740991
 MAX_CONTROL_MESSAGE_BYTES = 8192
 
 
@@ -29,7 +30,7 @@ def _require_nonempty_string(value: object, field: str) -> str:
 
 
 def _require_positive_int(value: object, field: str) -> int:
-    if not _is_int(value) or value <= 0:
+    if not _is_int(value) or not 0 < value <= MAX_TURN_ID:
         raise ProtocolError(f"{field} 必须为正整数")
     return value
 
@@ -41,6 +42,12 @@ class PcmFormat:
     sample_width: int
 
     def __post_init__(self) -> None:
+        if not _is_int(self.sample_rate):
+            raise ProtocolError("sample_rate 必须为整数")
+        if not _is_int(self.channels):
+            raise ProtocolError("channels 必须为整数")
+        if not _is_int(self.sample_width):
+            raise ProtocolError("sample_width 必须为整数")
         if self.sample_rate != INPUT_SAMPLE_RATE:
             raise ProtocolError("sample_rate 必须为 16000")
         if self.channels != 1:
