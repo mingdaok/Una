@@ -5,6 +5,8 @@ import { isImmediateGestureRequest, parseImmediateGesture } from '../live2d/gest
 import { createImmediateMotion, createListeningMotion } from '../live2d/gestureGenerator';
 import { normalizeMotionEvent } from '../live2d/motionProtocol';
 import { readSelectedLive2DModel } from '../live2d/modelSelection';
+import { createAudioStreamQueue, MAX_CHUNK_INDEX } from '../audio/audioStreamQueue';
+import { createAudioBufferLoader, startSyncedPlayback } from '../audio/syncedAudioPlayer';
 
 const MAX_SEEN_MOTION_IDS = 100;
 
@@ -25,53 +27,158 @@ export function useUnaCore(authenticated) {
     const reconnectTimeoutRef = useRef(null);
     const heartbeatIntervalRef = useRef(null);
     const audioContext = useRef(null);
-    const currentAudioRef = useRef(null);
+    const audioLoaderRef = useRef(null);
+    const activePlaybackRef = useRef(null);
+    const replayAbortRef = useRef(null);
+    const streamQueueRef = useRef(null);
+    const activeStreamReplyRef = useRef(null);
     const currentLipRef = useRef({ openY: 0, form: 0, volume: 0 });
+    const mountedRef = useRef(true);
     const isConnecting = useRef(false);
     const seenActionIdsRef = useRef(new Set());
     const seenMotionIdsRef = useRef(new Map());
     const connectionGenerationRef = useRef(0);
 
-    // 🌊 流式音频列车队列
-    const audioQueueRef = useRef([]);
-    const isPlayingQueueRef = useRef(false);
-    const expectedChunkIndexRef = useRef(0);
+    function makeAbortError() {
+        const error = new Error('Audio playback aborted');
+        error.name = 'AbortError';
+        return error;
+    }
 
-    // 🔥 新增：音频预加载缓存 (URL -> AudioBuffer)
-    const audioCacheRef = useRef(new Map());
+    function setLipSyncValue(value = 'X') {
+        const next = { rhubarb: value };
+        currentLipRef.current = next;
+        if (mountedRef.current) setLipValue(next);
+    }
 
-    // 🔥 新增：预加载音频到缓存
-    const preloadAudio = async (url) => {
-        if (!url || audioCacheRef.current.has(url)) return; // 已缓存则跳过
-
-        try {
-            if (!audioContext.current) {
-                const AudioContext = window.AudioContext || window.webkitAudioContext;
-                audioContext.current = new AudioContext();
+    function ensureAudioRuntime() {
+        if (!audioContext.current) {
+            const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+            if (typeof AudioContextConstructor !== 'function') {
+                throw new Error('AudioContext is unavailable');
             }
-            const ctx = audioContext.current;
-            if (ctx.state === 'suspended') { try { await ctx.resume(); } catch (e) { } }
-
-            const response = await fetch(url);
-            const arrayBuffer = await response.arrayBuffer();
-            const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
-            audioCacheRef.current.set(url, audioBuffer);
-            console.log(`✅ [Preload] 音频缓存成功: ${url}`);
-        } catch (e) {
-            console.warn(`❌ [Preload] 预加载失败: ${url}`, e);
+            audioContext.current = new AudioContextConstructor();
+            audioLoaderRef.current = createAudioBufferLoader({
+                audioContext: audioContext.current,
+                fetchImpl: (...args) => fetch(...args),
+            });
         }
-    };
+        return audioContext.current;
+    }
+
+    function unlockAudioRuntime() {
+        try {
+            const context = ensureAudioRuntime();
+            if (context.state === 'suspended') {
+                Promise.resolve(context.resume?.()).catch(() => {});
+            }
+        } catch {
+            // Text, recording, and Live2D actions remain available without Web Audio.
+        }
+    }
+
+    async function resumeAudioContext() {
+        const context = ensureAudioRuntime();
+        if (context.state === 'suspended' && typeof context.resume === 'function') {
+            await context.resume();
+        }
+        return context;
+    }
+
+    async function prepareAudioChunk(chunk) {
+        if (!chunk?.audio_url) throw new Error('Audio chunk URL is unavailable');
+        ensureAudioRuntime();
+        const audioBuffer = await audioLoaderRef.current(chunk.audio_url);
+        return { audioBuffer, visemes: chunk.visemes || [] };
+    }
+
+    function playPreparedChunk(prepared, { signal } = {}) {
+        return new Promise((resolve, reject) => {
+            let handle = null;
+            let settled = false;
+
+            const finish = (error) => {
+                if (settled) return;
+                settled = true;
+                signal?.removeEventListener('abort', abortPlayback);
+                if (activePlaybackRef.current === handle) activePlaybackRef.current = null;
+                if (error) reject(error);
+                else resolve();
+            };
+            const abortPlayback = () => {
+                handle?.stop();
+                finish(makeAbortError());
+            };
+
+            if (signal?.aborted) {
+                finish(makeAbortError());
+                return;
+            }
+            signal?.addEventListener('abort', abortPlayback, { once: true });
+
+            Promise.resolve().then(async () => {
+                const context = await resumeAudioContext();
+                if (signal?.aborted) throw makeAbortError();
+                handle = startSyncedPlayback({
+                    audioContext: context,
+                    audioBuffer: prepared.audioBuffer,
+                    visemes: prepared.visemes,
+                    onViseme: setLipSyncValue,
+                    onEnded: () => finish(),
+                    onError: error => finish(error),
+                    requestFrame: callback => requestAnimationFrame(callback),
+                    cancelFrame: frameId => cancelAnimationFrame(frameId),
+                });
+                if (!settled) activePlaybackRef.current = handle;
+            }).catch(error => finish(error));
+        });
+    }
+
+    function getStreamQueue() {
+        if (!streamQueueRef.current) {
+            streamQueueRef.current = createAudioStreamQueue({
+                prepareChunk: prepareAudioChunk,
+                playChunk: playPreparedChunk,
+                now: () => globalThis.performance?.now?.() ?? Date.now(),
+                reportMetric: () => {},
+            });
+        }
+        return streamQueueRef.current;
+    }
+
+    function stopCurrentAudio() {
+        streamQueueRef.current?.stop();
+        activeStreamReplyRef.current = null;
+        replayAbortRef.current?.abort();
+        replayAbortRef.current = null;
+        activePlaybackRef.current?.stop();
+        activePlaybackRef.current = null;
+        setLipSyncValue('X');
+    }
+
+    function disposeAudioRuntime() {
+        stopCurrentAudio();
+        const context = audioContext.current;
+        audioContext.current = null;
+        audioLoaderRef.current = null;
+        try {
+            Promise.resolve(context?.close?.()).catch(() => {});
+        } catch {
+            // Closing is best-effort during hook teardown.
+        }
+    }
 
     // --- 1. 初始化：同步历史记录 ---
     useEffect(() => {
         if (!authenticated) return;
+        let cancelled = false;
         const fetchHistory = async () => {
             try {
                 const res = await authFetch('/history');
                 if (!res.ok) throw new Error('无法获取聊天记录');
                 const data = await res.json();
 
-                if (Array.isArray(data)) {
+                if (!cancelled && Array.isArray(data)) {
                     const formatted = data.map(m => ({
                         role: m.role,
                         text: m.content,
@@ -83,9 +190,12 @@ export function useUnaCore(authenticated) {
                     })).reverse();
                     setMessages(formatted);
                 }
-            } catch (e) { console.error("❌ 获取历史失败:", e); }
+            } catch (e) {
+                if (!cancelled) console.error("❌ 获取历史失败:", e);
+            }
         };
         fetchHistory();
+        return () => { cancelled = true; };
     }, [authenticated]);
 
     // --- 2. WebSocket 连接 (含心跳 & 重连) ---
@@ -238,13 +348,33 @@ export function useUnaCore(authenticated) {
 
                     // 🌊 开始处理流式分段音频
                     if (data.type === 'audio_stream_start') {
-                        audioQueueRef.current = [];
-                        isPlayingQueueRef.current = false;
-                        expectedChunkIndexRef.current = 0;
+                        if (typeof data.reply_id !== 'string' || data.reply_id.length === 0) return;
+                        replayAbortRef.current?.abort();
+                        replayAbortRef.current = null;
+                        activePlaybackRef.current?.stop();
+                        activePlaybackRef.current = null;
+                        setLipSyncValue('X');
+                        setMessages(prev => {
+                            const lastMsg = prev[prev.length - 1];
+                            if (!lastMsg?.isStreamingAI) return prev;
+                            const updated = [...prev];
+                            updated[updated.length - 1] = { ...lastMsg, isStreamingAI: false };
+                            return updated;
+                        });
+                        activeStreamReplyRef.current = data.reply_id;
+                        getStreamQueue().start(data.reply_id);
+                        return;
                     }
 
                     // 收到单个句子的音频碎片（此时文字已先行上屏）
                     if (data.type === 'audio_stream_chunk') {
+                        if (
+                            typeof data.reply_id !== 'string'
+                            || data.reply_id !== activeStreamReplyRef.current
+                            || !Number.isSafeInteger(data.chunk_index)
+                            || data.chunk_index < 0
+                            || data.chunk_index > MAX_CHUNK_INDEX
+                        ) return;
                         const chunk = {
                             index: data.chunk_index,
                             text: data.text,
@@ -252,7 +382,8 @@ export function useUnaCore(authenticated) {
                             visemes: data.visemes || [],
                             emotion: data.emotion || 'neutral'
                         };
-                        audioQueueRef.current.push(chunk);
+                        const enqueueResult = getStreamQueue().enqueue(data.reply_id, chunk);
+                        if (!enqueueResult.accepted) return;
 
                         // 🔥 将音频碎片关联到当前流式气泡的 chunkList（供回放用）
                         setMessages(prev => {
@@ -267,28 +398,33 @@ export function useUnaCore(authenticated) {
                             }
                             return prev;
                         });
-
-                        // 预加载音频到缓存
-                        preloadAudio(chunk.audio_url);
-                        // 催促消费播放
-                        playNextInQueue();
+                        return;
                     }
 
                     // 流式结束标记：关闭当前流式气泡的追加状态
                     if (data.type === 'audio_stream_end') {
+                        if (
+                            typeof data.reply_id !== 'string'
+                            || data.reply_id !== activeStreamReplyRef.current
+                        ) return;
+                        const sealResult = getStreamQueue().seal(data.reply_id);
+                        if (!sealResult.accepted) return;
                         setMessages(prev => {
                             const lastMsg = prev[prev.length - 1];
                             if (lastMsg && lastMsg.isStreamingAI) {
+                                const completeText = data.full_text || lastMsg.text;
                                 const updated = [...prev];
                                 updated[updated.length - 1] = {
                                     ...lastMsg,
                                     isStreamingAI: false,
-                                    text: data.full_text || lastMsg.text
+                                    text: completeText,
+                                    content: completeText,
                                 };
                                 return updated;
                             }
                             return prev;
                         });
+                        return;
                     }
                 } catch (e) { }
             };
@@ -296,6 +432,7 @@ export function useUnaCore(authenticated) {
             ws.onclose = (e) => {
                 if (connectionGeneration !== connectionGenerationRef.current) return;
                 console.log("❌ [WS] 断开:", e.code);
+                stopCurrentAudio();
                 setConnectionStatus("CLOSED");
                 websocketRef.current = null;
                 isConnecting.current = false;
@@ -316,8 +453,10 @@ export function useUnaCore(authenticated) {
     }, [authenticated]);
 
     useEffect(() => {
+        mountedRef.current = true;
         connectWebSocket();
         return () => {
+            mountedRef.current = false;
             connectionGenerationRef.current += 1;
             isConnecting.current = false;
             if (websocketRef.current) websocketRef.current.close();
@@ -326,7 +465,7 @@ export function useUnaCore(authenticated) {
             seenMotionIdsRef.current.clear();
             if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
             if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
-            stopCurrentAudio();
+            disposeAudioRuntime();
         };
     }, [connectWebSocket]);
 
@@ -344,6 +483,7 @@ export function useUnaCore(authenticated) {
     // 发送文字
     const sendMessage = (text) => {
         if (websocketRef.current?.readyState === WebSocket.OPEN) {
+            unlockAudioRuntime();
             const clientMessageId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
             setMessages(prev => [...prev, { role: 'user', text, content: text, clientMessageId, date: new Date() }]);
             const nowMs = Date.now();
@@ -365,6 +505,7 @@ export function useUnaCore(authenticated) {
     // 发送语音 (二进制)
     const sendAudioData = (blobOrBuffer) => {
         if (websocketRef.current?.readyState === WebSocket.OPEN) {
+            unlockAudioRuntime();
             websocketRef.current.send(blobOrBuffer);
         }
     };
@@ -382,23 +523,6 @@ export function useUnaCore(authenticated) {
         }]);
     };
 
-    // 停止播放
-    const stopCurrentAudio = () => {
-        if (currentAudioRef.current) {
-            try {
-                if (typeof currentAudioRef.current.stop === 'function') {
-                    currentAudioRef.current.stop(); // AudioBufferSourceNode
-                } else if (typeof currentAudioRef.current.pause === 'function') {
-                    currentAudioRef.current.pause(); // 降级时的 HTMLAudioElement
-                    currentAudioRef.current.currentTime = 0;
-                }
-            } catch (e) { }
-        }
-        const zero = { openY: 0, form: 0, volume: 0 };
-        setLipValue(zero);
-        currentLipRef.current = { ...zero };
-    };
-
     const interrupt = () => {
         stopCurrentAudio();
         if (websocketRef.current?.readyState === WebSocket.OPEN) {
@@ -414,131 +538,57 @@ export function useUnaCore(authenticated) {
         }
     };
 
-    // 🌊 流式播放轮询消费器（文字已在 text_stream_chunk 阶段上屏，此处只管播放音频+嘴型）
-    const playNextInQueue = () => {
-        if (isPlayingQueueRef.current || audioQueueRef.current.length === 0) return;
-        
-        // 查找下一个需要播放的序号
-        const nextIndex = audioQueueRef.current.findIndex(c => c.index === expectedChunkIndexRef.current);
-        if (nextIndex === -1) {
-            // 当前缺少的句段音频还未生成完毕返回，需等待
-            return;
-        }
-
-        // 提取并移出队列
-        const chunk = audioQueueRef.current.splice(nextIndex, 1)[0];
-        
-        isPlayingQueueRef.current = true;
-        
-        playAudio(chunk.audio_url, chunk.visemes, 
-            null,  // onReady: 文字已提前上屏，无需再追加
-            () => { // onEnded: 这个碎片播完了，继续下一个
-                isPlayingQueueRef.current = false;
-                expectedChunkIndexRef.current += 1;
-                playNextInQueue();
-            }
-        );
-    };
-
     // 🔥 供外部使用的连续回放功能：按顺序纯净重放，不修改消息气泡
     const replayChunks = async (chunkList) => {
         stopCurrentAudio();
         if (!chunkList || chunkList.length === 0) return;
-        
-        let shouldStop = false;
-        const originalInterrupt = interrupt;
-        
-        // 临时包装停止机制
-        window.__current_replay_interrupt = () => { shouldStop = true; };
-        
-        for (let i = 0; i < chunkList.length; i++) {
-            if (shouldStop) break;
-            const chunk = chunkList[i];
-            await new Promise((resolve) => {
-                playAudio(chunk.audio_url, chunk.visemes, null, resolve);
-            });
+
+        const controller = new AbortController();
+        replayAbortRef.current = controller;
+        try {
+            for (const chunk of chunkList) {
+                if (controller.signal.aborted) break;
+                try {
+                    const prepared = await prepareAudioChunk(chunk);
+                    await playPreparedChunk(prepared, { signal: controller.signal });
+                } catch (error) {
+                    if (error?.name === 'AbortError') break;
+                    // One unavailable replay chunk must not block later chunks.
+                }
+            }
+        } finally {
+            if (replayAbortRef.current === controller) replayAbortRef.current = null;
+            setLipSyncValue('X');
         }
-        window.__current_replay_interrupt = null;
     };
 
     // 🔥 核心：播放音频 + 高阶物理音素同步 (AudioBuffer + Rhubarb 时间轴)
     const playAudio = async (url, visemes = [], onReady = null, onEnded = null) => {
-        if (!url) return;
-        stopCurrentAudio();
-
-        if (!audioContext.current) {
-            const AudioContext = window.AudioContext || window.webkitAudioContext;
-            audioContext.current = new AudioContext();
+        if (!url) {
+            onEnded?.();
+            return;
         }
-        const ctx = audioContext.current;
-        if (ctx.state === 'suspended') { try { await ctx.resume(); } catch (e) { } }
-
+        stopCurrentAudio();
+        const controller = new AbortController();
+        replayAbortRef.current = controller;
+        let readyCalled = false;
+        const notifyReady = () => {
+            if (readyCalled) return;
+            readyCalled = true;
+            try { onReady?.(); } catch { }
+        };
         try {
-            // 🔥 新增：优先使用预加载缓存
-            let audioBuffer = audioCacheRef.current.get(url);
-            if (!audioBuffer) {
-                // 缓存未命中，实时加载
-                console.log(`🔄 [Play] 缓存未命中，实时加载: ${url}`);
-                const response = await fetch(url);
-                const arrayBuffer = await response.arrayBuffer();
-                audioBuffer = await ctx.decodeAudioData(arrayBuffer);
-            } else {
-                console.log(`🚀 [Play] 使用缓存播放: ${url}`);
+            const prepared = await prepareAudioChunk({ audio_url: url, visemes });
+            if (controller.signal.aborted) throw makeAbortError();
+            notifyReady();
+            await playPreparedChunk(prepared, { signal: controller.signal });
+        } catch (error) {
+            if (error?.name !== 'AbortError') notifyReady();
+        } finally {
+            if (replayAbortRef.current === controller) replayAbortRef.current = null;
+            if (!controller.signal.aborted && mountedRef.current) {
+                try { onEnded?.(); } catch { }
             }
-
-            const source = ctx.createBufferSource();
-            source.buffer = audioBuffer;
-            currentAudioRef.current = source;
-            source.connect(ctx.destination);
-
-            const startTime = ctx.currentTime;
-            let isRunning = true;
-
-            // 回调通知发声（配合 UI 字幕弹出）
-            if (onReady) onReady();
-            source.start(0);
-
-            source.onended = () => {
-                isRunning = false;
-                if (currentAudioRef.current === source) {
-                    const zero = { openY: 0, form: 0, rhubarb: 'X' };
-                    setLipValue(zero);
-                    currentLipRef.current = { ...zero };
-                }
-                if (onEnded) onEnded();
-            };
-
-            const updateLip = () => {
-                if (!isRunning || currentAudioRef.current !== source) return;
-                requestAnimationFrame(updateLip);
-
-                const currentPlayTime = ctx.currentTime - startTime;
-                let activeViseme = 'X';
-
-                if (visemes && visemes.length > 0) {
-                    for (let i = 0; i < visemes.length; i++) {
-                        const v = visemes[i];
-                        if (currentPlayTime >= v.start && currentPlayTime <= v.end) {
-                            activeViseme = v.value;
-                            break;
-                        }
-                    }
-                }
-
-                // 直接将离线算好的精确音素抛给底层 Live2DController 解析
-                setLipValue({ rhubarb: activeViseme });
-                currentLipRef.current = { rhubarb: activeViseme };
-            };
-            updateLip();
-        } catch (e) {
-            // 降级方案：如果是 fetch 错误，直接回归古老的 audio 播放 (没有口型)
-            console.warn("AudioContext 或 Fetch 失败，触发降级无缓冲播放:", e);
-            if (onReady) onReady();
-            const audio = new Audio(url);
-            audio.crossOrigin = "anonymous";
-            currentAudioRef.current = audio;
-            audio.onended = () => { if (onEnded) onEnded(); };
-            audio.play().catch(ex => { console.warn(ex); if (onEnded) onEnded(); });
         }
     };
 
