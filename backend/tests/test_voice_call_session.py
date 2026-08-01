@@ -152,6 +152,117 @@ async def test_old_task_cleanup_cannot_track_a_child_into_the_new_turn():
 
 
 @pytest.mark.asyncio
+async def test_tracked_task_can_start_a_new_turn_without_cancelling_or_waiting_for_itself():
+    session = VoiceCallSession(user_id="u1", session_id="s1", sender=RecordingSender())
+    await session.start_turn(1)
+
+    async def start_from_tracked_task():
+        return await session.start_turn(2)
+
+    task = asyncio.create_task(start_from_tracked_task())
+    session.track(task)
+    await asyncio.sleep(0)
+
+    handle = await asyncio.wait_for(task, timeout=0.1)
+
+    assert handle.turn_id == 2
+    assert session.is_current(2)
+
+
+@pytest.mark.asyncio
+async def test_tracked_task_can_cancel_its_turn_without_cancelling_or_waiting_for_itself():
+    session = VoiceCallSession(user_id="u1", session_id="s1", sender=RecordingSender())
+    await session.start_turn(1)
+
+    async def cancel_from_tracked_task():
+        return await session.cancel_turn(1, "client_interrupt")
+
+    task = asyncio.create_task(cancel_from_tracked_task())
+    session.track(task)
+    await asyncio.sleep(0)
+
+    assert await asyncio.wait_for(task, timeout=0.1) is True
+    assert session.is_current(1) is False
+
+
+@pytest.mark.asyncio
+async def test_tracked_task_can_close_without_cancelling_or_waiting_for_itself():
+    session = VoiceCallSession(user_id="u1", session_id="s1", sender=RecordingSender())
+    await session.start_turn(1)
+
+    async def close_from_tracked_task():
+        await session.close()
+
+    task = asyncio.create_task(close_from_tracked_task())
+    session.track(task)
+    await asyncio.sleep(0)
+
+    await asyncio.wait_for(task, timeout=0.1)
+    with pytest.raises(ProtocolError, match="关闭"):
+        await session.start_turn(2)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_external_close_waits_for_the_first_close_to_finish():
+    session = VoiceCallSession(user_id="u1", session_id="s1", sender=RecordingSender())
+    await session.start_turn(1)
+    cancellation_started = asyncio.Event()
+    release_cancelled_task = asyncio.Event()
+
+    async def block_cancellation():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancellation_started.set()
+            await release_cancelled_task.wait()
+            raise
+
+    task = asyncio.create_task(block_cancellation())
+    session.track(task)
+    await asyncio.sleep(0)
+    first_close = asyncio.create_task(session.close())
+    await cancellation_started.wait()
+    second_close = asyncio.create_task(session.close())
+
+    try:
+        await asyncio.sleep(0)
+        assert second_close.done() is False
+    finally:
+        release_cancelled_task.set()
+
+    await first_close
+    await second_close
+
+
+@pytest.mark.asyncio
+async def test_task_waited_by_close_can_reenter_close_without_waiting_for_completion():
+    session = VoiceCallSession(user_id="u1", session_id="s1", sender=RecordingSender())
+    await session.start_turn(1)
+
+    async def close_again_in_cancellation_cleanup():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await session.close()
+
+    task = asyncio.create_task(close_again_in_cancellation_cleanup())
+    session.track(task)
+    await asyncio.sleep(0)
+
+    await asyncio.wait_for(session.close(), timeout=0.1)
+
+    assert task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_close_without_an_active_turn_completes_for_following_callers():
+    session = VoiceCallSession(user_id="u1", session_id="s1", sender=RecordingSender())
+
+    await session.close()
+    await asyncio.wait_for(session.close(), timeout=0.1)
+
+
+@pytest.mark.asyncio
 async def test_close_waits_for_tracked_tasks_to_reach_a_terminal_state():
     session = VoiceCallSession(user_id="u1", session_id="s1", sender=RecordingSender())
     await session.start_turn(1)

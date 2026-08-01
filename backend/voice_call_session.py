@@ -58,6 +58,8 @@ class VoiceCallSession:
         self._current: TurnHandle | None = None
         self._last_turn_id = 0
         self._closed = False
+        self._close_complete: asyncio.Event | None = None
+        self._close_waiting_tasks: frozenset[asyncio.Task[Any]] = frozenset()
 
     async def start_turn(self, turn_id: int) -> TurnHandle:
         async with self._lifecycle_lock:
@@ -67,7 +69,7 @@ class VoiceCallSession:
                 self._validate_turn_id(turn_id)
                 if turn_id <= self._last_turn_id:
                     raise ProtocolError("turn_id 必须严格递增")
-                old_tasks = tuple(self._tasks)
+                old_tasks = self._tasks_except_current()
                 old_handle = self._current
                 self._tasks.clear()
                 self._last_turn_id = turn_id
@@ -103,7 +105,7 @@ class VoiceCallSession:
                 if self._current is None or self._current.turn_id != turn_id:
                     return False
                 current = self._current
-                tasks = tuple(self._tasks)
+                tasks = self._tasks_except_current()
                 self._tasks.clear()
                 self._current = None
         current.cancel_event.set()
@@ -114,22 +116,47 @@ class VoiceCallSession:
         return self._current is not None and self._current.turn_id == turn_id
 
     async def close(self) -> None:
+        caller = asyncio.current_task()
         async with self._lifecycle_lock:
             async with self._lock:
                 if self._closed:
-                    return
-                self._closed = True
-                current = self._current
-                tasks = tuple(self._tasks)
-                self._current = None
-                self._tasks.clear()
+                    close_complete = self._close_complete
+                    wait_for_close = caller not in self._close_waiting_tasks
+                    current = None
+                    tasks = ()
+                    first_close = False
+                else:
+                    self._closed = True
+                    current = self._current
+                    tasks = self._tasks_except_current()
+                    self._current = None
+                    self._tasks.clear()
+                    self._close_complete = asyncio.Event()
+                    self._close_waiting_tasks = frozenset(tasks)
+                    close_complete = self._close_complete
+                    wait_for_close = False
+                    first_close = True
+        if not first_close:
+            if wait_for_close and close_complete is not None:
+                await close_complete.wait()
+            return
         if current is not None:
             current.cancel_event.set()
-        await self._cancel_and_wait(tasks)
+        try:
+            await self._cancel_and_wait(tasks)
+        finally:
+            async with self._lifecycle_lock:
+                async with self._lock:
+                    self._close_waiting_tasks = frozenset()
+                    close_complete.set()
 
     def _untrack(self, task: asyncio.Task[Any]) -> None:
         self._tasks.discard(task)
         self._task_turns.pop(task, None)
+
+    def _tasks_except_current(self) -> tuple[asyncio.Task[Any], ...]:
+        caller = asyncio.current_task()
+        return tuple(task for task in self._tasks if task is not caller)
 
     @staticmethod
     def _validate_turn_id(turn_id: object) -> None:
