@@ -158,6 +158,30 @@ describe('createAudioStreamQueue', () => {
     ]);
   }, 1_000);
 
+  it('treats an AbortError play rejection as cancellation without a failed metric', async () => {
+    const attempted = [];
+    const metrics = [];
+    const queue = createQueue({
+      playChunk: async chunk => {
+        attempted.push(chunk.index);
+        if (chunk.index === 0) {
+          const error = new Error('cancelled by playback implementation');
+          error.name = 'AbortError';
+          throw error;
+        }
+      },
+      reportMetric: metric => { metrics.push(metric); },
+    });
+
+    queue.start('reply-1');
+    queue.enqueue('reply-1', { index: 0 });
+    queue.enqueue('reply-1', { index: 1 });
+    await withTimeout(queue.whenIdle(), 'AbortError cancellation skip');
+
+    expect(attempted).toEqual([0, 1]);
+    expect(metrics.filter(metric => metric.stage === 'play')).toEqual([]);
+  }, 1_000);
+
   it('isolates delayed prepare callbacks after a newer reply starts', async () => {
     const staleSuccess = deferred();
     const staleFailure = deferred();
@@ -215,6 +239,49 @@ describe('createAudioStreamQueue', () => {
     expect(played).toEqual(['old', 'current']);
   }, 1_000);
 
+  it('aborts the old playback signal on start and resumes only after its promise rejects', async () => {
+    const attempts = [];
+    const abortedStarts = [];
+    const signals = [];
+    const metrics = [];
+    const queue = createQueue({
+      playChunk: (chunk, options = {}) => {
+        const { signal } = options;
+        signals.push(signal);
+        attempts.push({ reply: chunk.reply, abortedAtStart: signal?.aborted });
+        if (signal?.aborted) abortedStarts.push(chunk.reply);
+        if (chunk.reply === 'old') {
+          return new Promise((_, reject) => {
+            signal?.addEventListener('abort', () => {
+              const error = new Error('playback cancelled');
+              error.name = 'AbortError';
+              reject(error);
+            }, { once: true });
+          });
+        }
+        return Promise.resolve();
+      },
+      reportMetric: metric => { metrics.push(metric); },
+    });
+
+    queue.start('reply-1');
+    queue.enqueue('reply-1', { index: 0, reply: 'old' });
+    await waitUntil(() => attempts.length === 1, 'abort-aware old playback');
+    expect(signals[0]).toBeInstanceOf(AbortSignal);
+
+    queue.start('reply-2');
+    expect(signals[0].aborted).toBe(true);
+    queue.enqueue('reply-2', { index: 0, reply: 'current' });
+    await withTimeout(queue.whenIdle(), 'new playback after abort rejection');
+
+    expect(attempts).toEqual([
+      { reply: 'old', abortedAtStart: false },
+      { reply: 'current', abortedAtStart: false },
+    ]);
+    expect(abortedStarts).toEqual([]);
+    expect(metrics.filter(metric => metric.stage === 'play')).toEqual([]);
+  }, 1_000);
+
   it('keeps the global playback lease across stop while the stopped snapshot stays idle', async () => {
     const oldPlay = deferred();
     const played = [];
@@ -249,6 +316,38 @@ describe('createAudioStreamQueue', () => {
     oldPlay.resolve();
     await withTimeout(queue.whenIdle(), 'new reply after stopped playback settles');
     expect(played).toEqual(['old', 'current']);
+  }, 1_000);
+
+  it('aborts the active playback signal on stop without reporting a play failure', async () => {
+    const signals = [];
+    const metrics = [];
+    const queue = createQueue({
+      playChunk: (_chunk, options = {}) => {
+        const { signal } = options;
+        signals.push(signal);
+        return new Promise((_, reject) => {
+          signal?.addEventListener('abort', () => {
+            const error = new Error('stopped');
+            error.name = 'AbortError';
+            reject(error);
+          }, { once: true });
+        });
+      },
+      reportMetric: metric => { metrics.push(metric); },
+    });
+
+    queue.start('reply-1');
+    queue.enqueue('reply-1', { index: 0 });
+    await waitUntil(() => signals.length === 1, 'abort-aware playback before stop');
+    expect(signals[0]).toBeInstanceOf(AbortSignal);
+
+    queue.stop();
+    expect(signals[0].aborted).toBe(true);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(metrics.filter(metric => metric.stage === 'play')).toEqual([]);
+    expect(queue.snapshot()).toMatchObject({ replyId: null, playing: false, idle: true });
   }, 1_000);
 
   it('does not prepare or play a duplicate chunk index twice', async () => {
@@ -381,6 +480,32 @@ describe('createAudioStreamQueue', () => {
       reason: 'invalid_index',
     });
     expect(prepareChunk).not.toHaveBeenCalled();
+  });
+
+  it('rejects unsafe or over-limit indexes before preload and keeps seal bounded', () => {
+    const prepareChunk = vi.fn();
+    const reportMetric = vi.fn();
+    const queue = createQueue({ prepareChunk, reportMetric });
+    queue.start('reply-1');
+
+    expect(queue.enqueue('reply-1', { index: Number.MAX_SAFE_INTEGER })).toEqual({
+      accepted: false,
+      reason: 'invalid_index',
+    });
+    expect(queue.enqueue('reply-1', { index: 1e100 })).toEqual({
+      accepted: false,
+      reason: 'invalid_index',
+    });
+    expect(queue.enqueue('reply-1', { index: 4096 })).toEqual({
+      accepted: false,
+      reason: 'invalid_index',
+    });
+    expect(prepareChunk).not.toHaveBeenCalled();
+    expect(reportMetric).not.toHaveBeenCalled();
+    expect(queue.snapshot().chunks).toEqual([]);
+
+    expect(queue.seal('reply-1')).toEqual({ accepted: true, reason: 'sealed' });
+    expect(queue.snapshot()).toMatchObject({ sealed: true, idle: true, chunks: [] });
   });
 
   it('whenIdle is a barrier for accepted work and a later chunk uses a new barrier', async () => {

@@ -1,5 +1,15 @@
 const TERMINAL_STATUSES = new Set(['done', 'failed']);
+export const MAX_CHUNK_INDEX = 4095;
 
+/**
+ * Creates an ordered preload/playback queue for one active reply at a time.
+ *
+ * `playChunk(preparedChunk, { signal })` remains compatible with one-argument
+ * functions, but playback implementations must observe `signal` and promptly
+ * settle or reject after abort. The queue deliberately keeps the physical
+ * playback lease until that promise settles, so cancellation cannot overlap a
+ * replacement playback.
+ */
 export function createAudioStreamQueue({
   prepareChunk,
   playChunk,
@@ -13,6 +23,7 @@ export function createAudioStreamQueue({
   let expectedIndex = 0;
   let playing = false;
   let playbackLease = false;
+  let activePlaybackController = null;
   let starvationPending = false;
   let starvationStartedAtMs = null;
   let records = new Map();
@@ -88,12 +99,20 @@ export function createAudioStreamQueue({
     record.status = 'playing';
     playing = true;
     playbackLease = true;
+    const playbackController = new AbortController();
+    activePlaybackController = playbackController;
     const startedAtMs = readNow();
     let playback;
-    try {
-      playback = playChunk(record.prepared);
-    } catch (error) {
+    if (playbackController.signal.aborted) {
+      const error = new Error('Playback cancelled before start');
+      error.name = 'AbortError';
       playback = Promise.reject(error);
+    } else {
+      try {
+        playback = playChunk(record.prepared, { signal: playbackController.signal });
+      } catch (error) {
+        playback = Promise.reject(error);
+      }
     }
 
     Promise.resolve(playback).then(
@@ -102,6 +121,9 @@ export function createAudioStreamQueue({
     );
 
     function finishPlayback(error) {
+      if (activePlaybackController === playbackController) {
+        activePlaybackController = null;
+      }
       playbackLease = false;
       if (!isCurrent(callbackGeneration, callbackReplyId) || record.status !== 'playing') {
         pump();
@@ -111,7 +133,8 @@ export function createAudioStreamQueue({
       record.status = error ? 'failed' : 'done';
       playing = false;
       expectedIndex = index + 1;
-      if (error) {
+      const cancelled = playbackController.signal.aborted || error?.name === 'AbortError';
+      if (error && !cancelled) {
         emitMetric({
           replyId: callbackReplyId,
           chunkIndex: index,
@@ -189,6 +212,7 @@ export function createAudioStreamQueue({
 
   function start(nextReplyId) {
     generation += 1;
+    activePlaybackController?.abort();
     settleIdleWaiters();
     replyId = nextReplyId;
     sealed = false;
@@ -209,7 +233,7 @@ export function createAudioStreamQueue({
       return { accepted: false, reason: 'sealed' };
     }
     const index = chunk?.index;
-    if (!Number.isInteger(index) || index < 0) {
+    if (!Number.isSafeInteger(index) || index < 0 || index > MAX_CHUNK_INDEX) {
       return { accepted: false, reason: 'invalid_index' };
     }
     if (records.has(index)) {
@@ -279,6 +303,7 @@ export function createAudioStreamQueue({
 
   function stop() {
     generation += 1;
+    activePlaybackController?.abort();
     settleIdleWaiters();
     replyId = null;
     sealed = false;
