@@ -297,6 +297,76 @@ async def test_close_waits_for_a_retiring_task_while_start_turn_waits_for_its_cl
 
 
 @pytest.mark.asyncio
+async def test_external_close_waits_for_a_tracked_task_after_it_starts_a_new_turn():
+    session = VoiceCallSession(user_id="u1", session_id="s1", sender=RecordingSender())
+    await session.start_turn(1)
+    blocked = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+
+    async def start_then_block():
+        await session.start_turn(2)
+        blocked.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cleanup_started.set()
+            await release_cleanup.wait()
+            raise
+
+    task = asyncio.create_task(start_then_block())
+    session.track(task)
+    await blocked.wait()
+    closing = asyncio.create_task(session.close())
+
+    try:
+        await asyncio.wait_for(cleanup_started.wait(), timeout=0.1)
+        assert closing.done() is False
+    finally:
+        release_cleanup.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    await closing
+    assert task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_external_close_waits_for_a_tracked_task_after_it_cancels_its_turn():
+    session = VoiceCallSession(user_id="u1", session_id="s1", sender=RecordingSender())
+    await session.start_turn(1)
+    blocked = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+
+    async def cancel_then_block():
+        assert await session.cancel_turn(1, "client_interrupt")
+        blocked.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cleanup_started.set()
+            await release_cleanup.wait()
+            raise
+
+    task = asyncio.create_task(cancel_then_block())
+    session.track(task)
+    await blocked.wait()
+    closing = asyncio.create_task(session.close())
+
+    try:
+        await asyncio.wait_for(cleanup_started.wait(), timeout=0.1)
+        assert closing.done() is False
+    finally:
+        release_cleanup.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    await closing
+    assert task.cancelled()
+
+
+@pytest.mark.asyncio
 async def test_close_waits_for_tracked_tasks_to_reach_a_terminal_state():
     session = VoiceCallSession(user_id="u1", session_id="s1", sender=RecordingSender())
     await session.start_turn(1)

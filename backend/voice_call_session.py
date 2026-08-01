@@ -70,8 +70,9 @@ class VoiceCallSession:
                 self._validate_turn_id(turn_id)
                 if turn_id <= self._last_turn_id:
                     raise ProtocolError("turn_id 必须严格递增")
-                old_tasks = self._tasks_except_current()
-                self._retiring_tasks.update(old_tasks)
+                old_active_tasks = tuple(self._tasks)
+                self._retiring_tasks.update(old_active_tasks)
+                old_tasks = self._without_current(old_active_tasks)
                 old_handle = self._current
                 self._tasks.clear()
                 self._last_turn_id = turn_id
@@ -107,8 +108,9 @@ class VoiceCallSession:
                 if self._current is None or self._current.turn_id != turn_id:
                     return False
                 current = self._current
-                tasks = self._tasks_except_current()
-                self._retiring_tasks.update(tasks)
+                active_tasks = tuple(self._tasks)
+                self._retiring_tasks.update(active_tasks)
+                tasks = self._without_current(active_tasks)
                 self._tasks.clear()
                 self._current = None
         current.cancel_event.set()
@@ -124,14 +126,17 @@ class VoiceCallSession:
             async with self._lock:
                 if self._closed:
                     close_complete = self._close_complete
-                    wait_for_close = caller not in self._close_waiting_tasks
+                    wait_for_close = (
+                        caller not in self._close_waiting_tasks
+                        and caller not in self._retiring_tasks
+                    )
                     current = None
                     tasks = ()
                     first_close = False
                 else:
                     self._closed = True
                     current = self._current
-                    active_tasks = self._tasks_except_current()
+                    active_tasks = tuple(self._tasks)
                     self._retiring_tasks.update(active_tasks)
                     tasks = self._all_tasks_except_current()
                     self._current = None
@@ -153,20 +158,28 @@ class VoiceCallSession:
             async with self._lifecycle_lock:
                 async with self._lock:
                     self._close_waiting_tasks = frozenset()
-                    close_complete.set()
+                    self._complete_close_if_quiescent()
 
     def _untrack(self, task: asyncio.Task[Any]) -> None:
         self._tasks.discard(task)
         self._retiring_tasks.discard(task)
         self._task_turns.pop(task, None)
+        self._complete_close_if_quiescent()
 
-    def _tasks_except_current(self) -> tuple[asyncio.Task[Any], ...]:
+    @staticmethod
+    def _without_current(
+        tasks: tuple[asyncio.Task[Any], ...],
+    ) -> tuple[asyncio.Task[Any], ...]:
         caller = asyncio.current_task()
-        return tuple(task for task in self._tasks if task is not caller)
+        return tuple(task for task in tasks if task is not caller)
 
     def _all_tasks_except_current(self) -> tuple[asyncio.Task[Any], ...]:
         caller = asyncio.current_task()
         return tuple(task for task in self._tasks | self._retiring_tasks if task is not caller)
+
+    def _complete_close_if_quiescent(self) -> None:
+        if self._closed and not self._retiring_tasks and self._close_complete is not None:
+            self._close_complete.set()
 
     @staticmethod
     def _validate_turn_id(turn_id: object) -> None:
