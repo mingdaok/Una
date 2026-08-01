@@ -20,11 +20,33 @@ describe('voice-call protocol', () => {
     expect(() => makeClientEvent('unknown_event')).toThrow(/未知事件/);
   });
 
+  it('serializes input audio metadata with an explicit input direction', () => {
+    expect(makeClientEvent('input_audio_chunk', {
+      session_id: 's1', turn_id: 1, direction: 'input', sequence: 0, byte_length: 320,
+    })).toBe('{"type":"input_audio_chunk","session_id":"s1","turn_id":1,"direction":"input","sequence":0,"byte_length":320}');
+    expect(() => makeClientEvent('input_audio_chunk', {
+      session_id: 's1', turn_id: 1, sequence: 0, byte_length: 320,
+    })).toThrow(/缺少字段/);
+    expect(() => makeClientEvent('input_audio_chunk', {
+      session_id: 's1', turn_id: 1, direction: 'output', sequence: 0, byte_length: 320,
+    })).toThrow(/direction/);
+  });
+
+  it('rejects serialized client control messages larger than 8 KiB', () => {
+    expect(() => makeClientEvent('call_end', { session_id: 'x'.repeat(8192) })).toThrow(/8192/);
+  });
+
   it('parses only documented server events with exact fields and value domains', () => {
     expect(parseServerEvent('{"type":"call_ready","session_id":"s1"}'))
       .toEqual({ type: 'call_ready', session_id: 's1' });
     expect(parseServerEvent('{"type":"tts_start","session_id":"s1","turn_id":1,"sample_rate":24000,"channels":1,"sample_width":2}'))
       .toEqual({ type: 'tts_start', session_id: 's1', turn_id: 1, sample_rate: 24000, channels: 1, sample_width: 2 });
+    expect(parseServerEvent('{"type":"output_audio_chunk","session_id":"s1","turn_id":1,"direction":"output","sequence":0,"byte_length":320}'))
+      .toEqual({ type: 'output_audio_chunk', session_id: 's1', turn_id: 1, direction: 'output', sequence: 0, byte_length: 320 });
+    expect(parseServerEvent('{"type":"turn_cancelled","session_id":"s1","turn_id":1,"reason":"interrupted"}'))
+      .toEqual({ type: 'turn_cancelled', session_id: 's1', turn_id: 1, reason: 'interrupted' });
+    expect(parseServerEvent('{"type":"call_error","session_id":"s1","turn_id":1,"code":"tts_failed","message":"failed"}'))
+      .toEqual({ type: 'call_error', session_id: 's1', turn_id: 1, code: 'tts_failed', message: 'failed' });
     expect(() => parseServerEvent('{"type":"not_a_server_event"}')).toThrow(/未知事件/);
     expect(() => parseServerEvent('{"type":"transcript_final","session_id":"s1","turn_id":1}'))
       .toThrow(/缺少字段/);
@@ -34,9 +56,32 @@ describe('voice-call protocol', () => {
       .toThrow(/turn_id/);
     expect(() => parseServerEvent('{"type":"tts_start","session_id":"s1","turn_id":1,"sample_rate":24000.5,"channels":1,"sample_width":2}'))
       .toThrow(/sample_rate/);
+    expect(() => parseServerEvent('{"type":"output_audio_chunk","session_id":"s1","turn_id":1,"direction":"input","sequence":0,"byte_length":320}'))
+      .toThrow(/direction/);
+    expect(() => parseServerEvent('{"type":"output_audio_chunk","session_id":"s1","turn_id":1,"direction":"output","sequence":0,"byte_length":319}'))
+      .toThrow(/偶数字节/);
+    expect(() => parseServerEvent('{"type":"turn_cancelled","session_id":"s1","turn_id":1}'))
+      .toThrow(/缺少字段/);
+    expect(() => parseServerEvent('{"type":"call_error","session_id":"s1","code":"x","message":"failed"}'))
+      .toThrow(/缺少字段/);
     expect(() => parseServerEvent('[]')).toThrow(/对象/);
     expect(() => parseServerEvent(JSON.stringify({ type: 'call_ready', padding: 'x'.repeat(8192) })))
       .toThrow(/8192/);
+  });
+
+  it.each([
+    ['call_ready', '{"type":"call_ready","session_id":"s1"}'],
+    ['transcript_final', '{"type":"transcript_final","session_id":"s1","turn_id":1,"text":"hello"}'],
+    ['assistant_text_delta', '{"type":"assistant_text_delta","session_id":"s1","turn_id":1,"text":"hello"}'],
+    ['assistant_text_end', '{"type":"assistant_text_end","session_id":"s1","turn_id":1}'],
+    ['tts_start', '{"type":"tts_start","session_id":"s1","turn_id":1,"sample_rate":24000,"channels":1,"sample_width":2}'],
+    ['output_audio_chunk', '{"type":"output_audio_chunk","session_id":"s1","turn_id":1,"direction":"output","sequence":0,"byte_length":320}'],
+    ['tts_end', '{"type":"tts_end","session_id":"s1","turn_id":1}'],
+    ['turn_cancelled', '{"type":"turn_cancelled","session_id":"s1","turn_id":1,"reason":"interrupted"}'],
+    ['call_error', '{"type":"call_error","session_id":"s1","turn_id":1,"code":"tts_failed","message":"failed"}'],
+    ['call_ended', '{"type":"call_ended","session_id":"s1"}'],
+  ])('accepts the documented %s server event', (_name, raw) => {
+    expect(parseServerEvent(raw).type).toBe(_name);
   });
 
   it('accepts the fixed input format and documented constants', () => {
@@ -46,7 +91,7 @@ describe('voice-call protocol', () => {
     expect(MAX_SEQUENCE).toBe(4095);
   });
 
-  it('rejects stale turns and odd-byte PCM headers', () => {
+  it('rejects non-positive turns and odd-byte PCM headers', () => {
     expect(() => validateBinaryHeader({
       session_id: 's1', direction: 'output', turn_id: 0, sequence: 1, byte_length: 320,
     })).toThrow(/turn_id/);

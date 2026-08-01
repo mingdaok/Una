@@ -31,10 +31,20 @@ def test_pcm_format_rejects_values_outside_the_fixed_contract(field, value):
         PcmFormat(**values)
 
 
-@pytest.mark.parametrize("value", [True, 16000.0])
-def test_pcm_format_rejects_non_integer_sample_rate_before_fixed_value_check(value):
-    with pytest.raises(ProtocolError, match="sample_rate.*整数"):
-        PcmFormat(sample_rate=value, channels=1, sample_width=2)
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("sample_rate", True), ("sample_rate", 16000.0),
+        ("channels", True), ("channels", 1.0),
+        ("sample_width", True), ("sample_width", 2.0),
+    ],
+)
+def test_pcm_format_rejects_non_integer_values_before_fixed_value_check(field, value):
+    values = {"sample_rate": INPUT_SAMPLE_RATE, "channels": 1, "sample_width": 2}
+    values[field] = value
+
+    with pytest.raises(ProtocolError, match=rf"{field}.*整数"):
+        PcmFormat(**values)
 
 
 def test_binary_header_accepts_the_largest_valid_pcm16_chunk():
@@ -75,8 +85,11 @@ def test_client_events_accept_only_documented_fields_and_value_domains():
         "type": "user_speech_end", "session_id": "s1", "turn_id": 7,
     }
     assert parse_client_event(
-        '{"type":"input_audio_chunk","session_id":"s1","turn_id":7,"sequence":0,"byte_length":320}'
-    ) == {"type": "input_audio_chunk", "session_id": "s1", "turn_id": 7, "sequence": 0, "byte_length": 320}
+        '{"type":"input_audio_chunk","session_id":"s1","turn_id":7,"direction":"input","sequence":0,"byte_length":320}'
+    ) == {
+        "type": "input_audio_chunk", "session_id": "s1", "turn_id": 7,
+        "direction": "input", "sequence": 0, "byte_length": 320,
+    }
 
     with pytest.raises(ProtocolError, match="未知字段"):
         parse_client_event('{"type":"call_start","debug":true}')
@@ -86,15 +99,39 @@ def test_client_events_accept_only_documented_fields_and_value_domains():
         parse_client_event('{"type":"user_speech_start","session_id":"s1","turn_id":0}')
     with pytest.raises(ProtocolError, match="sequence"):
         parse_client_event(
-            '{"type":"input_audio_chunk","session_id":"s1","turn_id":1,"sequence":4096,"byte_length":320}'
+            '{"type":"input_audio_chunk","session_id":"s1","turn_id":1,"direction":"input","sequence":4096,"byte_length":320}'
         )
     with pytest.raises(ProtocolError, match="65536"):
         parse_client_event(
-            '{"type":"input_audio_chunk","session_id":"s1","turn_id":1,"sequence":0,"byte_length":65538}'
+            '{"type":"input_audio_chunk","session_id":"s1","turn_id":1,"direction":"input","sequence":0,"byte_length":65538}'
+        )
+    with pytest.raises(ProtocolError, match="缺少字段"):
+        parse_client_event(
+            '{"type":"input_audio_chunk","session_id":"s1","turn_id":1,"sequence":0,"byte_length":320}'
+        )
+    with pytest.raises(ProtocolError, match="direction"):
+        parse_client_event(
+            '{"type":"input_audio_chunk","session_id":"s1","turn_id":1,"direction":"output","sequence":0,"byte_length":320}'
         )
 
 
-def test_speech_start_requires_positive_monotonic_turn_id():
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ('{"type":"call_start"}', {"type": "call_start"}),
+        ('{"type":"user_speech_start","session_id":"s1","turn_id":1}', {"type": "user_speech_start", "session_id": "s1", "turn_id": 1}),
+        ('{"type":"input_audio_chunk","session_id":"s1","turn_id":1,"direction":"input","sequence":0,"byte_length":320}', {"type": "input_audio_chunk", "session_id": "s1", "turn_id": 1, "direction": "input", "sequence": 0, "byte_length": 320}),
+        ('{"type":"user_speech_end","session_id":"s1","turn_id":1}', {"type": "user_speech_end", "session_id": "s1", "turn_id": 1}),
+        ('{"type":"interrupt","session_id":"s1"}', {"type": "interrupt", "session_id": "s1"}),
+        ('{"type":"call_end","session_id":"s1"}', {"type": "call_end", "session_id": "s1"}),
+        ('{"type":"pong"}', {"type": "pong"}),
+    ],
+)
+def test_client_event_accepts_each_documented_event(raw, expected):
+    assert parse_client_event(raw) == expected
+
+
+def test_speech_start_requires_positive_turn_id():
     event = parse_client_event('{"type":"user_speech_start","session_id":"s1","turn_id":7}')
     assert event == {"type": "user_speech_start", "session_id": "s1", "turn_id": 7}
     with pytest.raises(ProtocolError, match="turn_id"):
@@ -122,3 +159,9 @@ def test_client_control_messages_are_limited_to_8kib():
 
 def test_total_input_cap_is_a_protocol_constant():
     assert MAX_INPUT_BYTES == 960000
+
+
+@pytest.mark.parametrize("invalid_type", [[], {}])
+def test_client_event_rejects_non_string_type_as_protocol_error(invalid_type):
+    with pytest.raises(ProtocolError, match="未知事件"):
+        parse_client_event(json.dumps({"type": invalid_type}))

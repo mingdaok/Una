@@ -80,7 +80,7 @@ class BinaryFrameHeader:
 _EVENT_FIELDS: dict[str, frozenset[str]] = {
     "call_start": frozenset(),
     "user_speech_start": frozenset({"session_id", "turn_id"}),
-    "input_audio_chunk": frozenset({"session_id", "turn_id", "sequence", "byte_length"}),
+    "input_audio_chunk": frozenset({"session_id", "turn_id", "direction", "sequence", "byte_length"}),
     "user_speech_end": frozenset({"session_id", "turn_id"}),
     "interrupt": frozenset({"session_id"}),
     "call_end": frozenset({"session_id"}),
@@ -102,7 +102,7 @@ def parse_client_event(raw: str) -> dict[str, object]:
         raise ProtocolError("控制消息必须是对象")
 
     event_type = event.get("type")
-    if event_type not in _EVENT_FIELDS:
+    if not isinstance(event_type, str) or event_type not in _EVENT_FIELDS:
         raise ProtocolError("未知事件类型")
     expected_fields = {"type", *_EVENT_FIELDS[event_type]}
     if set(event) != expected_fields:
@@ -120,10 +120,14 @@ def parse_client_event(raw: str) -> dict[str, object]:
         if not _is_int(sequence) or not 0 <= sequence <= MAX_SEQUENCE:
             raise ProtocolError("sequence 超出范围")
         normalized["sequence"] = sequence
+    if "direction" in expected_fields:
+        if event["direction"] != "input":
+            raise ProtocolError("direction 必须为 input")
+        normalized["direction"] = "input"
     if "byte_length" in expected_fields:
         header = BinaryFrameHeader(
             session_id=normalized["session_id"],  # type: ignore[arg-type]
-            direction="input",
+            direction=normalized["direction"],  # type: ignore[arg-type]
             turn_id=normalized["turn_id"],  # type: ignore[arg-type]
             sequence=normalized["sequence"],  # type: ignore[arg-type]
             byte_length=event["byte_length"],

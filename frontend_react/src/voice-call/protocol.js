@@ -8,7 +8,7 @@ export const MAX_CONTROL_MESSAGE_BYTES = 8192;
 const EVENT_FIELDS = Object.freeze({
   call_start: [],
   user_speech_start: ['session_id', 'turn_id'],
-  input_audio_chunk: ['session_id', 'turn_id', 'sequence', 'byte_length'],
+  input_audio_chunk: ['session_id', 'turn_id', 'direction', 'sequence', 'byte_length'],
   user_speech_end: ['session_id', 'turn_id'],
   interrupt: ['session_id'],
   call_end: ['session_id'],
@@ -22,8 +22,9 @@ const SERVER_EVENT_FIELDS = Object.freeze({
   assistant_text_end: ['session_id', 'turn_id'],
   tts_start: ['session_id', 'turn_id', 'sample_rate', 'channels', 'sample_width'],
   tts_end: ['session_id', 'turn_id'],
-  turn_cancelled: ['session_id', 'turn_id'],
-  call_error: ['session_id', 'code', 'message'],
+  output_audio_chunk: ['session_id', 'turn_id', 'direction', 'sequence', 'byte_length'],
+  turn_cancelled: ['session_id', 'turn_id', 'reason'],
+  call_error: ['session_id', 'turn_id', 'code', 'message'],
   call_ended: ['session_id'],
 });
 
@@ -89,6 +90,10 @@ function validateClientEvent(value) {
   const event = { type: value.type };
   if (fields.includes('session_id')) event.session_id = requireNonemptyString(value.session_id, 'session_id');
   if (fields.includes('turn_id')) event.turn_id = requirePositiveInteger(value.turn_id, 'turn_id');
+  if (fields.includes('direction')) {
+    if (value.direction !== 'input') throw protocolError('direction 必须为 input');
+    event.direction = 'input';
+  }
   if (fields.includes('sequence')) {
     if (!Number.isSafeInteger(value.sequence) || value.sequence < 0 || value.sequence > MAX_SEQUENCE) {
       throw protocolError('sequence 超出范围');
@@ -98,7 +103,7 @@ function validateClientEvent(value) {
   if (fields.includes('byte_length')) {
     event.byte_length = validateBinaryHeader({
       session_id: event.session_id,
-      direction: 'input',
+      direction: event.direction,
       turn_id: event.turn_id,
       sequence: event.sequence,
       byte_length: value.byte_length,
@@ -108,7 +113,11 @@ function validateClientEvent(value) {
 }
 
 export function makeClientEvent(type, fields = {}) {
-  return JSON.stringify(validateClientEvent({ type, ...fields }));
+  const raw = JSON.stringify(validateClientEvent({ type, ...fields }));
+  if (new TextEncoder().encode(raw).byteLength > MAX_CONTROL_MESSAGE_BYTES) {
+    throw protocolError(`控制消息不能超过 ${MAX_CONTROL_MESSAGE_BYTES} 字节`);
+  }
+  return raw;
 }
 
 export function parseServerEvent(raw) {
@@ -133,6 +142,7 @@ export function parseServerEvent(raw) {
   if (fields.includes('session_id')) normalized.session_id = requireNonemptyString(event.session_id, 'session_id');
   if (fields.includes('turn_id')) normalized.turn_id = requirePositiveInteger(event.turn_id, 'turn_id');
   if (fields.includes('text')) normalized.text = requireNonemptyString(event.text, 'text');
+  if (fields.includes('reason')) normalized.reason = requireNonemptyString(event.reason, 'reason');
   if (fields.includes('code')) normalized.code = requireNonemptyString(event.code, 'code');
   if (fields.includes('message')) normalized.message = requireNonemptyString(event.message, 'message');
   if (event.type === 'tts_start') {
@@ -144,6 +154,21 @@ export function parseServerEvent(raw) {
     normalized.sample_rate = event.sample_rate;
     normalized.channels = event.channels;
     normalized.sample_width = event.sample_width;
+  }
+  if (event.type === 'output_audio_chunk') {
+    const header = validateBinaryHeader({
+      session_id: event.session_id,
+      turn_id: event.turn_id,
+      direction: event.direction,
+      sequence: event.sequence,
+      byte_length: event.byte_length,
+    });
+    if (header.direction !== 'output') throw protocolError('direction 必须为 output');
+    normalized.session_id = header.session_id;
+    normalized.turn_id = header.turn_id;
+    normalized.direction = header.direction;
+    normalized.sequence = header.sequence;
+    normalized.byte_length = header.byte_length;
   }
   return normalized;
 }
