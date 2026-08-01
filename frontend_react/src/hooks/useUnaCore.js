@@ -122,9 +122,14 @@ export function useUnaCore(authenticated) {
     }
 
     async function resumeAudioContext() {
-        const context = ensureAudioRuntime();
-        if (context.state === 'suspended' && typeof context.resume === 'function') {
-            await context.resume();
+        const pendingUnlock = unlockAudioRuntime();
+        const context = audioContext.current;
+        const unlocked = await pendingUnlock;
+        if (!context || audioContext.current !== context) {
+            throw makeAbortError();
+        }
+        if (!unlocked && context.state !== 'running') {
+            throw new Error('AudioContext could not be resumed');
         }
         return context;
     }

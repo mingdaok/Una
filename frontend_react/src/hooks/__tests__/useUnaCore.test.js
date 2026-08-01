@@ -660,6 +660,101 @@ describe('useUnaCore WebSocket handling', () => {
         expect(audio.contexts[0].state).toBe('running');
     });
 
+    it.each(['playAudio', 'replayChunks'])(
+        'shares one pending activation resume with %s before starting a source',
+        async playbackApi => {
+            const pendingResume = deferred();
+            let resumeContext;
+            const audio = installFakeAudioRuntime({
+                initialState: 'suspended',
+                resumeAudioContext: context => {
+                    resumeContext = context;
+                    return pendingResume.promise;
+                },
+            });
+            const { result } = renderHook(() => useUnaCore('test_user'));
+            await waitFor(() => expect(mockWebSocket.onmessage).toEqual(expect.any(Function)));
+
+            let playback;
+            act(() => {
+                window.dispatchEvent(new Event('pointerdown'));
+                playback = playbackApi === 'playAudio'
+                    ? result.current.playAudio('/voice/shared-resume.wav', [])
+                    : result.current.replayChunks([{
+                        audio_url: '/voice/shared-resume.wav', visemes: [],
+                    }]);
+            });
+            await waitFor(() => expect(audio.contexts[0].decodeAudioData).toHaveBeenCalledOnce());
+            await act(async () => {
+                await Promise.resolve();
+                await Promise.resolve();
+            });
+
+            expect(audio.contexts[0].resume).toHaveBeenCalledOnce();
+            expect(audio.sources).toHaveLength(0);
+
+            await act(async () => {
+                resumeContext.state = 'running';
+                pendingResume.resolve();
+                await Promise.resolve();
+            });
+            await waitFor(() => expect(audio.sources).toHaveLength(1));
+            expect(audio.sources[0].start).toHaveBeenCalledOnce();
+
+            act(() => audio.sources[0].onended());
+            await playback;
+        },
+    );
+
+    it.each(['playAudio', 'replayChunks'])(
+        'settles %s after a shared resume rejection and retries on the next gesture',
+        async playbackApi => {
+            const pendingResume = deferred();
+            let firstResumePending = true;
+            const audio = installFakeAudioRuntime({
+                initialState: 'suspended',
+                resumeAudioContext: context => {
+                    if (firstResumePending) return pendingResume.promise;
+                    context.state = 'running';
+                    return Promise.resolve();
+                },
+            });
+            const { result } = renderHook(() => useUnaCore('test_user'));
+            await waitFor(() => expect(mockWebSocket.onmessage).toEqual(expect.any(Function)));
+
+            let playback;
+            act(() => {
+                window.dispatchEvent(new Event('pointerdown'));
+                playback = playbackApi === 'playAudio'
+                    ? result.current.playAudio('/voice/rejected-resume.wav', [])
+                    : result.current.replayChunks([{
+                        audio_url: '/voice/rejected-resume.wav', visemes: [],
+                    }]);
+            });
+            await waitFor(() => expect(audio.contexts[0].decodeAudioData).toHaveBeenCalledOnce());
+            await act(async () => {
+                await Promise.resolve();
+                await Promise.resolve();
+            });
+            expect(audio.contexts[0].resume).toHaveBeenCalledOnce();
+
+            firstResumePending = false;
+            await act(async () => {
+                pendingResume.reject(new Error('resume denied'));
+                await Promise.resolve();
+            });
+            await withTimeout(playback, `${playbackApi} rejected resume`);
+            expect(audio.sources).toHaveLength(0);
+
+            await act(async () => {
+                window.dispatchEvent(new Event('pointerdown'));
+                await Promise.resolve();
+            });
+            expect(audio.contexts[0].resume).toHaveBeenCalledTimes(2);
+            expect(audio.contexts[0].state).toBe('running');
+        },
+    );
+
     it('closes the old streaming bubble before text for a new reply arrives', async () => {
         installFakeAudioRuntime();
         const { result } = renderHook(() => useUnaCore('test_user'));
