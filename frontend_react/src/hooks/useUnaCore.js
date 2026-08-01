@@ -19,6 +19,26 @@ class AudioRuntimeUnavailableError extends Error {
     }
 }
 
+function isAudioRuntimeUnavailable(error) {
+    const seen = new Set();
+    let current = error;
+    for (let depth = 0; depth <= 1; depth += 1) {
+        const objectLike = current !== null
+            && (typeof current === 'object' || typeof current === 'function');
+        if (!objectLike || seen.has(current)) return false;
+        seen.add(current);
+        if (current.code === AUDIO_RUNTIME_UNAVAILABLE) return true;
+        if (current instanceof AudioRuntimeUnavailableError) return true;
+        if (depth === 1) return false;
+        try {
+            current = current.cause;
+        } catch {
+            return false;
+        }
+    }
+    return false;
+}
+
 function pruneSeenMotionIds(seenMotionIds, nowMs) {
     for (const [motionId, expiresAtMs] of seenMotionIds) {
         if (!Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs) seenMotionIds.delete(motionId);
@@ -647,7 +667,7 @@ export function useUnaCore(authenticated) {
                 } catch (error) {
                     if (
                         error?.name === 'AbortError'
-                        || error instanceof AudioRuntimeUnavailableError
+                        || isAudioRuntimeUnavailable(error)
                     ) break;
                     // One unavailable replay chunk must not block later chunks.
                 }

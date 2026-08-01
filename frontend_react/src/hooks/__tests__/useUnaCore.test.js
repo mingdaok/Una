@@ -805,6 +805,79 @@ describe('useUnaCore WebSocket handling', () => {
         expect(audio.contexts[0].state).toBe('running');
     });
 
+    it.each([
+        [
+            'a cross-prototype code',
+            () => Object.assign(new Error('foreign runtime failure'), {
+                code: 'AUDIO_RUNTIME_UNAVAILABLE',
+            }),
+        ],
+        [
+            'one wrapped cause',
+            () => Object.assign(new Error('runtime wrapper'), {
+                cause: Object.assign(new Error('foreign runtime cause'), {
+                    code: 'AUDIO_RUNTIME_UNAVAILABLE',
+                }),
+            }),
+        ],
+    ])('stops replay when a dependency reports %s', async (_label, makeFailure) => {
+        const audio = installFakeAudioRuntime({
+            configureSource: (source, sourceIndex) => {
+                if (sourceIndex === 0) {
+                    source.start.mockImplementation(() => { throw makeFailure(); });
+                } else {
+                    source.start.mockImplementation(() => {
+                        Promise.resolve().then(() => source.onended?.());
+                    });
+                }
+            },
+        });
+        const { result } = renderHook(() => useUnaCore('test_user'));
+        await waitFor(() => expect(mockWebSocket.onmessage).toEqual(expect.any(Function)));
+
+        const replay = result.current.replayChunks([
+            { audio_url: '/voice/classified-0.wav', visemes: [] },
+            { audio_url: '/voice/classified-1.wav', visemes: [] },
+        ]);
+        await withTimeout(replay, `classified replay: ${_label}`);
+
+        expect(audio.audioRequests).toEqual(['/voice/classified-0.wav']);
+        expect(audio.sources).toHaveLength(1);
+        expect(audio.sources[0].start).toHaveBeenCalledOnce();
+    });
+
+    it('continues replay after a lookalike dependency error without the runtime code', async () => {
+        const audio = installFakeAudioRuntime({
+            configureSource: (source, sourceIndex) => {
+                if (sourceIndex === 0) {
+                    const lookalike = new Error('ordinary media failure');
+                    lookalike.name = 'AudioRuntimeUnavailableError';
+                    source.start.mockImplementation(() => { throw lookalike; });
+                } else {
+                    source.start.mockImplementation(() => {
+                        Promise.resolve().then(() => source.onended?.());
+                    });
+                }
+            },
+        });
+        const { result } = renderHook(() => useUnaCore('test_user'));
+        await waitFor(() => expect(mockWebSocket.onmessage).toEqual(expect.any(Function)));
+
+        const replay = result.current.replayChunks([
+            { audio_url: '/voice/lookalike-0.wav', visemes: [] },
+            { audio_url: '/voice/lookalike-1.wav', visemes: [] },
+        ]);
+        await withTimeout(replay, 'lookalike replay');
+
+        expect(audio.audioRequests).toEqual([
+            '/voice/lookalike-0.wav',
+            '/voice/lookalike-1.wav',
+        ]);
+        expect(audio.sources).toHaveLength(2);
+        expect(audio.sources[0].start).toHaveBeenCalledOnce();
+        expect(audio.sources[1].start).toHaveBeenCalledOnce();
+    });
+
     it('closes the old streaming bubble before text for a new reply arrives', async () => {
         installFakeAudioRuntime();
         const { result } = renderHook(() => useUnaCore('test_user'));
