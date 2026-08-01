@@ -54,6 +54,7 @@ class VoiceCallSession:
         self._lifecycle_lock = asyncio.Lock()
         self._lock = asyncio.Lock()
         self._tasks: set[asyncio.Task[Any]] = set()
+        self._retiring_tasks: set[asyncio.Task[Any]] = set()
         self._task_turns: dict[asyncio.Task[Any], int] = {}
         self._current: TurnHandle | None = None
         self._last_turn_id = 0
@@ -70,6 +71,7 @@ class VoiceCallSession:
                 if turn_id <= self._last_turn_id:
                     raise ProtocolError("turn_id 必须严格递增")
                 old_tasks = self._tasks_except_current()
+                self._retiring_tasks.update(old_tasks)
                 old_handle = self._current
                 self._tasks.clear()
                 self._last_turn_id = turn_id
@@ -106,6 +108,7 @@ class VoiceCallSession:
                     return False
                 current = self._current
                 tasks = self._tasks_except_current()
+                self._retiring_tasks.update(tasks)
                 self._tasks.clear()
                 self._current = None
         current.cancel_event.set()
@@ -128,7 +131,9 @@ class VoiceCallSession:
                 else:
                     self._closed = True
                     current = self._current
-                    tasks = self._tasks_except_current()
+                    active_tasks = self._tasks_except_current()
+                    self._retiring_tasks.update(active_tasks)
+                    tasks = self._all_tasks_except_current()
                     self._current = None
                     self._tasks.clear()
                     self._close_complete = asyncio.Event()
@@ -152,11 +157,16 @@ class VoiceCallSession:
 
     def _untrack(self, task: asyncio.Task[Any]) -> None:
         self._tasks.discard(task)
+        self._retiring_tasks.discard(task)
         self._task_turns.pop(task, None)
 
     def _tasks_except_current(self) -> tuple[asyncio.Task[Any], ...]:
         caller = asyncio.current_task()
         return tuple(task for task in self._tasks if task is not caller)
+
+    def _all_tasks_except_current(self) -> tuple[asyncio.Task[Any], ...]:
+        caller = asyncio.current_task()
+        return tuple(task for task in self._tasks | self._retiring_tasks if task is not caller)
 
     @staticmethod
     def _validate_turn_id(turn_id: object) -> None:

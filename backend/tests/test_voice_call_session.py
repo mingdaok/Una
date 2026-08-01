@@ -263,6 +263,40 @@ async def test_close_without_an_active_turn_completes_for_following_callers():
 
 
 @pytest.mark.asyncio
+async def test_close_waits_for_a_retiring_task_while_start_turn_waits_for_its_cleanup():
+    session = VoiceCallSession(user_id="u1", session_id="s1", sender=RecordingSender())
+    await session.start_turn(1)
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+
+    async def block_cancellation_cleanup():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cleanup_started.set()
+            await release_cleanup.wait()
+            raise
+
+    task = asyncio.create_task(block_cancellation_cleanup())
+    session.track(task)
+    await asyncio.sleep(0)
+    starting = asyncio.create_task(session.start_turn(2))
+    await cleanup_started.wait()
+    closing = asyncio.create_task(session.close())
+
+    try:
+        await asyncio.sleep(0)
+        assert closing.done() is False
+    finally:
+        release_cleanup.set()
+
+    with pytest.raises(ProtocolError, match="已失效"):
+        await starting
+    await closing
+    assert task.cancelled()
+
+
+@pytest.mark.asyncio
 async def test_close_waits_for_tracked_tasks_to_reach_a_terminal_state():
     session = VoiceCallSession(user_id="u1", session_id="s1", sender=RecordingSender())
     await session.start_turn(1)
