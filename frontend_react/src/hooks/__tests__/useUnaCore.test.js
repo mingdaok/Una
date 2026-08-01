@@ -755,6 +755,56 @@ describe('useUnaCore WebSocket handling', () => {
         },
     );
 
+    it('stops multi-chunk replay after a shared audio runtime failure', async () => {
+        const pendingResume = deferred();
+        let allowGestureRetry = false;
+        const audio = installFakeAudioRuntime({
+            initialState: 'suspended',
+            resumeAudioContext: context => {
+                if (audio.contexts[0]?.resume.mock.calls.length === 1) {
+                    return pendingResume.promise;
+                }
+                if (allowGestureRetry) {
+                    context.state = 'running';
+                    return Promise.resolve();
+                }
+                return Promise.reject(new Error('resume still denied'));
+            },
+        });
+        const { result } = renderHook(() => useUnaCore('test_user'));
+        await waitFor(() => expect(mockWebSocket.onmessage).toEqual(expect.any(Function)));
+
+        let replay;
+        act(() => {
+            window.dispatchEvent(new Event('pointerdown'));
+            replay = result.current.replayChunks([
+                { audio_url: '/voice/runtime-failure-0.wav', visemes: [] },
+                { audio_url: '/voice/runtime-failure-1.wav', visemes: [] },
+                { audio_url: '/voice/runtime-failure-2.wav', visemes: [] },
+            ]);
+        });
+        await waitFor(() => expect(audio.contexts[0].decodeAudioData).toHaveBeenCalledOnce());
+
+        await act(async () => {
+            pendingResume.reject(new Error('resume denied'));
+            await Promise.resolve();
+        });
+        await withTimeout(replay, 'multi-chunk runtime failure replay');
+
+        expect(audio.contexts[0].resume).toHaveBeenCalledOnce();
+        expect(audio.audioRequests).toEqual(['/voice/runtime-failure-0.wav']);
+        expect(audio.contexts[0].decodeAudioData).toHaveBeenCalledOnce();
+        expect(audio.sources).toHaveLength(0);
+
+        allowGestureRetry = true;
+        await act(async () => {
+            window.dispatchEvent(new Event('pointerdown'));
+            await Promise.resolve();
+        });
+        expect(audio.contexts[0].resume).toHaveBeenCalledTimes(2);
+        expect(audio.contexts[0].state).toBe('running');
+    });
+
     it('closes the old streaming bubble before text for a new reply arrives', async () => {
         installFakeAudioRuntime();
         const { result } = renderHook(() => useUnaCore('test_user'));

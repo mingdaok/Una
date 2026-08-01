@@ -9,6 +9,15 @@ import { createAudioStreamQueue, MAX_CHUNK_INDEX } from '../audio/audioStreamQue
 import { createAudioBufferLoader, startSyncedPlayback } from '../audio/syncedAudioPlayer';
 
 const MAX_SEEN_MOTION_IDS = 100;
+const AUDIO_RUNTIME_UNAVAILABLE = 'AUDIO_RUNTIME_UNAVAILABLE';
+
+class AudioRuntimeUnavailableError extends Error {
+    constructor() {
+        super('AudioContext could not be resumed');
+        this.name = 'AudioRuntimeUnavailableError';
+        this.code = AUDIO_RUNTIME_UNAVAILABLE;
+    }
+}
 
 function pruneSeenMotionIds(seenMotionIds, nowMs) {
     for (const [motionId, expiresAtMs] of seenMotionIds) {
@@ -129,7 +138,7 @@ export function useUnaCore(authenticated) {
             throw makeAbortError();
         }
         if (!unlocked && context.state !== 'running') {
-            throw new Error('AudioContext could not be resumed');
+            throw new AudioRuntimeUnavailableError();
         }
         return context;
     }
@@ -636,7 +645,10 @@ export function useUnaCore(authenticated) {
                     const prepared = await prepareAudioChunk(chunk, { signal: controller.signal });
                     await playPreparedChunk(prepared, { signal: controller.signal });
                 } catch (error) {
-                    if (error?.name === 'AbortError') break;
+                    if (
+                        error?.name === 'AbortError'
+                        || error instanceof AudioRuntimeUnavailableError
+                    ) break;
                     // One unavailable replay chunk must not block later chunks.
                 }
             }
