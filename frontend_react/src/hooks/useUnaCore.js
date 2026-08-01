@@ -28,6 +28,7 @@ export function useUnaCore(authenticated) {
     const heartbeatIntervalRef = useRef(null);
     const audioContext = useRef(null);
     const audioLoaderRef = useRef(null);
+    const audioUnlockPromiseRef = useRef(null);
     const activePlaybackRef = useRef(null);
     const replayAbortRef = useRef(null);
     const streamQueueRef = useRef(null);
@@ -88,14 +89,36 @@ export function useUnaCore(authenticated) {
     }
 
     function unlockAudioRuntime() {
+        if (audioUnlockPromiseRef.current) return audioUnlockPromiseRef.current;
+        let context;
         try {
-            const context = ensureAudioRuntime();
-            if (context.state === 'suspended') {
-                Promise.resolve(context.resume?.()).catch(() => {});
-            }
+            context = ensureAudioRuntime();
         } catch {
             // Text, recording, and Live2D actions remain available without Web Audio.
+            return Promise.resolve(false);
         }
+        if (context.state === 'running') return Promise.resolve(true);
+        if (context.state !== 'suspended' || typeof context.resume !== 'function') {
+            return Promise.resolve(false);
+        }
+
+        let resumeResult;
+        try {
+            resumeResult = context.resume();
+        } catch {
+            return Promise.resolve(false);
+        }
+
+        let pendingUnlock;
+        pendingUnlock = Promise.resolve(resumeResult)
+            .then(() => true, () => false)
+            .finally(() => {
+                if (audioUnlockPromiseRef.current === pendingUnlock) {
+                    audioUnlockPromiseRef.current = null;
+                }
+            });
+        audioUnlockPromiseRef.current = pendingUnlock;
+        return pendingUnlock;
     }
 
     async function resumeAudioContext() {
@@ -185,6 +208,7 @@ export function useUnaCore(authenticated) {
         const context = audioContext.current;
         audioContext.current = null;
         audioLoaderRef.current = null;
+        audioUnlockPromiseRef.current = null;
         try {
             Promise.resolve(context?.close?.()).catch(() => {});
         } catch {
@@ -195,6 +219,7 @@ export function useUnaCore(authenticated) {
     useEffect(() => {
         if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return;
         const activationEvents = ['pointerdown', 'touchstart', 'keydown'];
+        let active = true;
         let listening = true;
         const removeActivationListeners = () => {
             if (!listening) return;
@@ -204,14 +229,21 @@ export function useUnaCore(authenticated) {
             }
         };
         const activateAudio = () => {
-            unlockAudioRuntime();
-            removeActivationListeners();
+            unlockAudioRuntime().then(unlocked => {
+                if (!active || !listening) return;
+                if (unlocked || audioContext.current?.state === 'running') {
+                    removeActivationListeners();
+                }
+            });
         };
 
         for (const eventName of activationEvents) {
             window.addEventListener(eventName, activateAudio, { capture: true, passive: true });
         }
-        return removeActivationListeners;
+        return () => {
+            active = false;
+            removeActivationListeners();
+        };
     }, [authenticated]);
 
     // --- 1. 初始化：同步历史记录 ---

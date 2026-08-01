@@ -32,19 +32,25 @@ function installFakeAudioRuntime({
     configureSource,
     decodeAudioData,
     initialState = 'running',
+    resumeAudioContext,
+    constructAudioContext,
 } = {}) {
     const sources = [];
     const contexts = [];
     const audioRequests = [];
     const frames = new Map();
     let nextFrameId = 1;
+    let constructionAttempts = 0;
 
     class FakeAudioContext {
         constructor() {
+            constructionAttempts += 1;
+            constructAudioContext?.(constructionAttempts);
             this.currentTime = 5;
             this.state = initialState;
             this.destination = { id: 'destination' };
             this.resume = vi.fn().mockImplementation(() => {
+                if (resumeAudioContext) return resumeAudioContext(this);
                 this.state = 'running';
                 return Promise.resolve();
             });
@@ -98,7 +104,13 @@ function installFakeAudioRuntime({
         };
     });
 
-    return { sources, contexts, audioRequests, frames };
+    return {
+        sources,
+        contexts,
+        audioRequests,
+        frames,
+        get constructionAttempts() { return constructionAttempts; },
+    };
 }
 
 function validServerMotion(overrides = {}) {
@@ -591,6 +603,61 @@ describe('useUnaCore WebSocket handling', () => {
         unmount();
         act(() => window.dispatchEvent(new Event('pointerdown', { bubbles: true })));
         expect(audio.contexts).toHaveLength(1);
+    });
+
+    it('keeps activation listeners after a failed resume and deduplicates a pending retry', async () => {
+        const firstResume = deferred();
+        let resumeAttempt = 0;
+        const audio = installFakeAudioRuntime({
+            initialState: 'suspended',
+            resumeAudioContext: context => {
+                resumeAttempt += 1;
+                if (resumeAttempt === 1) return firstResume.promise;
+                context.state = 'running';
+                return Promise.resolve();
+            },
+        });
+        renderHook(() => useUnaCore('test_user'));
+        await waitFor(() => expect(mockWebSocket.onmessage).toEqual(expect.any(Function)));
+
+        act(() => window.dispatchEvent(new Event('pointerdown')));
+        act(() => window.dispatchEvent(new Event('touchstart')));
+        expect(audio.contexts[0].resume).toHaveBeenCalledOnce();
+
+        await act(async () => {
+            firstResume.reject(new Error('activation denied'));
+            await Promise.resolve();
+        });
+        await act(async () => {
+            window.dispatchEvent(new Event('pointerdown'));
+            await Promise.resolve();
+        });
+        expect(audio.contexts[0].resume).toHaveBeenCalledTimes(2);
+        expect(audio.contexts[0].state).toBe('running');
+
+        act(() => window.dispatchEvent(new Event('pointerdown')));
+        expect(audio.contexts[0].resume).toHaveBeenCalledTimes(2);
+    });
+
+    it('retries AudioContext construction on the next user activation', async () => {
+        const audio = installFakeAudioRuntime({
+            constructAudioContext: attempt => {
+                if (attempt === 1) throw new Error('constructor denied');
+            },
+        });
+        renderHook(() => useUnaCore('test_user'));
+        await waitFor(() => expect(mockWebSocket.onmessage).toEqual(expect.any(Function)));
+
+        act(() => window.dispatchEvent(new Event('pointerdown')));
+        expect(audio.contexts).toHaveLength(0);
+
+        await act(async () => {
+            window.dispatchEvent(new Event('pointerdown'));
+            await Promise.resolve();
+        });
+        expect(audio.constructionAttempts).toBe(2);
+        expect(audio.contexts).toHaveLength(1);
+        expect(audio.contexts[0].state).toBe('running');
     });
 
     it('closes the old streaming bubble before text for a new reply arrives', async () => {
