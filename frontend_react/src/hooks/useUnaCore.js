@@ -45,6 +45,27 @@ export function useUnaCore(authenticated) {
         return error;
     }
 
+    function awaitWithAbort(promise, signal) {
+        if (!signal) return Promise.resolve(promise);
+        return new Promise((resolve, reject) => {
+            let settled = false;
+            const finish = (callback, value) => {
+                if (settled) return;
+                settled = true;
+                signal.removeEventListener('abort', abortAwait);
+                callback(value);
+            };
+            const abortAwait = () => finish(reject, makeAbortError());
+
+            Promise.resolve(promise).then(
+                value => finish(resolve, value),
+                error => finish(reject, error),
+            );
+            signal.addEventListener('abort', abortAwait, { once: true });
+            if (signal.aborted) abortAwait();
+        });
+    }
+
     function setLipSyncValue(value = 'X') {
         const next = { rhubarb: value };
         currentLipRef.current = next;
@@ -85,10 +106,13 @@ export function useUnaCore(authenticated) {
         return context;
     }
 
-    async function prepareAudioChunk(chunk) {
+    async function prepareAudioChunk(chunk, { signal } = {}) {
         if (!chunk?.audio_url) throw new Error('Audio chunk URL is unavailable');
         ensureAudioRuntime();
-        const audioBuffer = await audioLoaderRef.current(chunk.audio_url);
+        const audioBuffer = await awaitWithAbort(
+            audioLoaderRef.current(chunk.audio_url),
+            signal,
+        );
         return { audioBuffer, visemes: chunk.visemes || [] };
     }
 
@@ -167,6 +191,28 @@ export function useUnaCore(authenticated) {
             // Closing is best-effort during hook teardown.
         }
     }
+
+    useEffect(() => {
+        if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return;
+        const activationEvents = ['pointerdown', 'touchstart', 'keydown'];
+        let listening = true;
+        const removeActivationListeners = () => {
+            if (!listening) return;
+            listening = false;
+            for (const eventName of activationEvents) {
+                window.removeEventListener(eventName, activateAudio, true);
+            }
+        };
+        const activateAudio = () => {
+            unlockAudioRuntime();
+            removeActivationListeners();
+        };
+
+        for (const eventName of activationEvents) {
+            window.addEventListener(eventName, activateAudio, { capture: true, passive: true });
+        }
+        return removeActivationListeners;
+    }, [authenticated]);
 
     // --- 1. 初始化：同步历史记录 ---
     useEffect(() => {
@@ -454,6 +500,7 @@ export function useUnaCore(authenticated) {
 
     useEffect(() => {
         mountedRef.current = true;
+        setLipSyncValue('X');
         connectWebSocket();
         return () => {
             mountedRef.current = false;
@@ -549,7 +596,7 @@ export function useUnaCore(authenticated) {
             for (const chunk of chunkList) {
                 if (controller.signal.aborted) break;
                 try {
-                    const prepared = await prepareAudioChunk(chunk);
+                    const prepared = await prepareAudioChunk(chunk, { signal: controller.signal });
                     await playPreparedChunk(prepared, { signal: controller.signal });
                 } catch (error) {
                     if (error?.name === 'AbortError') break;
@@ -578,7 +625,10 @@ export function useUnaCore(authenticated) {
             try { onReady?.(); } catch { }
         };
         try {
-            const prepared = await prepareAudioChunk({ audio_url: url, visemes });
+            const prepared = await prepareAudioChunk(
+                { audio_url: url, visemes },
+                { signal: controller.signal },
+            );
             if (controller.signal.aborted) throw makeAbortError();
             notifyReady();
             await playPreparedChunk(prepared, { signal: controller.signal });

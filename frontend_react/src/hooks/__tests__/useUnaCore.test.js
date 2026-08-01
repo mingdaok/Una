@@ -1,4 +1,4 @@
-import { renderHook, act, waitFor } from '@testing-library/react';
+import { renderHook, act, waitFor, cleanup } from '@testing-library/react';
 import { useUnaCore } from '../useUnaCore';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
@@ -19,7 +19,20 @@ function deferred() {
     return { promise, resolve, reject };
 }
 
-function installFakeAudioRuntime({ responseForAudio, configureSource, decodeAudioData } = {}) {
+function withTimeout(promise, label, timeoutMs = 150) {
+    let timer;
+    const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Timed out: ${label}`)), timeoutMs);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+function installFakeAudioRuntime({
+    responseForAudio,
+    configureSource,
+    decodeAudioData,
+    initialState = 'running',
+} = {}) {
     const sources = [];
     const contexts = [];
     const audioRequests = [];
@@ -29,9 +42,12 @@ function installFakeAudioRuntime({ responseForAudio, configureSource, decodeAudi
     class FakeAudioContext {
         constructor() {
             this.currentTime = 5;
-            this.state = 'running';
+            this.state = initialState;
             this.destination = { id: 'destination' };
-            this.resume = vi.fn().mockResolvedValue(undefined);
+            this.resume = vi.fn().mockImplementation(() => {
+                this.state = 'running';
+                return Promise.resolve();
+            });
             this.close = vi.fn().mockResolvedValue(undefined);
             this.decodeAudioData = vi.fn(decodeAudioData || (async bytes => ({
                 bytes,
@@ -127,6 +143,7 @@ describe('useUnaCore WebSocket handling', () => {
     });
 
     afterEach(() => {
+        cleanup();
         vi.useRealTimers();
         vi.restoreAllMocks();
         globalThis.fetch = originalFetch;
@@ -361,6 +378,41 @@ describe('useUnaCore WebSocket handling', () => {
         expect(result.current.motionEvent).toBe(activeMotion);
     });
 
+    it('closes the React mouth state when authenticated effect dependencies switch', async () => {
+        const audio = installFakeAudioRuntime();
+        const { result, rerender } = renderHook(
+            ({ user }) => useUnaCore(user),
+            { initialProps: { user: 'first-user' } },
+        );
+        await waitFor(() => expect(mockWebSocket.onmessage).toEqual(expect.any(Function)));
+        act(() => mockWebSocket.onopen());
+        act(() => {
+            mockWebSocket.onmessage({
+                data: JSON.stringify({ type: 'audio_stream_start', reply_id: 'reply-first' }),
+            });
+            mockWebSocket.onmessage({
+                data: JSON.stringify({
+                    type: 'audio_stream_chunk', reply_id: 'reply-first', chunk_index: 0,
+                    audio_url: '/voice/first.wav',
+                    visemes: [{ start: 0, end: 1, value: 'A' }],
+                }),
+            });
+        });
+        await waitFor(() => expect(audio.sources).toHaveLength(1));
+
+        const [frameId, frame] = audio.frames.entries().next().value;
+        audio.frames.delete(frameId);
+        audio.contexts[0].currentTime = audio.sources[0].start.mock.calls[0][0] + 0.1;
+        act(() => frame());
+        expect(result.current.lipValue).toEqual({ rhubarb: 'A' });
+
+        rerender({ user: 'second-user' });
+
+        expect(audio.sources[0].stop).toHaveBeenCalledOnce();
+        expect(audio.contexts[0].close).toHaveBeenCalledOnce();
+        expect(result.current.lipValue).toEqual({ rhubarb: 'X' });
+    });
+
     it('allows a new session to connect while the previous WebSocket ticket request is still pending', async () => {
         const ticketResolvers = [];
         const sockets = [];
@@ -520,6 +572,27 @@ describe('useUnaCore WebSocket handling', () => {
         expect(mockWebSocket.send).toHaveBeenCalledWith(voiceData);
     });
 
+    it('creates and resumes one shared AudioContext from a real user activation', async () => {
+        const audio = installFakeAudioRuntime({ initialState: 'suspended' });
+        const { unmount } = renderHook(() => useUnaCore('test_user'));
+        await waitFor(() => expect(mockWebSocket.onmessage).toEqual(expect.any(Function)));
+        expect(audio.contexts).toHaveLength(0);
+
+        act(() => window.dispatchEvent(new Event('pointerdown', { bubbles: true })));
+
+        expect(audio.contexts).toHaveLength(1);
+        expect(audio.contexts[0].resume).toHaveBeenCalledOnce();
+        expect(audio.contexts[0].state).toBe('running');
+
+        act(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })));
+        expect(audio.contexts).toHaveLength(1);
+        expect(audio.contexts[0].resume).toHaveBeenCalledOnce();
+
+        unmount();
+        act(() => window.dispatchEvent(new Event('pointerdown', { bubbles: true })));
+        expect(audio.contexts).toHaveLength(1);
+    });
+
     it('closes the old streaming bubble before text for a new reply arrives', async () => {
         installFakeAudioRuntime();
         const { result } = renderHook(() => useUnaCore('test_user'));
@@ -676,6 +749,76 @@ describe('useUnaCore WebSocket handling', () => {
         await waitFor(() => expect(audio.sources).toHaveLength(2));
         expect(audio.sources[0].stop.mock.invocationCallOrder[0])
             .toBeLessThan(audio.sources[1].start.mock.invocationCallOrder[0]);
+    });
+
+    it.each(['interrupt', 'new_reply', 'unmount'])(
+        'settles loading public playback promptly on %s without starting late audio',
+        async cancellation => {
+            const delayedDecode = deferred();
+            const audio = installFakeAudioRuntime({
+                decodeAudioData: () => delayedDecode.promise,
+            });
+            const onReady = vi.fn();
+            const onEnded = vi.fn();
+            const { result, unmount } = renderHook(() => useUnaCore('test_user'));
+            await waitFor(() => expect(mockWebSocket.onmessage).toEqual(expect.any(Function)));
+            act(() => mockWebSocket.onopen());
+
+            let playback;
+            act(() => {
+                playback = result.current.playAudio(
+                    `/voice/loading-${cancellation}.wav`, [], onReady, onEnded,
+                );
+            });
+            await waitFor(() => expect(audio.contexts[0]?.decodeAudioData).toHaveBeenCalledOnce());
+
+            if (cancellation === 'interrupt') {
+                act(() => result.current.interrupt());
+            } else if (cancellation === 'new_reply') {
+                act(() => mockWebSocket.onmessage({
+                    data: JSON.stringify({ type: 'audio_stream_start', reply_id: 'reply-new' }),
+                }));
+            } else {
+                unmount();
+            }
+
+            await withTimeout(playback, `${cancellation} loading playback`);
+            expect(onReady).not.toHaveBeenCalled();
+            expect(onEnded).not.toHaveBeenCalled();
+            expect(audio.sources).toHaveLength(0);
+
+            delayedDecode.resolve({ id: 'late-buffer' });
+            await Promise.resolve();
+            await Promise.resolve();
+            expect(audio.sources).toHaveLength(0);
+        },
+    );
+
+    it('settles replay promptly when interrupted during shared decode', async () => {
+        const delayedDecode = deferred();
+        const audio = installFakeAudioRuntime({
+            decodeAudioData: () => delayedDecode.promise,
+        });
+        const { result } = renderHook(() => useUnaCore('test_user'));
+        await waitFor(() => expect(mockWebSocket.onmessage).toEqual(expect.any(Function)));
+        act(() => mockWebSocket.onopen());
+
+        let replay;
+        act(() => {
+            replay = result.current.replayChunks([{
+                audio_url: '/voice/loading-replay.wav', visemes: [],
+            }]);
+        });
+        await waitFor(() => expect(audio.contexts[0]?.decodeAudioData).toHaveBeenCalledOnce());
+
+        act(() => result.current.interrupt());
+
+        await withTimeout(replay, 'loading replay');
+        expect(audio.sources).toHaveLength(0);
+        delayedDecode.reject(new Error('late decode failure'));
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(audio.sources).toHaveLength(0);
     });
 
     it('skips prepare and play failures while preserving the complete message', async () => {
