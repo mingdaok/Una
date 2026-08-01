@@ -9,8 +9,11 @@ export function createAudioStreamQueue({
   let generation = 0;
   let replyId = null;
   let sealed = false;
+  let sealUpperBound = -1;
   let expectedIndex = 0;
   let playing = false;
+  let playbackLease = false;
+  let starvationPending = false;
   let starvationStartedAtMs = null;
   let records = new Map();
   let idleWaiters = [];
@@ -25,7 +28,7 @@ export function createAudioStreamQueue({
 
   function emitMetric(payload) {
     try {
-      reportMetric(payload);
+      Promise.resolve(reportMetric(payload)).catch(() => {});
     } catch {
       // Metrics must never interrupt preload or playback.
     }
@@ -49,14 +52,17 @@ export function createAudioStreamQueue({
 
   function settleIdleWaiters() {
     const remaining = [];
+    let settledCurrentWaiter = false;
     for (const waiter of idleWaiters) {
       if (waiter.generation !== generation || barrierComplete(waiter.targetIndex)) {
+        if (waiter.generation === generation) settledCurrentWaiter = true;
         waiter.resolve();
       } else {
         remaining.push(waiter);
       }
     }
     idleWaiters = remaining;
+    return settledCurrentWaiter;
   }
 
   function isCurrent(callbackGeneration, callbackReplyId) {
@@ -77,9 +83,11 @@ export function createAudioStreamQueue({
       }
       starvationStartedAtMs = null;
     }
+    starvationPending = false;
 
     record.status = 'playing';
     playing = true;
+    playbackLease = true;
     const startedAtMs = readNow();
     let playback;
     try {
@@ -94,7 +102,11 @@ export function createAudioStreamQueue({
     );
 
     function finishPlayback(error) {
-      if (!isCurrent(callbackGeneration, callbackReplyId) || record.status !== 'playing') return;
+      playbackLease = false;
+      if (!isCurrent(callbackGeneration, callbackReplyId) || record.status !== 'playing') {
+        pump();
+        return;
+      }
 
       record.status = error ? 'failed' : 'done';
       playing = false;
@@ -108,23 +120,43 @@ export function createAudioStreamQueue({
           status: 'failed',
         });
       }
-      starvationStartedAtMs = readNow();
-      pump(callbackGeneration, callbackReplyId);
+      starvationPending = true;
+      if (settleIdleWaiters()) {
+        schedulePump(callbackGeneration, callbackReplyId);
+      } else {
+        pump(callbackGeneration, callbackReplyId);
+      }
     }
   }
 
+  function schedulePump(callbackGeneration, callbackReplyId) {
+    Promise.resolve().then(() => pump(callbackGeneration, callbackReplyId));
+  }
+
   function pump(callbackGeneration = generation, callbackReplyId = replyId) {
-    if (!isCurrent(callbackGeneration, callbackReplyId) || playing) return;
+    if (!isCurrent(callbackGeneration, callbackReplyId) || playbackLease) return;
 
     while (isCurrent(callbackGeneration, callbackReplyId)) {
       const record = records.get(expectedIndex);
       if (!record || record.status === 'received' || record.status === 'loading') {
+        const expectsMore = !sealed || expectedIndex <= sealUpperBound;
+        if (expectsMore && starvationPending && starvationStartedAtMs === null) {
+          starvationStartedAtMs = readNow();
+          starvationPending = false;
+        } else if (!expectsMore) {
+          starvationPending = false;
+          starvationStartedAtMs = null;
+        }
         settleIdleWaiters();
         return;
       }
       if (record.status === 'playing') return;
       if (TERMINAL_STATUSES.has(record.status)) {
         expectedIndex += 1;
+        if (settleIdleWaiters()) {
+          schedulePump(callbackGeneration, callbackReplyId);
+          return;
+        }
         continue;
       }
       if (record.status === 'ready') {
@@ -160,8 +192,10 @@ export function createAudioStreamQueue({
     settleIdleWaiters();
     replyId = nextReplyId;
     sealed = false;
+    sealUpperBound = -1;
     expectedIndex = 0;
     playing = false;
+    starvationPending = false;
     starvationStartedAtMs = null;
     records = new Map();
     return snapshot();
@@ -170,6 +204,9 @@ export function createAudioStreamQueue({
   function enqueue(enqueueReplyId, chunk) {
     if (replyId === null || enqueueReplyId !== replyId) {
       return { accepted: false, reason: 'stale_reply' };
+    }
+    if (sealed) {
+      return { accepted: false, reason: 'sealed' };
     }
     const index = chunk?.index;
     if (!Number.isInteger(index) || index < 0) {
@@ -224,6 +261,17 @@ export function createAudioStreamQueue({
       return { accepted: false, reason: 'stale_reply' };
     }
     sealed = true;
+    sealUpperBound = highestKnownIndex();
+    for (let index = 0; index <= sealUpperBound; index += 1) {
+      if (!records.has(index)) {
+        records.set(index, {
+          status: 'failed',
+          receivedAtMs: readNow(),
+          readyAtMs: null,
+          prepared: undefined,
+        });
+      }
+    }
     pump();
     settleIdleWaiters();
     return { accepted: true, reason: 'sealed' };
@@ -234,8 +282,10 @@ export function createAudioStreamQueue({
     settleIdleWaiters();
     replyId = null;
     sealed = false;
+    sealUpperBound = -1;
     expectedIndex = 0;
     playing = false;
+    starvationPending = false;
     starvationStartedAtMs = null;
     records = new Map();
   }

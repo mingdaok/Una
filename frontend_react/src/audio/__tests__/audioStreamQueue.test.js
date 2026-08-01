@@ -190,6 +190,67 @@ describe('createAudioStreamQueue', () => {
     expect(queue.snapshot().replyId).toBe('reply-2');
   }, 1_000);
 
+  it('keeps the global playback lease until an old reply play promise settles', async () => {
+    const oldPlay = deferred();
+    const played = [];
+    const queue = createQueue({
+      playChunk: chunk => {
+        played.push(chunk.reply);
+        return chunk.reply === 'old' ? oldPlay.promise : Promise.resolve();
+      },
+    });
+
+    queue.start('reply-1');
+    queue.enqueue('reply-1', { index: 0, reply: 'old' });
+    await waitUntil(() => played.length === 1, 'old reply play start');
+
+    queue.start('reply-2');
+    queue.enqueue('reply-2', { index: 0, reply: 'current' });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(played).toEqual(['old']);
+
+    oldPlay.resolve();
+    await withTimeout(queue.whenIdle(), 'new reply after old playback settles');
+    expect(played).toEqual(['old', 'current']);
+  }, 1_000);
+
+  it('keeps the global playback lease across stop while the stopped snapshot stays idle', async () => {
+    const oldPlay = deferred();
+    const played = [];
+    const queue = createQueue({
+      playChunk: chunk => {
+        played.push(chunk.reply);
+        return chunk.reply === 'old' ? oldPlay.promise : Promise.resolve();
+      },
+    });
+
+    queue.start('reply-1');
+    queue.enqueue('reply-1', { index: 0, reply: 'old' });
+    await waitUntil(() => played.length === 1, 'old play before stop');
+    queue.stop();
+
+    expect(queue.snapshot()).toEqual({
+      replyId: null,
+      sealed: false,
+      expectedIndex: 0,
+      playing: false,
+      idle: true,
+      chunks: [],
+    });
+    await withTimeout(queue.whenIdle(), 'logical idle after stop');
+
+    queue.start('reply-2');
+    queue.enqueue('reply-2', { index: 0, reply: 'current' });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(played).toEqual(['old']);
+
+    oldPlay.resolve();
+    await withTimeout(queue.whenIdle(), 'new reply after stopped playback settles');
+    expect(played).toEqual(['old', 'current']);
+  }, 1_000);
+
   it('does not prepare or play a duplicate chunk index twice', async () => {
     const prepared = [];
     const played = [];
@@ -239,6 +300,33 @@ describe('createAudioStreamQueue', () => {
     play.resolve();
     await withTimeout(idlePromise, 'sealed chunk completion');
     expect(queue.snapshot().chunks[0].status).toBe('done');
+  }, 1_000);
+
+  it('seal terminalizes missing indexes, drains later chunks, and rejects new enqueue', async () => {
+    const played = [];
+    const queue = createQueue({
+      playChunk: async chunk => { played.push(chunk.index); },
+    });
+
+    queue.start('reply-1');
+    queue.enqueue('reply-1', { index: 1 });
+    expect(queue.seal('reply-1')).toEqual({ accepted: true, reason: 'sealed' });
+    expect(queue.enqueue('reply-1', { index: 2 })).toEqual({
+      accepted: false,
+      reason: 'sealed',
+    });
+    await withTimeout(queue.whenIdle(), 'sealed queue with an initial gap');
+
+    expect(played).toEqual([1]);
+    expect(queue.snapshot().chunks.map(({ index, status }) => ({ index, status }))).toEqual([
+      { index: 0, status: 'failed' },
+      { index: 1, status: 'done' },
+    ]);
+    expect(queue.snapshot()).toMatchObject({
+      sealed: true,
+      expectedIndex: 2,
+      idle: true,
+    });
   }, 1_000);
 
   it('stop invalidates old callbacks and resets the queue to an empty idle snapshot', async () => {
@@ -322,6 +410,56 @@ describe('createAudioStreamQueue', () => {
     expect(played).toEqual([0, 1]);
   }, 1_000);
 
+  it('settles an earlier idle barrier before starting a later ready chunk', async () => {
+    const firstPlay = deferred();
+    const secondPlay = deferred();
+    const played = [];
+    const transitions = [];
+    const queue = createQueue({
+      playChunk: chunk => {
+        played.push(chunk.index);
+        transitions.push(`play:${chunk.index}`);
+        return chunk.index === 0 ? firstPlay.promise : secondPlay.promise;
+      },
+    });
+
+    queue.start('reply-1');
+    queue.enqueue('reply-1', { index: 0 });
+    const firstBarrier = queue.whenIdle();
+    firstBarrier.then(() => { transitions.push('first-idle'); });
+    queue.enqueue('reply-1', { index: 1 });
+    const allWorkBarrier = queue.whenIdle();
+    await waitUntil(() => played.length === 1, 'first chunk before barrier ordering');
+
+    firstPlay.resolve();
+    await waitUntil(() => played.length === 2, 'later play after earlier barrier');
+    expect(transitions).toEqual(['play:0', 'first-idle', 'play:1']);
+
+    secondPlay.resolve();
+    await withTimeout(allWorkBarrier, 'all accepted work barrier');
+    expect(played).toEqual([0, 1]);
+  }, 1_000);
+
+  it('does not report starvation when the next expected chunk is already ready', async () => {
+    let currentTime = 100;
+    const metrics = [];
+    const queue = createQueue({
+      now: () => {
+        currentTime += 5;
+        return currentTime;
+      },
+      playChunk: async () => {},
+      reportMetric: metric => { metrics.push(metric); },
+    });
+
+    queue.start('reply-1');
+    queue.enqueue('reply-1', { index: 0 });
+    queue.enqueue('reply-1', { index: 1 });
+    await withTimeout(queue.whenIdle(), 'preloaded continuous playback');
+
+    expect(metrics.filter(metric => metric.stage === 'queue_starvation')).toEqual([]);
+  }, 1_000);
+
   it('contains only safe metric fields and isolates a throwing metric reporter', async () => {
     const metrics = [];
     const played = [];
@@ -363,5 +501,25 @@ describe('createAudioStreamQueue', () => {
       durationMs: 0,
       status: 'failed',
     });
+  }, 1_000);
+
+  it('handles a rejected metric promise without an unhandled rejection', async () => {
+    const played = [];
+    const queue = createQueue({
+      prepareChunk: async chunk => {
+        if (chunk.index === 0) throw new Error('prepare failed');
+        return chunk;
+      },
+      playChunk: async chunk => { played.push(chunk.index); },
+      reportMetric: () => Promise.reject(new Error('async metric backend failed')),
+    });
+
+    queue.start('reply-1');
+    queue.enqueue('reply-1', { index: 0 });
+    queue.enqueue('reply-1', { index: 1 });
+    await withTimeout(queue.whenIdle(), 'rejected metric promise');
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    expect(played).toEqual([1]);
   }, 1_000);
 });
