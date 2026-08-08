@@ -1,4 +1,4 @@
-"""Cancelable GPT-SoVITS mode-2 raw PCM streaming for realtime calls."""
+"""Cancelable GPT-SoVITS raw PCM streaming for realtime calls."""
 
 from __future__ import annotations
 
@@ -51,6 +51,8 @@ class GptSovitsPcmClient:
         text: str,
         emotion: str,
         cancel_event: asyncio.Event,
+        *,
+        streaming_mode: int = 2,
     ) -> AsyncIterator[bytes]:
         if self._closed:
             raise GptSovitsUnavailable("GPT-SoVITS PCM 客户端已关闭")
@@ -58,6 +60,8 @@ class GptSovitsPcmClient:
             return
         if cancel_event.is_set():
             raise asyncio.CancelledError
+        if streaming_mode not in (0, 2) or isinstance(streaming_mode, bool):
+            raise ValueError("streaming_mode 必须为 0 或 2")
 
         await self._acquire_or_cancel(cancel_event)
         try:
@@ -68,7 +72,7 @@ class GptSovitsPcmClient:
                 text.strip(),
                 emotion,
                 media_type="raw",
-                streaming_mode=2,
+                streaming_mode=streaming_mode,
             )
             try:
                 async with session.post(self._url, json=payload) as response:

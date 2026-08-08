@@ -1,6 +1,7 @@
 const PREBUFFER_SECONDS = 0.12;
 const INITIAL_LEAD_SECONDS = 0.03;
 const CONTINUATION_LEAD_SECONDS = 0.01;
+const RECOVERY_FADE_SECONDS = 0.008;
 const MAX_SEQUENCE = 4095;
 
 const noop = () => {};
@@ -105,7 +106,8 @@ export function createPcmStreamPlayer(dependencies = {}) {
       const sequence = state.expectedSequence;
       const pcm = state.pending.get(sequence);
       state.pending.delete(sequence);
-      if (context.currentTime > state.nextStartAt) {
+      const recoveredFromUnderflow = context.currentTime > state.nextStartAt;
+      if (recoveredFromUnderflow) {
         reportMetric('pcm_playback_underflow', {
           turn_id: state.turnId,
           sequence,
@@ -117,8 +119,16 @@ export function createPcmStreamPlayer(dependencies = {}) {
       const source = context.createBufferSource();
       source.buffer = audioBuffer;
       source.__voiceSequence = sequence;
-      source.connect(context.destination);
       const startAt = Math.max(state.nextStartAt, context.currentTime + CONTINUATION_LEAD_SECONDS);
+      if (recoveredFromUnderflow && typeof context.createGain === 'function') {
+        const gain = context.createGain();
+        gain.gain.setValueAtTime(0, startAt);
+        gain.gain.linearRampToValueAtTime(1, startAt + RECOVERY_FADE_SECONDS);
+        source.connect(gain);
+        gain.connect(context.destination);
+      } else {
+        source.connect(context.destination);
+      }
       source.onended = () => {
         state.sources.delete(source);
         if (state.active && state.sealed && !state.pending.size && !state.sources.size) {

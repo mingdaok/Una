@@ -351,6 +351,8 @@ class VoiceCallService:
         runtime: _TurnRuntime,
     ) -> None:
         sequence = 0
+        audio_started_at: float | None = None
+        audio_samples_sent = 0
         cancel_event = self._current_cancel_event(session, turn_id)
         try:
             while True:
@@ -369,9 +371,46 @@ class VoiceCallService:
                         "sample_width": self.tts.sample_width,
                     })
                     runtime.tts_started = True
-                async for chunk in self.tts.stream(unit.text, unit.emotion, cancel_event):
+                # Preserve mode-2 streaming for the first unit so first audio stays
+                # fast. A later short unit uses a complete raw response only when
+                # the already-sent audio leaves enough estimated playback buffer;
+                # otherwise mode 2 avoids adding a new audible wait.
+                estimated_buffer_seconds = 0.0
+                if audio_started_at is not None:
+                    generated_seconds = audio_samples_sent / self.tts.sample_rate
+                    estimated_buffer_seconds = max(
+                        0.0,
+                        generated_seconds - (self._clock() - audio_started_at),
+                    )
+                streaming_mode = (
+                    0
+                    if (
+                        unit.index > 0
+                        and len(unit.text) <= 36
+                        and estimated_buffer_seconds >= 0.8
+                    )
+                    else 2
+                )
+                fade_samples_remaining = (
+                    round(self.tts.sample_rate * 0.008) if unit.index > 0 else 0
+                )
+                fade_sample_index = 0
+                async for chunk in self.tts.stream(
+                    unit.text,
+                    unit.emotion,
+                    cancel_event,
+                    streaming_mode=streaming_mode,
+                ):
                     if not session.is_current(turn_id):
                         raise asyncio.CancelledError
+                    if chunk and fade_samples_remaining:
+                        chunk, faded = self._fade_in_pcm16(
+                            chunk,
+                            fade_sample_index,
+                            fade_samples_remaining,
+                        )
+                        fade_sample_index += faded
+                        fade_samples_remaining -= faded
                     if chunk and not runtime.tts_first_byte_reported:
                         runtime.tts_first_byte_reported = True
                         self._metric(
@@ -384,6 +423,8 @@ class VoiceCallService:
                         )
                     for offset in range(0, len(chunk), MAX_PCM_CHUNK_BYTES):
                         piece = chunk[offset:offset + MAX_PCM_CHUNK_BYTES]
+                        if audio_started_at is None:
+                            audio_started_at = self._clock()
                         header = BinaryFrameHeader(
                             session_id=session.session_id,
                             direction="output",
@@ -404,6 +445,7 @@ class VoiceCallService:
                             session.session_id, turn_id, "ws_delivery", "completed",
                             delivery_started_at, sequence=sequence, byte_count=len(piece),
                         )
+                        audio_samples_sent += len(piece) // self.tts.sample_width
                         sequence += 1
             if runtime.tts_started and session.is_current(turn_id):
                 await self._send_tts_end(session, turn_id)
@@ -411,6 +453,26 @@ class VoiceCallService:
             raise
         except (GptSovitsUnavailable, PcmStreamFormatError) as error:
             raise _PipelineFailure("TTS_FAILED", "克隆语音暂时不可用") from error
+
+    @staticmethod
+    def _fade_in_pcm16(
+        chunk: bytes,
+        start_sample: int,
+        remaining_samples: int,
+    ) -> tuple[bytes, int]:
+        """Apply an 8 ms unit-boundary fade without buffering the audio stream."""
+        sample_count = min(len(chunk) // 2, remaining_samples)
+        if sample_count <= 0:
+            return chunk, 0
+        total_samples = start_sample + remaining_samples
+        smoothed = bytearray(chunk)
+        for local_index in range(sample_count):
+            offset = local_index * 2
+            sample = int.from_bytes(smoothed[offset:offset + 2], "little", signed=True)
+            gain = (start_sample + local_index + 1) / total_samples
+            scaled = round(sample * gain)
+            smoothed[offset:offset + 2] = scaled.to_bytes(2, "little", signed=True)
+        return bytes(smoothed), sample_count
 
     @staticmethod
     def _current_user_text(snapshot: Any) -> str:

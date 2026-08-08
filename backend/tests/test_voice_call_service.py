@@ -123,8 +123,8 @@ class FakeTts:
         self.calls = []
         self.closed = False
 
-    async def stream(self, text, emotion, cancel_event):
-        self.calls.append((text, emotion))
+    async def stream(self, text, emotion, cancel_event, *, streaming_mode=2):
+        self.calls.append((text, emotion, streaming_mode))
         if self.gate is not None:
             await self.gate.wait()
         if self.failure is not None:
@@ -181,6 +181,43 @@ async def test_completed_turn_emits_ordered_transcript_text_and_pcm():
     assert service.brain.calls[0][1] == "今天有点累"
     transcript = next(event for event in sender.events if event["type"] == "transcript_final")
     assert set(transcript) == {"type", "session_id", "turn_id", "text"}
+
+
+@pytest.mark.asyncio
+async def test_first_unit_stays_streaming_and_short_later_unit_uses_mode_zero():
+    tts = FakeTts(chunks=[b"\x00\x00" * 32000])
+    service = make_service(tts=tts)
+    session = await service.open_session("u1", RecordingSender())
+
+    await complete_input(service, session)
+    await session.wait_until_idle()
+
+    assert [call[2] for call in tts.calls] == [2, 0]
+
+
+@pytest.mark.asyncio
+async def test_later_unit_keeps_streaming_when_playback_buffer_is_low():
+    tts = FakeTts(chunks=[b"\x00\x00"])
+    service = make_service(tts=tts)
+    session = await service.open_session("u1", RecordingSender())
+
+    await complete_input(service, session)
+    await session.wait_until_idle()
+
+    assert [call[2] for call in tts.calls] == [2, 2]
+
+
+def test_pcm_fade_in_is_linear_and_keeps_the_rest_unchanged():
+    source = (32767).to_bytes(2, "little", signed=True) * 4
+
+    faded, count = VoiceCallService._fade_in_pcm16(source, 0, 2)
+
+    samples = [
+        int.from_bytes(faded[offset:offset + 2], "little", signed=True)
+        for offset in range(0, len(faded), 2)
+    ]
+    assert count == 2
+    assert samples == [16384, 32767, 32767, 32767]
 
 
 @pytest.mark.asyncio

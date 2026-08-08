@@ -11,6 +11,7 @@ function makeAudio({ currentTime = 10, state = 'running' } = {}) {
   const starts = [];
   const sources = [];
   const metrics = [];
+  const gains = [];
   const context = {
     currentTime,
     state,
@@ -35,13 +36,24 @@ function makeAudio({ currentTime = 10, state = 'running' } = {}) {
       sources.push(source);
       return source;
     }),
+    createGain: vi.fn(() => {
+      const gain = {
+        connect: vi.fn(),
+        gain: {
+          setValueAtTime: vi.fn(),
+          linearRampToValueAtTime: vi.fn(),
+        },
+      };
+      gains.push(gain);
+      return gain;
+    }),
   };
   const player = createPcmStreamPlayer({
     createAudioContext: () => context,
     now: () => 1234,
     reportMetric: (name, detail) => metrics.push({ name, detail }),
   });
-  return { player, context, starts, sources, metrics };
+  return { player, context, starts, sources, gains, metrics };
 }
 
 
@@ -142,6 +154,11 @@ describe('PCM stream player', () => {
       name: 'pcm_playback_underflow',
       detail: { turn_id: 6, sequence: 1, gap_ms: 850, at_ms: 1234 },
     }]);
+    expect(audio.gains).toHaveLength(1);
+    expect(audio.gains[0].gain.setValueAtTime).toHaveBeenCalledWith(0, 11.01);
+    const [, fadeEnd] = audio.gains[0].gain.linearRampToValueAtTime.mock.calls[0];
+    expect(fadeEnd).toBeCloseTo(11.018, 6);
+    expect(audio.sources[1].connect).toHaveBeenCalledWith(audio.gains[0]);
   });
 
   it('新轮次替换旧轮次，destroy 停止并关闭 context', async () => {

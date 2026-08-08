@@ -98,6 +98,36 @@ async def test_pcm_stream_reassembles_even_samples_and_requests_raw_mode_two():
 
 
 @pytest.mark.asyncio
+async def test_non_streaming_raw_mode_can_be_selected_for_a_short_later_unit():
+    http = FakeHttp(FakeResponse([b"\x00\x00"]))
+    client = GptSovitsPcmClient(http.factory)
+
+    chunks = [
+        chunk async for chunk in client.stream(
+            "短句。", "neutral", asyncio.Event(), streaming_mode=0
+        )
+    ]
+
+    assert chunks == [b"\x00\x00"]
+    assert http.sessions[0].payloads[0]["media_type"] == "raw"
+    assert http.sessions[0].payloads[0]["streaming_mode"] == 0
+
+
+@pytest.mark.asyncio
+async def test_invalid_streaming_mode_is_rejected_before_http_request():
+    http = FakeHttp(FakeResponse([b"\x00\x00"]))
+    client = GptSovitsPcmClient(http.factory)
+
+    with pytest.raises(ValueError, match="streaming_mode"):
+        _ = [
+            chunk async for chunk in client.stream(
+                "短句。", "neutral", asyncio.Event(), streaming_mode=1
+            )
+        ]
+    assert http.sessions == []
+
+
+@pytest.mark.asyncio
 async def test_http_error_is_reported_without_edge_fallback_or_disk_path():
     http = FakeHttp(FakeResponse(status=503, detail="warming up"))
     client = GptSovitsPcmClient(http.factory)
