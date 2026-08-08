@@ -58,7 +58,13 @@ def _emotion_to_speed(emotion) -> float:
     return SPEED_NORMAL
 
 
-def build_gsv_payload(clean_text: str, emotion="neutral") -> dict:
+def build_gsv_payload(
+    clean_text: str,
+    emotion="neutral",
+    *,
+    media_type: str = "wav",
+    streaming_mode: bool | int = False,
+) -> dict:
     """构建 GPT-SoVITS 请求载荷，并避免短语音的二次切分静音。"""
     return {
         "text": clean_text,
@@ -66,8 +72,8 @@ def build_gsv_payload(clean_text: str, emotion="neutral") -> dict:
         "ref_audio_path": REF_AUDIO_PATH,
         "prompt_text": PROMPT_TEXT,
         "prompt_lang": PROMPT_LANG,
-        "media_type": "wav",
-        "streaming_mode": False,
+        "media_type": media_type,
+        "streaming_mode": streaming_mode,
         "speed_factor": _emotion_to_speed(emotion),
         "top_k": 35,
         "top_p": 0.95,

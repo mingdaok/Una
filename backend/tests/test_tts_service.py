@@ -8,6 +8,16 @@ from speech_metrics import SpeechTrace, log_speech_stage
 from tts_service import build_gsv_payload
 
 
+def test_realtime_payload_requests_raw_mode_two_without_changing_default():
+    normal = build_gsv_payload("你好")
+    realtime = build_gsv_payload("你好", media_type="raw", streaming_mode=2)
+
+    assert (normal["media_type"], normal["streaming_mode"]) == ("wav", False)
+    assert (realtime["media_type"], realtime["streaming_mode"]) == ("raw", 2)
+    assert realtime["text_split_method"] == "cut0"
+    assert realtime["fragment_interval"] == pytest.approx(0.05)
+
+
 def test_short_tts_unit_avoids_second_split_and_long_silence():
     payload = build_gsv_payload("这是一个短语音单元。", "neutral")
 
