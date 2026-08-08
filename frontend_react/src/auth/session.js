@@ -67,8 +67,8 @@ export async function authFetch(path, options = {}, retried = false) {
   return response;
 }
 
-export async function createWebSocketTicket() {
+export async function createWebSocketTicket(label = '聊天') {
   const response = await authFetch('/api/auth/ws-ticket', { method: 'POST' });
-  if (!response.ok) throw new Error('无法创建聊天连接');
+  if (!response.ok) throw new Error(`无法创建${label}连接`);
   return (await response.json()).ticket;
 }
