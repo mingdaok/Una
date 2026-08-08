@@ -1,6 +1,8 @@
 import json
 import datetime
 import random
+import re
+from collections.abc import Mapping, Sequence
 from openai import AsyncOpenAI
 import database
 from chat_control import ControlPrefixDemux, sanitize_reply_text
@@ -204,6 +206,135 @@ class UnaBrain:
             print(f"Brain Error: {e}")
             return {"reply": "我在听。", "mood_score": 0, "crisis_level": "NORMAL", "emotion": "neutral"}
 
+    async def chat_voice_stream(
+        self,
+        user_id,
+        user_text,
+        *,
+        profile: str,
+        recent_history: Sequence[Mapping[str, str]],
+        long_term_memory: str,
+        recent_negative_count: int = 0,
+    ):
+        """Stream plain, directly speakable text without Live2D controls."""
+        if any(keyword in user_text for keyword in self.crisis_keywords):
+            yield {"type": "meta", "emotion": "uneasy", "mood_score": -5}
+            yield {
+                "type": "sentence",
+                "text": (
+                    "我听到了你心里的痛苦，这时候请不要一个人扛着。"
+                    "请一定要联系身边的人，或者拨打心理援助热线 12345。"
+                ),
+            }
+            return
+
+        intervention_prompt = ""
+        if recent_negative_count >= 5:
+            intervention_prompt = (
+                "⚠️【紧急干预模式】检测到用户连续情绪低落。不要继续挖掘痛苦话题，"
+                "请温柔地帮助用户转移注意力，并建议一个很小的现实行动。\n"
+            )
+        elif long_term_memory and random.random() < 0.4:
+            intervention_prompt = (
+                "✨【积极回忆植入】如果自然合适，可以提到长期记忆中的积极经历。\n"
+            )
+
+        history_text = "\n".join(
+            f"{item.get('role', 'unknown')}: "
+            f"{item.get('content', item.get('text', ''))}"
+            for item in recent_history
+        )
+        voice_prompt = (
+            "你叫 Una，一个温暖、专业、有边界感的心理支持 AI。\n"
+            f"【用户画像】：{profile}\n"
+            f"{intervention_prompt}"
+            "🎯 核心原则：共情接纳，适度 CBT 引导，帮助用户回到现实。\n"
+            f"【长期记忆】：{long_term_memory}\n"
+            f"【近期对话】：\n{history_text}\n"
+            "只输出适合直接朗读的自然语言正文。禁止输出 ACTION、EMOTION、JSON、"
+            "Markdown、舞台说明和动作参数。第一句尽量在 8 至 24 个汉字内自然结束，"
+            "完整回复约 80 至 150 字。"
+        )
+
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": voice_prompt},
+                    {"role": "user", "content": user_text},
+                ],
+                stream=True,
+                temperature=0.8,
+            )
+            async for event in self._yield_sentence_text(
+                response,
+                strip_controls=True,
+            ):
+                yield event
+        except Exception as error:
+            print(f"Brain Voice Stream Error: {error}")
+            yield {"type": "meta", "emotion": "neutral", "mood_score": 0}
+            yield {"type": "sentence", "text": "我好像有点卡住了，稍等我一下。"}
+
+    async def _yield_sentence_text(
+        self,
+        response,
+        strip_controls: bool,
+        live2d_model=None,
+    ):
+        """Demultiplex controls and yield sentence-sized text events."""
+        buffer = ""
+        yielded_chunks = 0
+        control_demux = ControlPrefixDemux(live2d_model=live2d_model)
+
+        async for chunk in response:
+            choices = getattr(chunk, "choices", None)
+            if not choices:
+                continue
+            delta = getattr(getattr(choices[0], "delta", None), "content", None)
+            if not delta:
+                continue
+
+            control_events, body_delta = control_demux.feed(delta)
+            for event in control_events:
+                if not strip_controls or event.get("type") == "meta":
+                    yield event
+            buffer += body_delta
+
+            while True:
+                match_strong = re.search(r"([。！？\!\?\n]+)", buffer)
+                match_weak = re.search(r"([，、；\,]+)", buffer)
+                split_pos = -1
+                if match_strong:
+                    pos = match_strong.end()
+                    if yielded_chunks == 0 or pos >= 15:
+                        split_pos = pos
+                elif match_weak:
+                    pos = match_weak.end()
+                    if (yielded_chunks == 0 and pos >= 3) or (
+                        yielded_chunks > 0 and pos >= 25
+                    ):
+                        split_pos = pos
+                if split_pos == -1:
+                    break
+
+                sentence = sanitize_reply_text(buffer[:split_pos])
+                buffer = buffer[split_pos:]
+                if sentence and not re.match(r"^[^\w\u4e00-\u9fff]*$", sentence):
+                    print(f"💦 [流式出核] 产出句段: {sentence}")
+                    yield {"type": "sentence", "text": sentence}
+                    yielded_chunks += 1
+
+        final_events, final_body = control_demux.finish()
+        for event in final_events:
+            if not strip_controls or event.get("type") == "meta":
+                yield event
+        buffer += final_body
+        final_text = sanitize_reply_text(buffer)
+        if final_text and not re.match(r"^[^\w\u4e00-\u9fff]*$", final_text):
+            print(f"💦 [流式收尾] 产出末段: {final_text}")
+            yield {"type": "sentence", "text": final_text}
+
     # 🔥 新增：[Phase 2.5] 句级流式截流生成 (Sentence-Level Streaming)
     async def chat_stream(self, user_id, user_text, long_term_memory="", recent_negative_count=0, live2d_model=None):
         # 画像等前置处理与普通 chat 一致
@@ -272,57 +403,12 @@ class UnaBrain:
                 temperature=0.8
             )
 
-            buffer = ""
-            yielded_chunks = 0
-            control_demux = ControlPrefixDemux(live2d_model=live2d_model)
-            import re
-
-            async for chunk in response:
-                choices = getattr(chunk, "choices", None)
-                if not choices:
-                    continue
-                delta = getattr(getattr(choices[0], "delta", None), "content", None)
-                if delta:
-                    control_events, body_delta = control_demux.feed(delta)
-                    for event in control_events:
-                        yield event
-                    buffer += body_delta
-
-                    # 智能动态标点截停分发（控制前缀已在独立状态机中完全隔离）
-                    while True:
-                        match_strong = re.search(r'([。！？\!\?\n]+)', buffer)
-                        match_weak = re.search(r'([，、；\,]+)', buffer)
-                        split_pos = -1
-
-                        if match_strong:
-                            pos = match_strong.end()
-                            if yielded_chunks == 0 or pos >= 15:
-                                split_pos = pos
-                        elif match_weak:
-                            pos = match_weak.end()
-                            if (yielded_chunks == 0 and pos >= 3) or (yielded_chunks > 0 and pos >= 25):
-                                split_pos = pos
-
-                        if split_pos == -1:
-                            break
-
-                        sent = sanitize_reply_text(buffer[:split_pos])
-                        buffer = buffer[split_pos:]
-                        if sent and not re.match(r'^[^\w\u4e00-\u9fff]*$', sent):
-                            print(f"💦 [流式出核] 产出句段: {sent}")
-                            yield {"type": "sentence", "text": sent}
-                            yielded_chunks += 1
-
-            final_events, final_body = control_demux.finish()
-            for event in final_events:
+            async for event in self._yield_sentence_text(
+                response,
+                strip_controls=False,
+                live2d_model=live2d_model,
+            ):
                 yield event
-            buffer += final_body
-
-            # 生成完毕后，把肚子里剩下没有标点符号的半句话也吐出来
-            final_p = sanitize_reply_text(buffer)
-            if final_p and not re.match(r'^[^\w\u4e00-\u9fff]*$', final_p):
-                print(f"💦 [流式收尾] 产出末段: {final_p}")
-                yield {"type": "sentence", "text": final_p}
                  
         except Exception as e:
             print(f"Brain Stream Error: {e}")
