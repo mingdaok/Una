@@ -118,7 +118,6 @@ describe('voice call controller', () => {
     expect(fixture.capture.destroy).toHaveBeenCalledTimes(1);
     expect(fixture.player.destroy).toHaveBeenCalledTimes(1);
     expect(fixture.socket.disconnect).toHaveBeenCalledTimes(1);
-    expect(fixture.documentImpl.removeEventListener).toHaveBeenCalledTimes(1);
     await expect(fixture.controller.start()).rejects.toThrow('请重新加载通话');
   });
 
@@ -219,7 +218,28 @@ describe('voice call controller', () => {
     });
   });
 
-  it('静音和后台都会暂停且取消当前轮，恢复必须由用户操作', async () => {
+  it('ASR 空结果只忽略当前轮并立即继续监听', async () => {
+    const fixture = makeFixture();
+    await ready(fixture);
+    fixture.capture.speechStart();
+    fixture.capture.speechEnd();
+
+    await fixture.socket.control({
+      type: 'turn_ignored', session_id: 's1', turn_id: 1,
+      reason: 'asr_empty', message: '没有听清，请再说一次',
+    });
+
+    expect(fixture.controller.snapshot()).toMatchObject({
+      state: 'listening', activeTurnId: null, error: '没有听清，请再说一次',
+    });
+    expect(fixture.player.interrupt).toHaveBeenCalledWith(1);
+    fixture.capture.speechStart();
+    expect(fixture.controller.snapshot()).toMatchObject({
+      state: 'listening', activeTurnId: 2, error: null,
+    });
+  });
+
+  it('静音仍由用户手动暂停，但页面隐藏不会取消通话或当前回复', async () => {
     const fixture = makeFixture();
     await ready(fixture);
     fixture.capture.speechStart();
@@ -232,16 +252,15 @@ describe('voice call controller', () => {
     await fixture.controller.toggleMute();
     expect(fixture.capture.start).toHaveBeenCalledTimes(2);
     fixture.capture.speechStart();
+    fixture.order.length = 0;
     await fixture.documentImpl.setVisibility('hidden');
-    expect(fixture.controller.snapshot().state).toBe('interrupted');
-    const startsBeforeVisible = fixture.capture.start.mock.calls.length;
+    expect(fixture.order).toEqual([]);
+    expect(fixture.controller.snapshot()).toMatchObject({ state: 'listening', activeTurnId: 2 });
     await fixture.documentImpl.setVisibility('visible');
-    expect(fixture.capture.start).toHaveBeenCalledTimes(startsBeforeVisible);
-    await fixture.controller.start();
-    expect(fixture.capture.start).toHaveBeenCalledTimes(startsBeforeVisible + 1);
+    expect(fixture.order).toEqual([]);
   });
 
-  it('end 完整清理采集、播放、socket 和 visibility listener', async () => {
+  it('end 完整清理采集、播放和 socket', async () => {
     const fixture = makeFixture();
     await ready(fixture);
     fixture.capture.speechStart();
@@ -256,7 +275,6 @@ describe('voice call controller', () => {
       'player.destroy',
       'socket.disconnect',
     ]);
-    expect(fixture.documentImpl.removeEventListener).toHaveBeenCalledTimes(1);
     expect(fixture.controller.snapshot()).toMatchObject({
       state: 'ended', sessionId: null, activeTurnId: null,
     });

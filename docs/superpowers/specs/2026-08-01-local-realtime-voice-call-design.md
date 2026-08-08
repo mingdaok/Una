@@ -146,7 +146,7 @@ connecting → listening → recognizing → thinking → speaking → listening
 控制消息使用 JSON，至少包含以下事件：
 
 - 客户端：`call_start`、`user_speech_start`、`user_speech_end`、`interrupt`、`call_end`。
-- 服务端：`call_ready`、`transcript_final`、`assistant_text_delta`、`assistant_text_end`、`tts_start`、`tts_end`、`turn_cancelled`、`call_error`、`call_ended`。
+- 服务端：`call_ready`、`transcript_final`、`assistant_text_delta`、`assistant_text_end`、`tts_start`、`tts_end`、`turn_ignored`、`turn_cancelled`、`call_error`、`call_ended`。其中 `turn_ignored` 表示空识别等可恢复的单轮无效输入，不能结束或暂停整场通话。
 
 与某轮有关的事件必须携带 `session_id` 和 `turn_id`。`tts_start` 还必须包含采样率、声道数和 PCM 格式。
 
@@ -231,7 +231,7 @@ connecting → listening → recognizing → thinking → speaking → listening
 - ASR 空结果：提示未听清并恢复监听，不调用大模型和 TTS。
 - 大模型失败：当前轮次返回错误并恢复监听。
 - GPT-SoVITS 失败：停止当前音频，保留已经显示的文字，恢复监听。
-- 浏览器切到后台导致 AudioContext 暂停：返回前台后要求一次用户点击恢复，不偷偷累积并突发播放旧音频。
+- 浏览器切到后台：不得主动取消当前轮、暂停采集或结束通话；继续维持电话式会话。若浏览器自身暂停 AudioContext，返回前台后只恢复播放上下文，不重放已经失效的旧音频。
 - 页面卸载或结束通话：关闭麦克风轨道、AudioWorklet、VAD、播放器、WebSocket 和所有后端轮次任务。
 
 ## 12. 性能指标与观测

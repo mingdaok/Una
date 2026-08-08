@@ -5,7 +5,6 @@ import { createVoiceCallMetricReporter } from './voiceCallMetrics.js';
 
 
 export function createVoiceCallController(dependencies = {}) {
-  const documentImpl = dependencies.documentImpl || (typeof document === 'undefined' ? null : document);
   const now = dependencies.now || (() => performance.now());
   const reportMetric = createVoiceCallMetricReporter(dependencies.reportMetric);
   const listeners = new Set();
@@ -39,7 +38,6 @@ export function createVoiceCallController(dependencies = {}) {
   let ending = false;
   let failed = false;
   let failurePromise = null;
-  let visibilityAttached = false;
   let cleanupPromise = null;
   let speechStartedAt = null;
   let speechByteCount = 0;
@@ -193,9 +191,15 @@ export function createVoiceCallController(dependencies = {}) {
     } else if (event.type === 'tts_end') {
       player.seal(event.turn_id);
       publish({ state: 'listening' });
+    } else if (event.type === 'turn_ignored') {
+      player.interrupt(event.turn_id);
+      publish({ state: 'listening', activeTurnId: null, error: event.message });
     } else if (event.type === 'turn_cancelled') {
       player.interrupt(event.turn_id);
-      publish({ state: 'interrupted', activeTurnId: null });
+      publish({
+        state: event.reason === 'barge_in' ? 'listening' : 'interrupted',
+        activeTurnId: null,
+      });
     } else if (event.type === 'call_error') {
       player.interrupt(event.turn_id);
       publish({ state: 'error', activeTurnId: null, error: event.message });
@@ -232,14 +236,6 @@ export function createVoiceCallController(dependencies = {}) {
     }
   }
 
-  async function handleVisibilityChange() {
-    if (!documentImpl || documentImpl.visibilityState !== 'hidden' || ending || failed) return;
-    recording = false;
-    cancelActiveTurn();
-    await capture.pause();
-    publish({ state: 'interrupted', activeTurnId: null });
-  }
-
   const socket = dependencies.socket || (dependencies.createSocket || createVoiceCallSocket)({
     ...dependencies.socketDependencies,
     onControl: event => handleControl(event).catch(abortAfterFailure),
@@ -251,13 +247,6 @@ export function createVoiceCallController(dependencies = {}) {
       }
     },
   });
-
-  function detachVisibilityListener() {
-    if (documentImpl && visibilityAttached) {
-      documentImpl.removeEventListener('visibilitychange', handleVisibilityChange);
-      visibilityAttached = false;
-    }
-  }
 
   function cleanupLocalResources() {
     if (!cleanupPromise) {
@@ -271,7 +260,6 @@ export function createVoiceCallController(dependencies = {}) {
     if (!failurePromise) {
       failed = true;
       recording = false;
-      detachVisibilityListener();
       failurePromise = cleanupLocalResources().finally(() => socket.disconnect());
     }
     return failurePromise;
@@ -281,7 +269,7 @@ export function createVoiceCallController(dependencies = {}) {
     if (ending) throw new Error('通话已经结束');
     if (failed) throw new Error('语音模块初始化失败，请重新加载通话');
     if (started) {
-      if (value.state === 'interrupted' && !value.muted && documentImpl?.visibilityState !== 'hidden') {
+      if (value.state === 'interrupted' && !value.muted) {
         await capture.start();
         publish({ state: 'listening' });
       }
@@ -289,10 +277,6 @@ export function createVoiceCallController(dependencies = {}) {
     }
     started = true;
     publish({ state: 'connecting', error: null });
-    if (documentImpl && !visibilityAttached) {
-      documentImpl.addEventListener('visibilitychange', handleVisibilityChange);
-      visibilityAttached = true;
-    }
     try {
       await socket.connect();
       const result = socket.sendCallStart();
@@ -312,7 +296,7 @@ export function createVoiceCallController(dependencies = {}) {
       cancelActiveTurn();
       await capture.pause();
       publish({ state: 'interrupted', activeTurnId: null });
-    } else if (documentImpl?.visibilityState !== 'hidden') {
+    } else {
       await capture.start();
       publish({ state: 'listening' });
     }
@@ -323,7 +307,6 @@ export function createVoiceCallController(dependencies = {}) {
     if (ending) return;
     ending = true;
     recording = false;
-    detachVisibilityListener();
     if (value.activeTurnId !== null) player.interrupt(value.activeTurnId);
     if (value.sessionId) socket.sendCallEnd(value.sessionId);
     await cleanupLocalResources();

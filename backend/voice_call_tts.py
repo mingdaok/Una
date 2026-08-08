@@ -148,9 +148,10 @@ class GptSovitsPcmClient:
                 except StopAsyncIteration:
                     break
             finally:
-                if not cancelled.done():
-                    cancelled.cancel()
-                    await asyncio.gather(cancelled, return_exceptions=True)
+                for task in (next_chunk, cancelled):
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(next_chunk, cancelled, return_exceptions=True)
 
             if not incoming:
                 continue

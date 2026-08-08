@@ -128,6 +128,42 @@ async def test_cancellation_closes_response_and_stops_yielding():
 
 
 @pytest.mark.asyncio
+async def test_direct_consumer_cancellation_reaps_the_pending_http_read():
+    read_started = asyncio.Event()
+    read_cancelled = asyncio.Event()
+
+    class BlockingContent:
+        def iter_chunked(self, size):
+            _ = size
+
+            async def chunks():
+                read_started.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    read_cancelled.set()
+                yield b"\x00\x00"
+
+            return chunks()
+
+    response = FakeResponse()
+    response.content = BlockingContent()
+    client = GptSovitsPcmClient(FakeHttp(response).factory)
+
+    async def consume():
+        return [chunk async for chunk in client.stream("你好", "neutral", asyncio.Event())]
+
+    task = asyncio.create_task(consume())
+    await asyncio.wait_for(read_started.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    await asyncio.wait_for(read_cancelled.wait(), timeout=1)
+    assert response.closed is True
+
+
+@pytest.mark.asyncio
 async def test_odd_trailing_byte_is_a_pcm_format_error():
     client = GptSovitsPcmClient(FakeHttp(FakeResponse([b"\x01"])).factory)
 

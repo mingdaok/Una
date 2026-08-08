@@ -191,9 +191,13 @@ class VoiceCallService:
                 return
             text = str(text or "").strip()
             if not text:
-                await self._send_error(
-                    session, turn_id, "ASR_EMPTY", "没有听清，请再说一次",
-                )
+                await session.sender.send_json({
+                    "type": "turn_ignored",
+                    "session_id": session.session_id,
+                    "turn_id": turn_id,
+                    "reason": "asr_empty",
+                    "message": "没有听清，请再说一次",
+                })
                 return
 
             await session.sender.send_json({

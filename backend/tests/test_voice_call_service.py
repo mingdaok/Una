@@ -220,7 +220,7 @@ async def test_speech_end_closes_input_and_cannot_be_repeated():
 
 
 @pytest.mark.asyncio
-async def test_empty_asr_sends_error_without_starting_llm_or_tts():
+async def test_empty_asr_ignores_only_the_turn_without_starting_llm_or_tts():
     service = make_service(asr=FakeAsr(("", "neutral")))
     sender = RecordingSender()
     session = await service.open_session("u1", sender)
@@ -228,7 +228,14 @@ async def test_empty_asr_sends_error_without_starting_llm_or_tts():
     await complete_input(service, session)
     await session.wait_until_idle()
 
-    assert [event["code"] for event in sender.events if event["type"] == "call_error"] == ["ASR_EMPTY"]
+    assert [event for event in sender.events if event["type"] == "turn_ignored"] == [{
+        "type": "turn_ignored",
+        "session_id": session.session_id,
+        "turn_id": 1,
+        "reason": "asr_empty",
+        "message": "没有听清，请再说一次",
+    }]
+    assert not [event for event in sender.events if event["type"] == "call_error"]
     assert service.brain.calls == []
     assert service.tts.calls == []
 

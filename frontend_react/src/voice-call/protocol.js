@@ -23,6 +23,7 @@ const SERVER_EVENT_FIELDS = Object.freeze({
   tts_start: ['session_id', 'turn_id', 'sample_rate', 'channels', 'sample_width'],
   tts_end: ['session_id', 'turn_id'],
   output_audio_chunk: ['session_id', 'turn_id', 'direction', 'sequence', 'byte_length'],
+  turn_ignored: ['session_id', 'turn_id', 'reason', 'message'],
   turn_cancelled: ['session_id', 'turn_id', 'reason'],
   call_error: ['session_id', 'turn_id', 'code', 'message'],
   call_ended: ['session_id'],
