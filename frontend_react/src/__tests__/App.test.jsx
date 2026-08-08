@@ -1,53 +1,34 @@
-import { render } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { render, screen } from '@testing-library/react';
+import { beforeEach, expect, it, vi } from 'vitest';
+
 import App from '../App';
-import { useUnaCore } from '../hooks/useUnaCore';
 
-const { viewerSpy } = vi.hoisted(() => ({ viewerSpy: vi.fn() }));
 
-vi.mock('../components/Live2DViewer', () => ({
-  default: props => {
-    viewerSpy(props);
-    return <div data-testid="live2d-viewer" />;
-  },
-}));
+const loaded = vi.hoisted(() => ({ main: false, voice: false }));
 
-vi.mock('../hooks/useUnaCore', () => ({ useUnaCore: vi.fn() }));
-vi.mock('../hooks/useAudioRecorder', () => ({
-  useAudioRecorder: () => ({ isRecording: false, startRecording: vi.fn(), stopRecording: vi.fn() }),
-}));
-vi.mock('../hooks/useVision', () => ({ useVision: () => ({ pickImage: vi.fn() }) }));
 vi.mock('../auth/session', () => ({
-  authFetch: vi.fn(),
   authenticate: vi.fn(),
-  clearSession: vi.fn(),
-  getSession: () => ({ access_token: 'access-token', user: { id: 'u1', username: 'tester' } }),
-  refreshSession: vi.fn(() => Promise.resolve(null)),
+  getSession: () => ({ access_token: 'access', user: { id: 'u1' } }),
+  refreshSession: vi.fn(async () => null),
 }));
+vi.mock('../pages/MainUnaPage.jsx', () => {
+  loaded.main = true;
+  return { default: () => <div>主应用</div> };
+});
+vi.mock('../pages/VoiceCallPage.jsx', () => {
+  loaded.voice = true;
+  return { default: () => <button>开始通话</button> };
+});
 
-function coreResult(motionEvent) {
-  return {
-    messages: [], setMessages: vi.fn(), sendMessage: vi.fn(), sendAudioData: vi.fn(), sendImage: vi.fn(),
-    lipValue: { openY: 0, form: 0, volume: 0 }, interrupt: vi.fn(), playAudio: vi.fn(),
-    connectionStatus: 'OPEN', replayChunks: vi.fn(), sendStopSignal: vi.fn(), motionEvent,
-  };
-}
+beforeEach(() => {
+  loaded.main = false;
+  loaded.voice = false;
+});
 
-describe('App 的 Live2D 动作兼容桥接', () => {
-  beforeEach(() => {
-    viewerSpy.mockClear();
-  });
-
-  it.each([
-    { type: 'live2d_action_v2', action_id: 'legacy-v2', intent: 'thinking' },
-    { action: '惊讶', params: { direction: '头左偏' } },
-  ])('在 Task 9 前继续将旧动作事件传给 actionOverride', motionEvent => {
-    useUnaCore.mockReturnValue(coreResult(motionEvent));
-
-    render(<App />);
-
-    const live2dProps = viewerSpy.mock.calls.at(-1)[0];
-    expect(live2dProps.motionEvent).toBe(motionEvent);
-    expect(live2dProps.actionOverride).toBe(motionEvent);
-  });
+it('voice 查询参数只渲染语音页', async () => {
+  window.history.replaceState({}, '', '/?view=voice');
+  render(<App />);
+  expect(await screen.findByRole('button', { name: '开始通话' })).toBeTruthy();
+  expect(loaded.voice).toBe(true);
+  expect(loaded.main).toBe(false);
 });

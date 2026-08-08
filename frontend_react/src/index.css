@@ -42,3 +42,32 @@ body {
 .custom-scrollbar::-webkit-scrollbar-thumb:hover { 
     background: rgba(139, 94, 60, 0.5); 
 }
+
+.app-loading, .voice-call-page {
+    min-height: 100dvh;
+    background: #171311;
+    color: #f8f3ef;
+}
+.app-loading { display: grid; place-items: center; }
+.voice-call-page {
+    box-sizing: border-box;
+    display: grid;
+    place-items: center;
+    padding: max(20px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(20px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
+}
+.voice-call-back { position: fixed; top: max(20px, env(safe-area-inset-top)); left: max(20px, env(safe-area-inset-left)); color: #cbbdb4; text-decoration: none; }
+.voice-call-card { width: min(520px, 100%); min-height: 70dvh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 24px; text-align: center; }
+.voice-call-orb { width: 152px; height: 152px; border-radius: 50%; display: grid; place-items: center; font: 500 28px/1 serif; letter-spacing: .08em; color: #5f4a3f; background: #eadfd7; box-shadow: 0 0 0 16px rgba(234,223,215,.08); }
+.voice-call-orb--speaking { animation: voice-call-pulse 1.8s ease-in-out infinite; }
+.voice-call-status { margin: 0; color: #ded2ca; font-size: 18px; }
+.voice-call-error { color: #ffc9c9; margin: 0; }
+.voice-call-transcript { width: 100%; min-height: 132px; display: grid; gap: 12px; align-content: start; }
+.voice-call-transcript p { margin: 0; padding: 14px 18px; border-radius: 16px; background: rgba(255,255,255,.07); text-align: left; line-height: 1.55; }
+.voice-call-transcript span { display: block; margin-bottom: 4px; color: #bda99c; font-size: 12px; }
+.voice-call-actions { display: flex; align-items: center; justify-content: center; gap: 18px; min-height: 64px; }
+.voice-call-actions button { min-width: 48px; min-height: 48px; border: 0; cursor: pointer; }
+.voice-call-primary { padding: 0 28px; border-radius: 999px; background: #eadfd7; color: #3f3029; font-weight: 700; }
+.voice-call-round { width: 56px; height: 56px; border-radius: 50%; display: grid; place-items: center; color: #f8f3ef; background: #403633; }
+.voice-call-round--danger { background: #a64040; }
+@keyframes voice-call-pulse { 50% { transform: scale(1.04); box-shadow: 0 0 0 28px rgba(234,223,215,.04); } }
+@media (prefers-reduced-motion: reduce) { .voice-call-orb--speaking { animation: none; } }
