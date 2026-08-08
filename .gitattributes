@@ -1,0 +1,2 @@
+frontend_react/dist/** -whitespace
+backend/static/mobile/** -whitespace

@@ -1,5 +1,31 @@
 # UNA - AI 虚拟治愈伴侣 (Virtual Healing Companion)
 
+## 本地实时语音通话
+
+实时语音通话是独立于 Live2D 的轻量页面，共享现有账号、对话历史、用户画像和长期记忆。建议依次打开三个 PowerShell 窗口：
+
+```powershell
+cd 'D:\ai\GPT文件\GPT-SoVITS\GPT-SoVITS'
+& '.\gptsovits_env\Scripts\python.exe' api_v2.py
+```
+
+```powershell
+cd 'D:\ai\Una'
+& 'D:\ai\python 3.11\python.exe' backend/main_server.py
+```
+
+开发模式再启动前端：
+
+```powershell
+cd 'D:\ai\Una\frontend_react'
+& 'D:\ai\Node\npm.cmd' run dev
+```
+
+- 开发入口：`http://127.0.0.1:5173/?view=voice`
+- FastAPI 发布入口：`http://127.0.0.1:8000/?view=voice`
+- 启动 GPT-SoVITS 后应确认日志显示 CUDA 可用，并确保 `config.yaml` 的 `output_sample_rate` 与实际模型输出一致。
+- 语音页不会加载 PixiJS、Live2D 模型、动作系统或 Rhubarb；返回普通 UNA 页面后才按需加载 Live2D 运行库。
+
 <div align="center">
   <img src="https://via.placeholder.com/150/5dade2/FFFFFF?text=UNA+AI" alt="Una Logo" width="120">
   <br>
