@@ -134,6 +134,25 @@ class VoiceCallSession:
     def is_current(self, turn_id: int) -> bool:
         return self._current is not None and self._current.turn_id == turn_id
 
+    def cancel_event_for(self, turn_id: int) -> asyncio.Event:
+        current = self._current
+        if current is None or current.turn_id != turn_id:
+            raise ProtocolError("轮次已失效")
+        return current.cancel_event
+
+    async def wait_until_idle(self) -> None:
+        """Wait until the current/retiring turn tasks have reached terminal state."""
+        caller = asyncio.current_task()
+        while True:
+            tasks = tuple(
+                task
+                for task in self._tasks | self._retiring_tasks
+                if task is not caller and not task.done()
+            )
+            if not tasks:
+                return
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     async def close(self) -> None:
         caller = asyncio.current_task()
         async with self._lifecycle_lock:

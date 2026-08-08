@@ -104,6 +104,7 @@ class VoiceCallMemory:
         ai_text: str,
         emotion: str,
         mood_score: int,
+        task_tracker: TaskTracker | None = None,
     ) -> None:
         if not ai_text.strip():
             return
@@ -124,7 +125,8 @@ class VoiceCallMemory:
                     ai_text,
                     emotion,
                 )
-            )
+            ),
+            task_tracker=task_tracker,
         )
 
     def _append(
@@ -145,12 +147,18 @@ class VoiceCallMemory:
             long_term_memory=snapshot.long_term_memory,
         )
 
-    def _track_background_task(self, task: asyncio.Task[None]) -> None:
+    def _track_background_task(
+        self,
+        task: asyncio.Task[None],
+        *,
+        task_tracker: TaskTracker | None = None,
+    ) -> None:
         self._background_tasks.add(task)
         task.add_done_callback(self._consume_task_exception)
         task.add_done_callback(self._background_tasks.discard)
-        if self._task_tracker is not None:
-            self._task_tracker(task)
+        tracker = task_tracker or self._task_tracker
+        if tracker is not None:
+            tracker(task)
 
     @staticmethod
     def _consume_task_exception(task: asyncio.Task[Any]) -> None:
