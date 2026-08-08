@@ -594,3 +594,41 @@ def test_websocket_normalizes_and_forwards_live2d_model(
     assert process_calls == [
         ("测试模型传递", "user-1", expected_model),
     ]
+
+
+def test_chat_websocket_stops_after_disconnect_message(main_server, monkeypatch, tmp_path):
+    async def scenario():
+        class WebSocketManager:
+            async def connect(self, websocket, user_id):
+                await websocket.accept()
+
+            def disconnect(self, websocket, user_id):
+                pass
+
+        class DisconnectingWebSocket:
+            def __init__(self):
+                self.receive_count = 0
+
+            async def accept(self):
+                pass
+
+            async def receive(self):
+                self.receive_count += 1
+                if self.receive_count > 1:
+                    raise AssertionError("disconnect 后不应再次调用 receive")
+                return {"type": "websocket.disconnect", "code": 1000}
+
+        websocket = DisconnectingWebSocket()
+        monkeypatch.setattr(main_server, "CURRENT_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            main_server.auth_service,
+            "consume_ws_ticket",
+            lambda ticket: "user-1",
+            raising=False,
+        )
+        monkeypatch.setattr(main_server, "ws_manager", WebSocketManager())
+
+        await main_server.websocket_endpoint(websocket, ticket="valid-ticket")
+        assert websocket.receive_count == 1
+
+    run_scenario(scenario())

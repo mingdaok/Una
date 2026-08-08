@@ -43,6 +43,10 @@ export function useVoiceCall(authenticated) {
     if (controllerRef.current) await controllerRef.current.toggleMute();
   }, []);
 
+  const reloadCall = useCallback(() => {
+    window.location.reload();
+  }, []);
+
   useEffect(() => () => {
     unsubscribeRef.current?.();
     void controllerRef.current?.end();
@@ -58,5 +62,6 @@ export function useVoiceCall(authenticated) {
     endCall,
     continueCall,
     toggleMute,
+    reloadCall,
   };
 }

@@ -37,6 +37,8 @@ export function createVoiceCallController(dependencies = {}) {
   let recording = false;
   let started = false;
   let ending = false;
+  let failed = false;
+  let failurePromise = null;
   let visibilityAttached = false;
   let cleanupPromise = null;
   let speechStartedAt = null;
@@ -151,7 +153,7 @@ export function createVoiceCallController(dependencies = {}) {
     onPcm: handleCapturedPcm,
     onSpeechEnd: handleSpeechEnd,
     onMisfire: handleMisfire,
-    onError: fail,
+    onError: error => { void abortAfterFailure(error); },
   }, dependencies.captureDependencies);
 
   async function handleControl(event) {
@@ -231,7 +233,7 @@ export function createVoiceCallController(dependencies = {}) {
   }
 
   async function handleVisibilityChange() {
-    if (!documentImpl || documentImpl.visibilityState !== 'hidden' || ending) return;
+    if (!documentImpl || documentImpl.visibilityState !== 'hidden' || ending || failed) return;
     recording = false;
     cancelActiveTurn();
     await capture.pause();
@@ -240,13 +242,12 @@ export function createVoiceCallController(dependencies = {}) {
 
   const socket = dependencies.socket || (dependencies.createSocket || createVoiceCallSocket)({
     ...dependencies.socketDependencies,
-    onControl: event => handleControl(event).catch(fail),
+    onControl: event => handleControl(event).catch(abortAfterFailure),
     onPcm: handleOutputPcm,
     onError: fail,
     onClose: () => {
       if (!ending && value.state !== 'ended') {
-        fail(new Error('语音连接已断开'));
-        void cleanupLocalResources();
+        void abortAfterFailure(new Error('语音连接已断开'));
       }
     },
   });
@@ -265,8 +266,20 @@ export function createVoiceCallController(dependencies = {}) {
     return cleanupPromise;
   }
 
+  function abortAfterFailure(error) {
+    fail(error);
+    if (!failurePromise) {
+      failed = true;
+      recording = false;
+      detachVisibilityListener();
+      failurePromise = cleanupLocalResources().finally(() => socket.disconnect());
+    }
+    return failurePromise;
+  }
+
   async function start() {
     if (ending) throw new Error('通话已经结束');
+    if (failed) throw new Error('语音模块初始化失败，请重新加载通话');
     if (started) {
       if (value.state === 'interrupted' && !value.muted && documentImpl?.visibilityState !== 'hidden') {
         await capture.start();

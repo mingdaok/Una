@@ -560,6 +560,8 @@ async def websocket_endpoint(websocket: WebSocket, ticket: str):
             try:
                 # 设置接收超时，30秒没消息就发送心跳
                 msg = await asyncio.wait_for(websocket.receive(), timeout=30)
+                if msg.get("type") == "websocket.disconnect":
+                    raise WebSocketDisconnect(msg.get("code", 1000))
                 last_heartbeat = time.time()  # 收到消息，更新心跳时间
                 
                 if "bytes" in msg: 

@@ -37,6 +37,9 @@ export default function VoiceCallPage({ authenticated }) {
           {call.status === 'interrupted' && !call.muted && (
             <button className="voice-call-primary" onClick={call.continueCall}>继续通话</button>
           )}
+          {call.status === 'error' && (
+            <button className="voice-call-primary" onClick={call.reloadCall}>重新加载通话</button>
+          )}
           {active && (
             <button className="voice-call-round" onClick={call.toggleMute} aria-label={call.muted ? '取消静音' : '静音麦克风'}>
               {call.muted ? <MicOff /> : <Mic />}

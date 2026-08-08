@@ -1,11 +1,13 @@
-import { fireEvent, render, screen } from '@testing-library/react';
-import { expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, expect, it, vi } from 'vitest';
 
 import VoiceCallPage from '../VoiceCallPage';
 import { useVoiceCall } from '../../voice-call/useVoiceCall';
 
 
 vi.mock('../../voice-call/useVoiceCall', () => ({ useVoiceCall: vi.fn() }));
+
+afterEach(cleanup);
 
 it('展示通话状态、双方转写并允许结束', async () => {
   const endCall = vi.fn();
@@ -34,4 +36,17 @@ it('暂停后只在用户点击时继续', async () => {
   render(<VoiceCallPage authenticated />);
   fireEvent.click(screen.getByRole('button', { name: '继续通话' }));
   expect(continueCall).toHaveBeenCalledTimes(1);
+});
+
+it('VAD 致命错误只允许重新加载，不显示普通继续按钮', () => {
+  const reloadCall = vi.fn();
+  useVoiceCall.mockReturnValue({
+    status: 'error', userTranscript: '', assistantText: '', error: 'initWasm failed', muted: false,
+    startCall: vi.fn(), endCall: vi.fn(), continueCall: vi.fn(), toggleMute: vi.fn(), reloadCall,
+  });
+  render(<VoiceCallPage authenticated />);
+
+  expect(screen.queryByRole('button', { name: '继续通话' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: '重新加载通话' }));
+  expect(reloadCall).toHaveBeenCalledTimes(1);
 });

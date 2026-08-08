@@ -6,6 +6,7 @@ import { float32ToPcm16 } from './pcm.js';
 const TARGET_SAMPLE_RATE = 16000;
 const PRE_ROLL_SAMPLES = Math.round(TARGET_SAMPLE_RATE * 0.12);
 const MAX_UTTERANCE_SAMPLES = TARGET_SAMPLE_RATE * 30;
+const VAD_RUNTIME_VERSION = 'ort-1.22.0-una-2';
 
 const noop = () => {};
 
@@ -36,6 +37,8 @@ export function createVoiceCapture(callbacks = {}, dependencies = {}) {
   const baseUrl = normalizeBaseUrl(dependencies.baseUrl || import.meta.env.BASE_URL);
   const assetBase = `${baseUrl}vad/`;
   const workletUrl = `${baseUrl}voice/pcm-capture.worklet.js`;
+  const runtimeModuleUrl = `${assetBase}ort-wasm-simd-threaded.mjs?v=${VAD_RUNTIME_VERSION}`;
+  const runtimeWasmUrl = `${assetBase}ort-wasm-simd-threaded.wasm?v=${VAD_RUNTIME_VERSION}`;
 
   let mediaStream = null;
   let audioContext = null;
@@ -159,6 +162,15 @@ export function createVoiceCapture(callbacks = {}, dependencies = {}) {
       preSpeechPadMs: 120,
       baseAssetPath: assetBase,
       onnxWASMBasePath: assetBase,
+      ortConfig: ort => {
+        ort.env.logLevel = 'error';
+        ort.env.wasm.numThreads = 1;
+        ort.env.wasm.proxy = false;
+        ort.env.wasm.wasmPaths = {
+          mjs: runtimeModuleUrl,
+          wasm: runtimeWasmUrl,
+        };
+      },
       audioContext,
       startOnLoad: false,
       getStream: async () => mediaStream,

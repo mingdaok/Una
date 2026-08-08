@@ -117,6 +117,19 @@ describe('voice capture', () => {
       startOnLoad: false,
       preSpeechPadMs: 120,
     });
+    const ort = { env: { logLevel: 'warning', wasm: {} } };
+    fixture.getVadOptions().ortConfig(ort);
+    expect(ort.env).toMatchObject({
+      logLevel: 'error',
+      wasm: {
+        numThreads: 1,
+        proxy: false,
+        wasmPaths: {
+          mjs: expect.stringMatching(/^\/local-app\/vad\/ort-wasm-simd-threaded\.mjs\?v=/),
+          wasm: expect.stringMatching(/^\/local-app\/vad\/ort-wasm-simd-threaded\.wasm\?v=/),
+        },
+      },
+    });
     expect(fixture.getVadOptions().baseAssetPath).not.toContain('http');
     await fixture.capture.destroy();
   });

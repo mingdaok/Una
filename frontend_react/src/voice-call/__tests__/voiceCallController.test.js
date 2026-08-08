@@ -103,6 +103,25 @@ describe('voice call controller', () => {
     });
   });
 
+  it('VAD 初始化失败后进入不可恢复错误并完整断开本次通话', async () => {
+    const failure = new Error("previous call to 'initWasm()' failed");
+    const fixture = makeFixture();
+    fixture.capture.start.mockRejectedValueOnce(failure);
+
+    await fixture.controller.start();
+    await fixture.socket.control({ type: 'call_ready', session_id: 's1' });
+
+    expect(fixture.controller.snapshot()).toMatchObject({
+      state: 'error',
+      error: failure.message,
+    });
+    expect(fixture.capture.destroy).toHaveBeenCalledTimes(1);
+    expect(fixture.player.destroy).toHaveBeenCalledTimes(1);
+    expect(fixture.socket.disconnect).toHaveBeenCalledTimes(1);
+    expect(fixture.documentImpl.removeEventListener).toHaveBeenCalledTimes(1);
+    await expect(fixture.controller.start()).rejects.toThrow('请重新加载通话');
+  });
+
   it('speaking 时检测到用户语音会先停播，再 interrupt，再开始新 turn', async () => {
     const fixture = makeFixture();
     await ready(fixture);
