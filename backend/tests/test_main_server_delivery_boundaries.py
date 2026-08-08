@@ -147,9 +147,20 @@ def test_voice_call_worklet_and_vad_assets_are_mounted_at_frontend_urls(main_ser
     assert os.path.isfile(os.path.join(main_server.VAD_DIR, "vad.worklet.bundle.min.js"))
 
     client = TestClient(main_server.app)
-    assert client.get("/voice/pcm-capture.worklet.js").status_code == 200
-    assert client.get("/vad/silero_vad_v5.onnx").status_code == 200
-    assert client.get("/vad/vad.worklet.bundle.min.js").status_code == 200
+    worklet = client.get("/voice/pcm-capture.worklet.js")
+    vad_model = client.get("/vad/silero_vad_v5.onnx")
+    vad_worklet = client.get("/vad/vad.worklet.bundle.min.js")
+    ort_module = client.get("/vad/ort-wasm-simd-threaded.mjs")
+    ort_wasm = client.get("/vad/ort-wasm-simd-threaded.wasm")
+
+    assert worklet.status_code == 200
+    assert vad_model.status_code == 200
+    assert vad_worklet.status_code == 200
+    assert ort_module.status_code == 200
+    assert ort_wasm.status_code == 200
+    assert ort_module.headers["content-type"].startswith("text/javascript")
+    assert vad_model.headers["content-type"] == "application/octet-stream"
+    assert ort_wasm.headers["content-type"] == "application/wasm"
 
 
 def test_send_ai_reply_chunk_forwards_trace_and_returns_true(main_server, monkeypatch):

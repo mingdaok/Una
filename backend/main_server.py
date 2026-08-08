@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+import mimetypes
 import sys
 import yaml
 import uuid
@@ -19,6 +20,10 @@ from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+# Windows 将 .mjs/.onnx 默认识别为 text/plain，浏览器会拒绝动态导入模块。
+mimetypes.add_type("text/javascript", ".mjs")
+mimetypes.add_type("application/octet-stream", ".onnx")
 
 # === 下载必要的 NLTK 数据 (已禁用) ===
 # try:
