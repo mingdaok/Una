@@ -451,6 +451,61 @@ async def test_concurrent_close_waits_for_the_same_finalizer_completion():
 
 
 @pytest.mark.asyncio
+async def test_second_close_waits_when_regular_task_finishes_before_blocked_finalizer():
+    session = VoiceCallSession(user_id="u1", session_id="s1", sender=RecordingSender())
+    await session.start_turn(1)
+    regular_finished = asyncio.Event()
+    release_finalizer = asyncio.Event()
+
+    async def regular_work():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            regular_finished.set()
+
+    async def finalize_memory():
+        await release_finalizer.wait()
+
+    session.track(asyncio.create_task(regular_work()))
+    finalizer = asyncio.create_task(finalize_memory())
+    session.track_finalizer(finalizer)
+    first_close = asyncio.create_task(session.close())
+    await regular_finished.wait()
+    second_close = asyncio.create_task(session.close())
+    await asyncio.sleep(0)
+
+    assert first_close.done() is False
+    assert second_close.done() is False
+    release_finalizer.set()
+    await first_close
+    await second_close
+
+
+@pytest.mark.asyncio
+async def test_external_close_waits_after_a_finalizer_reenters_close_and_keeps_running():
+    session = VoiceCallSession(user_id="u1", session_id="s1", sender=RecordingSender())
+    await session.start_turn(1)
+    continued_after_close = asyncio.Event()
+    release_finalizer = asyncio.Event()
+
+    async def reentering_finalizer():
+        await session.close()
+        continued_after_close.set()
+        await release_finalizer.wait()
+
+    finalizer = asyncio.create_task(reentering_finalizer())
+    session.track_finalizer(finalizer)
+    await continued_after_close.wait()
+    external_close = asyncio.create_task(session.close())
+    await asyncio.sleep(0)
+
+    assert external_close.done() is False
+    release_finalizer.set()
+    await external_close
+    assert finalizer.done()
+
+
+@pytest.mark.asyncio
 async def test_cancelling_a_missing_old_turn_leaves_the_current_turn_running():
     session = VoiceCallSession(user_id="u1", session_id="s1", sender=RecordingSender())
     current = await session.start_turn(2)

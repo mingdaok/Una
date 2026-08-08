@@ -5,6 +5,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
+import voice_call_memory
 from voice_call_memory import CallMemorySnapshot, VoiceCallMemory
 from voice_call_session import VoiceCallSession
 
@@ -69,6 +70,22 @@ class WaitingMemoryService:
     def remember(self, user_id, user_text, ai_text, emotion):
         self.started.set()
         self.release.wait()
+
+
+class LateFailingRecallMemoryService:
+    def __init__(self):
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.failed = threading.Event()
+
+    def recall(self, user_id, query):
+        self.started.set()
+        self.release.wait()
+        self.failed.set()
+        raise RuntimeError("late vector failure")
+
+    def remember(self, user_id, user_text, ai_text, emotion):
+        return None
 
 
 class RecordingSender:
@@ -201,6 +218,7 @@ async def test_background_remember_exception_is_consumed_by_its_done_callback():
     loop = asyncio.get_running_loop()
     unhandled = []
     original_handler = loop.get_exception_handler()
+    consumed = []
     loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
 
     try:
@@ -229,3 +247,85 @@ async def test_memory_task_tracker_uses_session_finalizer_across_turn_changes():
     assert closing.done() is False
     memory.release.set()
     await closing
+
+
+@pytest.mark.asyncio
+async def test_cancelling_load_during_sleep_window_consumes_late_recall_failure(monkeypatch):
+    memory = LateFailingRecallMemoryService()
+    service = VoiceCallMemory(FakeDatabase(), memory)
+    original_sleep = asyncio.sleep
+    sleep_entered = asyncio.Event()
+    hold_sleep = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    unhandled = []
+    original_handler = loop.get_exception_handler()
+    consumed = []
+
+    async def block_yield(delay, result=None):
+        if delay == 0:
+            sleep_entered.set()
+            await hold_sleep.wait()
+            return result
+        return await original_sleep(delay, result)
+
+    monkeypatch.setattr(voice_call_memory.asyncio, "sleep", block_yield)
+    monkeypatch.setattr(
+        service,
+        "_consume_task_exception",
+        lambda recall_task: (
+            consumed.append(recall_task),
+            VoiceCallMemory._consume_task_exception(recall_task),
+        ),
+    )
+    loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
+    task = asyncio.create_task(service.load("u1"))
+
+    try:
+        await sleep_entered.wait()
+        assert await asyncio.to_thread(memory.started.wait, 0.2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        memory.release.set()
+        assert await asyncio.to_thread(memory.failed.wait, 0.2)
+        await original_sleep(0)
+    finally:
+        hold_sleep.set()
+        loop.set_exception_handler(original_handler)
+
+    assert len(consumed) == 1
+    assert unhandled == []
+
+
+@pytest.mark.asyncio
+async def test_cancelling_load_while_waiting_consumes_late_recall_failure(monkeypatch):
+    memory = LateFailingRecallMemoryService()
+    service = VoiceCallMemory(FakeDatabase(), memory)
+    loop = asyncio.get_running_loop()
+    unhandled = []
+    original_handler = loop.get_exception_handler()
+    consumed = []
+    monkeypatch.setattr(
+        service,
+        "_consume_task_exception",
+        lambda recall_task: (
+            consumed.append(recall_task),
+            VoiceCallMemory._consume_task_exception(recall_task),
+        ),
+    )
+    loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
+    task = asyncio.create_task(service.load("u1"))
+
+    try:
+        assert await asyncio.to_thread(memory.started.wait, 0.2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        memory.release.set()
+        assert await asyncio.to_thread(memory.failed.wait, 0.2)
+        await asyncio.sleep(0)
+    finally:
+        loop.set_exception_handler(original_handler)
+
+    assert len(consumed) == 1
+    assert unhandled == []

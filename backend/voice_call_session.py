@@ -204,7 +204,12 @@ class VoiceCallSession:
         return tuple(task for task in self._tasks | self._retiring_tasks if task is not caller)
 
     def _complete_close_if_quiescent(self) -> None:
-        if self._closed and not self._retiring_tasks and self._close_complete is not None:
+        if (
+            self._closed
+            and not self._retiring_tasks
+            and not self._finalizers
+            and self._close_complete is not None
+        ):
             self._close_complete.set()
 
     @staticmethod

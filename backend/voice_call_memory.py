@@ -59,17 +59,21 @@ class VoiceCallMemory:
         recall_task = asyncio.create_task(
             asyncio.to_thread(self.memory_service.recall, user_id, query)
         )
-        await asyncio.sleep(0)
         try:
-            long_term_memory = await asyncio.wait_for(
-                asyncio.shield(recall_task),
-                timeout=self.recall_timeout_ms / 1000,
-            )
-        except asyncio.TimeoutError:
-            long_term_memory = ""
+            await asyncio.sleep(0)
+            try:
+                long_term_memory = await asyncio.wait_for(
+                    asyncio.shield(recall_task),
+                    timeout=self.recall_timeout_ms / 1000,
+                )
+            except asyncio.TimeoutError:
+                long_term_memory = ""
+                recall_task.add_done_callback(self._consume_task_exception)
+            except Exception:
+                long_term_memory = ""
+        except asyncio.CancelledError:
             recall_task.add_done_callback(self._consume_task_exception)
-        except Exception:
-            long_term_memory = ""
+            raise
         return CallMemorySnapshot(
             user_id=user_id,
             profile=profile or "",
