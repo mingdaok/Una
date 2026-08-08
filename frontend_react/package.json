@@ -3,13 +3,18 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
+    "sync:vad": "node scripts/sync-vad-assets.mjs",
+    "predev": "npm run sync:vad",
+    "prebuild": "npm run sync:vad",
     "dev": "vite",
     "build": "vite build"
   },
   "dependencies": {
+    "@ricky0123/vad-web": "0.0.30",
     "clsx": "^2.1.0",
     "framer-motion": "^11.0.0",
     "lucide-react": "^0.330.0",
+    "onnxruntime-web": "1.22.0",
     "pixi-live2d-display": "^0.4.0",
     "pixi.js": "^7.3.3",
     "react": "^18.2.0",
