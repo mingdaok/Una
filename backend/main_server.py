@@ -155,6 +155,8 @@ if not os.path.exists(AUDIO_DIR): os.makedirs(AUDIO_DIR)
 MOBILE_DIR = os.path.join(STATIC_DIR, "mobile")
 ASSETS_DIR = os.path.join(MOBILE_DIR, "assets")
 LIBS_DIR   = os.path.join(MOBILE_DIR, "libs")
+VOICE_DIR  = os.path.join(MOBILE_DIR, "voice")
+VAD_DIR    = os.path.join(MOBILE_DIR, "vad")
 
 if os.path.exists(ASSETS_DIR):
     app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
@@ -162,6 +164,12 @@ if os.path.exists(ASSETS_DIR):
 if os.path.exists(LIBS_DIR):
     app.mount("/libs", StaticFiles(directory=LIBS_DIR), name="libs")
     print("✅ [Static] /libs 目录已挂载")
+
+if os.path.exists(VOICE_DIR):
+    app.mount("/voice", StaticFiles(directory=VOICE_DIR), name="voice-call-static")
+
+if os.path.exists(VAD_DIR):
+    app.mount("/vad", StaticFiles(directory=VAD_DIR), name="voice-vad-static")
 
 if os.path.exists(MOBILE_DIR):
     app.mount("/static/mobile", StaticFiles(directory=MOBILE_DIR), name="mobile-static")

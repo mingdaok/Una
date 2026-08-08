@@ -1,12 +1,14 @@
 import asyncio
 import importlib
 import json
+import os
 import sys
 import types
 from types import SimpleNamespace
 
 import pytest
 from fastapi import APIRouter
+from fastapi.testclient import TestClient
 
 from speech_metrics import SpeechTrace
 
@@ -130,6 +132,24 @@ def test_voice_call_router_is_separate_and_lifespan_closes_runtime(main_server, 
         assert closed == [True]
 
     run_scenario(scenario())
+
+
+def test_voice_call_worklet_and_vad_assets_are_mounted_at_frontend_urls(main_server):
+    mounts = {
+        getattr(route, "path", None): route
+        for route in main_server.app.routes
+    }
+
+    assert "/voice" in mounts
+    assert "/vad" in mounts
+    assert os.path.isfile(os.path.join(main_server.VOICE_DIR, "pcm-capture.worklet.js"))
+    assert os.path.isfile(os.path.join(main_server.VAD_DIR, "silero_vad_v5.onnx"))
+    assert os.path.isfile(os.path.join(main_server.VAD_DIR, "vad.worklet.bundle.min.js"))
+
+    client = TestClient(main_server.app)
+    assert client.get("/voice/pcm-capture.worklet.js").status_code == 200
+    assert client.get("/vad/silero_vad_v5.onnx").status_code == 200
+    assert client.get("/vad/vad.worklet.bundle.min.js").status_code == 200
 
 
 def test_send_ai_reply_chunk_forwards_trace_and_returns_true(main_server, monkeypatch):
