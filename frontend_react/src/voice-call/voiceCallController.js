@@ -1,13 +1,13 @@
 import { createPcmStreamPlayer } from './pcmStreamPlayer.js';
 import { createVoiceCallSocket } from './voiceCallSocket.js';
 import { createVoiceCapture } from './voiceCapture.js';
+import { createVoiceCallMetricReporter } from './voiceCallMetrics.js';
 
 
 export function createVoiceCallController(dependencies = {}) {
   const documentImpl = dependencies.documentImpl || (typeof document === 'undefined' ? null : document);
-  const player = dependencies.player || (dependencies.createPlayer || createPcmStreamPlayer)(
-    dependencies.playerDependencies,
-  );
+  const now = dependencies.now || (() => performance.now());
+  const reportMetric = createVoiceCallMetricReporter(dependencies.reportMetric);
   const listeners = new Set();
   let value = Object.freeze({
     state: 'ended',
@@ -18,6 +18,20 @@ export function createVoiceCallController(dependencies = {}) {
     assistantText: '',
     error: null,
   });
+  const playerMetric = (name, detail = {}) => {
+    if (name !== 'pcm_playback_underflow') return;
+    reportMetric({
+      session_id: value?.sessionId,
+      turn_id: detail.turn_id,
+      sequence: detail.sequence,
+      stage: 'starvation',
+      status: 'underflow',
+      duration_ms: detail.gap_ms,
+    });
+  };
+  const player = dependencies.player || (dependencies.createPlayer || createPcmStreamPlayer)(
+    { ...dependencies.playerDependencies, reportMetric: playerMetric },
+  );
   let lastTurnId = 0;
   let inputSequence = 0;
   let recording = false;
@@ -25,6 +39,10 @@ export function createVoiceCallController(dependencies = {}) {
   let ending = false;
   let visibilityAttached = false;
   let cleanupPromise = null;
+  let speechStartedAt = null;
+  let speechByteCount = 0;
+  let responseStartedAt = null;
+  let firstAudioTurnId = null;
 
   function publish(patch) {
     value = Object.freeze({ ...value, ...patch });
@@ -48,7 +66,15 @@ export function createVoiceCallController(dependencies = {}) {
   function cancelActiveTurn() {
     const turnId = value.activeTurnId;
     if (!turnId || !value.sessionId) return;
-    player.interrupt(turnId);
+    const startedAt = now();
+    const result = player.interrupt(turnId);
+    reportMetric({
+      session_id: value.sessionId,
+      turn_id: turnId,
+      stage: 'barge_in_stop',
+      status: result?.accepted ? 'completed' : 'stale',
+      duration_ms: Math.max(0, now() - startedAt),
+    });
     socket.sendInterrupt(value.sessionId, turnId);
   }
 
@@ -60,6 +86,10 @@ export function createVoiceCallController(dependencies = {}) {
     lastTurnId += 1;
     inputSequence = 0;
     recording = true;
+    speechStartedAt = now();
+    speechByteCount = 0;
+    responseStartedAt = null;
+    firstAudioTurnId = null;
     socket.sendSpeechStart(value.sessionId, lastTurnId);
     publish({
       state: 'listening',
@@ -78,19 +108,40 @@ export function createVoiceCallController(dependencies = {}) {
       inputSequence,
       pcm,
     );
-    if (result.accepted) inputSequence += 1;
+    if (result.accepted) {
+      inputSequence += 1;
+      if (Number.isSafeInteger(pcm?.byteLength)) speechByteCount += pcm.byteLength;
+    }
   }
 
   function handleSpeechEnd() {
     if (!recording || !value.sessionId || value.activeTurnId === null) return;
     recording = false;
     socket.sendSpeechEnd(value.sessionId, value.activeTurnId);
+    const endedAt = now();
+    reportMetric({
+      session_id: value.sessionId,
+      turn_id: value.activeTurnId,
+      stage: 'vad_endpoint',
+      status: 'completed',
+      duration_ms: speechStartedAt === null ? 0 : Math.max(0, endedAt - speechStartedAt),
+      byte_count: speechByteCount,
+    });
+    responseStartedAt = endedAt;
     publish({ state: 'recognizing' });
   }
 
   function handleMisfire() {
     if (!recording) return;
     recording = false;
+    reportMetric({
+      session_id: value.sessionId,
+      turn_id: value.activeTurnId,
+      stage: 'vad_endpoint',
+      status: 'cancelled',
+      duration_ms: speechStartedAt === null ? 0 : Math.max(0, now() - speechStartedAt),
+      byte_count: speechByteCount,
+    });
     cancelActiveTurn();
     publish({ state: 'listening', activeTurnId: null });
   }
@@ -151,7 +202,32 @@ export function createVoiceCallController(dependencies = {}) {
 
   function handleOutputPcm(header, pcm) {
     if (!acceptsTurn(header)) return;
-    player.enqueue(header.turn_id, header.sequence, pcm);
+    const result = player.enqueue(header.turn_id, header.sequence, pcm);
+    if (!result?.accepted) return;
+    if (firstAudioTurnId !== header.turn_id) {
+      firstAudioTurnId = header.turn_id;
+      reportMetric({
+        session_id: value.sessionId,
+        turn_id: header.turn_id,
+        sequence: header.sequence,
+        stage: 'first_audio',
+        status: 'accepted',
+        duration_ms: responseStartedAt === null ? 0 : Math.max(0, now() - responseStartedAt),
+        byte_count: pcm?.byteLength,
+      });
+    }
+    const playerState = typeof player.snapshot === 'function' ? player.snapshot() : null;
+    if (Number.isSafeInteger(playerState?.bufferedMs) && playerState.bufferedMs >= 0) {
+      reportMetric({
+        session_id: value.sessionId,
+        turn_id: header.turn_id,
+        sequence: header.sequence,
+        stage: 'buffer_depth',
+        status: 'accepted',
+        duration_ms: playerState.bufferedMs,
+        byte_count: pcm?.byteLength,
+      });
+    }
   }
 
   async function handleVisibilityChange() {

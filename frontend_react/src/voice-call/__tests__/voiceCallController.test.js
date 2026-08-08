@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createVoiceCallController } from '../voiceCallController.js';
 
 
-function makeFixture() {
+function makeFixture(options = {}) {
   const order = [];
   let socketCallbacks;
   let captureCallbacks;
@@ -72,6 +72,7 @@ function makeFixture() {
       socketCallbacks = callbacks;
       return socket;
     },
+    ...options,
   });
   socket.control = event => socketCallbacks.onControl(event);
   socket.pcm = (header, pcm) => socketCallbacks.onPcm(header, pcm);
@@ -240,5 +241,39 @@ describe('voice call controller', () => {
     expect(fixture.controller.snapshot()).toMatchObject({
       state: 'ended', sessionId: null, activeTurnId: null,
     });
+  });
+
+  it('记录 VAD、首包和插话指标，指标 sink 失败不影响通话', async () => {
+    const metrics = [];
+    let currentTime = 100;
+    const fixture = makeFixture({
+      now: () => { currentTime += 5; return currentTime; },
+      reportMetric: metric => {
+        metrics.push(metric);
+        if (metric.stage === 'barge_in_stop') throw new Error('metric sink failed');
+      },
+    });
+    await ready(fixture);
+    fixture.capture.speechStart();
+    fixture.capture.pcm(new ArrayBuffer(640));
+    fixture.capture.speechEnd();
+    await fixture.socket.control({
+      type: 'tts_start', session_id: 's1', turn_id: 1,
+      sample_rate: 32000, channels: 1, sample_width: 2,
+    });
+    fixture.socket.pcm(
+      { session_id: 's1', turn_id: 1, sequence: 0 },
+      new ArrayBuffer(640),
+    );
+
+    expect(() => fixture.capture.speechStart()).not.toThrow();
+    expect(metrics.map(metric => metric.stage)).toEqual(expect.arrayContaining([
+      'vad_endpoint', 'first_audio', 'barge_in_stop',
+    ]));
+    expect(metrics.find(metric => metric.stage === 'vad_endpoint')).toMatchObject({
+      session_id: 's1', turn_id: 1, byte_count: 640,
+    });
+    expect(fixture.socket.sendInterrupt).toHaveBeenCalledWith('s1', 1);
+    expect(fixture.socket.sendSpeechStart).toHaveBeenCalledWith('s1', 2);
   });
 });

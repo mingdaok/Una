@@ -138,12 +138,13 @@ class FakeTts:
         self.closed = True
 
 
-def make_service(*, asr=None, brain=None, memory=None, tts=None):
+def make_service(*, asr=None, brain=None, memory=None, tts=None, **options):
     return VoiceCallService(
         asr or FakeAsr(),
         brain or FakeBrain(),
         memory or FakeMemory(),
         tts or FakeTts(),
+        **options,
     )
 
 
@@ -304,3 +305,22 @@ async def test_sessions_use_unique_server_generated_ids_and_close_resources():
     await service.close()
     assert service.tts.closed is True
     assert service._sessions == {}
+
+
+@pytest.mark.asyncio
+async def test_turn_reports_only_structural_latency_metrics():
+    metrics = []
+    service = make_service(metric_logger=metrics.append)
+    session = await service.open_session("u1", RecordingSender())
+
+    await complete_input(service, session)
+    await session.wait_until_idle()
+
+    stages = {metric["stage"] for metric in metrics}
+    assert {
+        "memory_snapshot", "pcm_received", "asr", "llm_first_text",
+        "tts_first_byte", "ws_delivery",
+    }.issubset(stages)
+    assert all(metric["session_id"] == session.session_id for metric in metrics)
+    assert all("text" not in metric and "pcm" not in metric and "ticket" not in metric for metric in metrics)
+    assert all(metric["duration_ms"] >= 0 for metric in metrics)

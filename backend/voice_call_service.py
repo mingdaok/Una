@@ -18,6 +18,7 @@ from voice_call_protocol import (
 from voice_call_session import VoiceCallSession
 from voice_call_tts import GptSovitsUnavailable, PcmStreamFormatError
 from voice_call_units import SpeechUnit, VoiceSpeechUnitPlanner
+from voice_call_metrics import log_voice_metric
 
 
 @dataclass
@@ -32,6 +33,9 @@ class _ConnectionState:
 @dataclass
 class _TurnRuntime:
     tts_started: bool = False
+    started_at: float = 0.0
+    llm_first_text_reported: bool = False
+    tts_first_byte_reported: bool = False
 
 
 class _PipelineFailure(RuntimeError):
@@ -42,17 +46,34 @@ class _PipelineFailure(RuntimeError):
 
 
 class VoiceCallService:
-    def __init__(self, asr: Any, brain: Any, memory: Any, tts: Any) -> None:
+    def __init__(
+        self,
+        asr: Any,
+        brain: Any,
+        memory: Any,
+        tts: Any,
+        *,
+        metric_logger: Any = log_voice_metric,
+        clock: Any = time.perf_counter,
+    ) -> None:
         self.asr = asr
         self.brain = brain
         self.memory = memory
         self.tts = tts
+        self._metric_logger = metric_logger
+        self._clock = clock
         self._states: dict[str, _ConnectionState] = {}
         self._sessions: dict[str, VoiceCallSession] = {}
 
     async def open_session(self, user_id: str, sender: Any) -> VoiceCallSession:
         session_id = uuid.uuid4().hex
-        snapshot = await self.memory.load(user_id)
+        started_at = self._clock()
+        try:
+            snapshot = await self.memory.load(user_id)
+        except BaseException:
+            self._metric(session_id, None, "memory_snapshot", "error", started_at)
+            raise
+        self._metric(session_id, None, "memory_snapshot", "completed", started_at)
         session = VoiceCallSession(user_id, session_id, sender)
         self._sessions[session_id] = session
         self._states[session_id] = _ConnectionState(snapshot=snapshot)
@@ -88,6 +109,7 @@ class VoiceCallService:
         header: BinaryFrameHeader,
         pcm: bytes,
     ) -> None:
+        started_at = self._clock()
         state = self._state(session)
         if header.session_id != session.session_id:
             raise ProtocolError("session_id 不匹配")
@@ -105,6 +127,15 @@ class VoiceCallService:
             raise ProtocolError(f"输入 PCM 不能超过 {MAX_INPUT_BYTES} 字节")
         state.input_pcm.extend(pcm)
         state.next_input_sequence += 1
+        self._metric(
+            session.session_id,
+            header.turn_id,
+            "pcm_received",
+            "accepted",
+            started_at,
+            sequence=header.sequence,
+            byte_count=len(pcm),
+        )
 
     async def handle_speech_end(self, session: VoiceCallSession, turn_id: int) -> None:
         state = self._state(session)
@@ -119,7 +150,15 @@ class VoiceCallService:
         session.track(task)
 
     async def interrupt(self, session: VoiceCallSession, turn_id: int) -> None:
+        started_at = self._clock()
         cancelled = await session.cancel_turn(turn_id, "barge_in")
+        self._metric(
+            session.session_id,
+            turn_id,
+            "cancel",
+            "cancelled" if cancelled else "stale",
+            started_at,
+        )
         if cancelled:
             await session.sender.send_json({
                 "type": "turn_cancelled",
@@ -135,13 +174,19 @@ class VoiceCallService:
         frozen_pcm: bytes,
     ) -> None:
         state = self._state(session)
-        runtime = _TurnRuntime()
+        runtime = _TurnRuntime(started_at=self._clock())
         try:
-            text, detected_emotion = await asyncio.to_thread(
-                self.asr.recognize_pcm16,
-                frozen_pcm,
-                INPUT_SAMPLE_RATE,
-            )
+            asr_started_at = self._clock()
+            try:
+                text, detected_emotion = await asyncio.to_thread(
+                    self.asr.recognize_pcm16,
+                    frozen_pcm,
+                    INPUT_SAMPLE_RATE,
+                )
+            except BaseException:
+                self._metric(session.session_id, turn_id, "asr", "error", asr_started_at)
+                raise
+            self._metric(session.session_id, turn_id, "asr", "completed", asr_started_at)
             if not session.is_current(turn_id):
                 return
             text = str(text or "").strip()
@@ -165,7 +210,7 @@ class VoiceCallService:
 
             queue: asyncio.Queue[SpeechUnit | None] = asyncio.Queue()
             producer = asyncio.create_task(
-                self._produce_reply(session, turn_id, snapshot, queue)
+                self._produce_reply(session, turn_id, snapshot, queue, runtime)
             )
             consumer = asyncio.create_task(
                 self._stream_speech(session, turn_id, queue, runtime)
@@ -213,6 +258,7 @@ class VoiceCallService:
         turn_id: int,
         snapshot: Any,
         queue: asyncio.Queue[SpeechUnit | None],
+        runtime: _TurnRuntime,
     ) -> tuple[str, str, int]:
         planner = VoiceSpeechUnitPlanner()
         full_parts: list[str] = []
@@ -256,6 +302,15 @@ class VoiceCallService:
                 sentence = str(event.get("text") or "").strip()
                 if not sentence:
                     continue
+                if not runtime.llm_first_text_reported:
+                    runtime.llm_first_text_reported = True
+                    self._metric(
+                        session.session_id,
+                        turn_id,
+                        "llm_first_text",
+                        "completed",
+                        runtime.started_at,
+                    )
                 await cancel_timer()
                 full_parts.append(sentence)
                 await session.sender.send_json({
@@ -313,6 +368,16 @@ class VoiceCallService:
                 async for chunk in self.tts.stream(unit.text, unit.emotion, cancel_event):
                     if not session.is_current(turn_id):
                         raise asyncio.CancelledError
+                    if chunk and not runtime.tts_first_byte_reported:
+                        runtime.tts_first_byte_reported = True
+                        self._metric(
+                            session.session_id,
+                            turn_id,
+                            "tts_first_byte",
+                            "completed",
+                            runtime.started_at,
+                            byte_count=len(chunk),
+                        )
                     for offset in range(0, len(chunk), MAX_PCM_CHUNK_BYTES):
                         piece = chunk[offset:offset + MAX_PCM_CHUNK_BYTES]
                         header = BinaryFrameHeader(
@@ -322,7 +387,19 @@ class VoiceCallService:
                             sequence=sequence,
                             byte_length=len(piece),
                         )
-                        await session.sender.send_pcm(header, piece)
+                        delivery_started_at = self._clock()
+                        try:
+                            await session.sender.send_pcm(header, piece)
+                        except BaseException:
+                            self._metric(
+                                session.session_id, turn_id, "ws_delivery", "error",
+                                delivery_started_at, sequence=sequence, byte_count=len(piece),
+                            )
+                            raise
+                        self._metric(
+                            session.session_id, turn_id, "ws_delivery", "completed",
+                            delivery_started_at, sequence=sequence, byte_count=len(piece),
+                        )
                         sequence += 1
             if runtime.tts_started and session.is_current(turn_id):
                 await self._send_tts_end(session, turn_id)
@@ -362,6 +439,34 @@ class VoiceCallService:
             return self._states[session.session_id]
         except KeyError as error:
             raise ProtocolError("语音会话不存在或已关闭") from error
+
+    def _metric(
+        self,
+        session_id: str,
+        turn_id: int | None,
+        stage: str,
+        status: str,
+        started_at: float,
+        *,
+        sequence: int | None = None,
+        byte_count: int | None = None,
+    ) -> None:
+        metric = {
+            "session_id": session_id,
+            "stage": stage,
+            "status": status,
+            "duration_ms": max(0.0, (self._clock() - started_at) * 1000),
+        }
+        if turn_id is not None:
+            metric["turn_id"] = turn_id
+        if sequence is not None:
+            metric["sequence"] = sequence
+        if byte_count is not None:
+            metric["byte_count"] = byte_count
+        try:
+            self._metric_logger(metric)
+        except Exception:
+            return
 
     @staticmethod
     async def _send_error(
