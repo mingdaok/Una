@@ -98,6 +98,10 @@ from chat_control import ControlPrefixDemux, sanitize_reply_text
 from speech_delivery import SpeechReplyDelivery
 from speech_metrics import log_speech_stage
 from speech_stream import SpeechStreamCoordinator
+from voice_call_api import create_voice_call_router
+from voice_call_memory import VoiceCallMemory
+from voice_call_service import VoiceCallService
+from voice_call_tts import GptSovitsPcmClient
 
 # === 加载配置 ===
 if os.path.exists(CONFIG_PATH):
@@ -191,6 +195,18 @@ memory_service = MemoryService()
 emotion_mapper = Live2DEmotionMapper()
 action_director = ActionDirector()
 motion_director = MotionDirectorV3()
+voice_call_tts_client = GptSovitsPcmClient(
+    sample_rate=int(
+        config.get('apis', {}).get('gpt_sovits', {}).get('output_sample_rate', 32000)
+    )
+)
+voice_call_service = VoiceCallService(
+    asr=asr,
+    brain=brain,
+    memory=VoiceCallMemory(database, memory_service, recall_timeout_ms=150),
+    tts=voice_call_tts_client,
+)
+app.include_router(create_voice_call_router(auth_service, voice_call_service))
 # 将 brain 实例注入 DiaryService
 diary_service = DiaryService(brain=brain)
 vision_service = VisionService() if 'VisionService' in globals() and VisionService else None
@@ -878,10 +894,15 @@ async def lifespan(application):
     scheduler.start()
     print("⏰ [Scheduler] 日记定时任务已启动 (每天北京时间 23:30)")
     print("⏰ [Scheduler] AI 自动发圈任务已启动 (每天北京时间 09:00/12:00/18:00)")
-    yield
-    # 服务关闭时停止调度器
-    scheduler.shutdown()
-    print("⏰ [Scheduler] 定时任务已停止")
+    try:
+        yield
+    finally:
+        try:
+            await voice_call_service.close()
+            print("☎️ [VoiceCall] 实时语音资源已关闭")
+        finally:
+            scheduler.shutdown()
+            print("⏰ [Scheduler] 定时任务已停止")
 
 
 # 将 lifespan 注入 app（注意：需要在 app 定义之后、路由之前设置）

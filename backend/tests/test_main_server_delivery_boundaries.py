@@ -88,7 +88,12 @@ def main_server(monkeypatch):
         "settings": module_with("settings", settings=SimpleNamespace(cors_origins=())),
         "brain_engine": module_with("brain_engine", UnaBrain=FakeBrain),
         "asr_engine": module_with("asr_engine", SenseVoiceASR=EmptyService),
-        "tts_service": module_with("tts_service", generate_audio_gsv=fake_generate_audio),
+        "tts_service": module_with(
+            "tts_service",
+            generate_audio_gsv=fake_generate_audio,
+            GSV_URL="http://127.0.0.1:9880/tts",
+            build_gsv_payload=lambda *args, **kwargs: {},
+        ),
     }
     for name, fake_module in fake_modules.items():
         monkeypatch.setitem(sys.modules, name, fake_module)
@@ -106,6 +111,25 @@ def main_server(monkeypatch):
 
 def run_scenario(coroutine):
     asyncio.run(asyncio.wait_for(coroutine, timeout=2.0))
+
+
+def test_voice_call_router_is_separate_and_lifespan_closes_runtime(main_server, monkeypatch):
+    route_paths = [getattr(route, "path", None) for route in main_server.app.routes]
+    assert "/ws/voice-call" in route_paths
+
+    closed = []
+
+    async def close_voice_call_service():
+        closed.append(True)
+
+    monkeypatch.setattr(main_server.voice_call_service, "close", close_voice_call_service)
+
+    async def scenario():
+        async with main_server.lifespan(main_server.app):
+            assert closed == []
+        assert closed == [True]
+
+    run_scenario(scenario())
 
 
 def test_send_ai_reply_chunk_forwards_trace_and_returns_true(main_server, monkeypatch):
