@@ -1,2 +1,43 @@
+# Codex / local worktrees and tools
 .worktrees/
+.tools/
+
+# Private runtime configuration
+config.yaml
+.env
+.env.*
+!.env.example
+frontend_react/.env
+frontend_react/.env.*
+!frontend_react/.env.example
+
+# User databases and long-term memory
+*.db
+*.sqlite
+*.sqlite3
+backend/data/chroma_db/
+
+# User-generated private media
+backend/static/voice/
+backend/static/social_images/
+backend/static/mobile/diary_images/
+backend/static/mobile/charts/
+
+# Dependencies, caches and test artifacts
+node_modules/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.log
+backend/temp_*.wav
+
+# Generated browser VAD runtime files
 frontend_react/public/vad/
+
+# Operating-system files
+.DS_Store
+Thumbs.db

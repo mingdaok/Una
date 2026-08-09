@@ -1,0 +1,49 @@
+# 复制本文件为 config.yaml，再填写自己的本地配置。
+# config.yaml 已被 Git 忽略，请勿把真实密钥提交到仓库。
+
+apis:
+  silicon_base:
+    api_key: CHANGE_ME_API_KEY
+    base_url: https://api.siliconflow.cn/v1
+    llm_model: deepseek-ai/DeepSeek-V3.2
+    image_model: Kwai-Kolors/Kolors
+    vision_model: Qwen/Qwen2.5-VL-72B-Instruct
+
+  gpt_sovits:
+    host: 127.0.0.1
+    port: 9880
+    ref_audio_path: CHANGE_ME_PATH_TO_REFERENCE_AUDIO
+    prompt_text: CHANGE_ME_PROMPT_TEXT
+    prompt_lang: zh
+    speed_normal: 1.0
+    speed_sad: 0.85
+    speed_happy: 1.1
+    fallback_edge_tts: true
+    output_sample_rate: 32000
+
+  fish_audio:
+    api_key: CHANGE_ME_API_KEY
+    base_url: https://fish.audio/api/v1
+    voice_id: CHANGE_ME_VOICE_ID
+
+  aliyun_nls:
+    region_id: cn-shanghai
+    app_key: CHANGE_ME_APP_KEY
+    access_key_id: CHANGE_ME_ACCESS_KEY_ID
+    access_key_secret: CHANGE_ME_ACCESS_KEY_SECRET
+
+live2d:
+  version: 3
+  model_path: Resources/v3/llny/llny.model3.json
+  window_size:
+    - 450
+    - 700
+
+voice:
+  sample_rate: 24000
+  language: zh-CN
+  speed: 1.0
+
+app:
+  cache_dir: cache
+  max_history: 10

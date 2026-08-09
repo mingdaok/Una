@@ -5,20 +5,20 @@
 实时语音通话是独立于 Live2D 的轻量页面，共享现有账号、对话历史、用户画像和长期记忆。建议依次打开三个 PowerShell 窗口：
 
 ```powershell
-cd 'D:\ai\GPT文件\GPT-SoVITS\GPT-SoVITS'
+cd 'PATH\TO\GPT-SoVITS\GPT-SoVITS'
 & '.\gptsovits_env\Scripts\python.exe' api_v2.py
 ```
 
 ```powershell
-cd 'D:\ai\Una'
-& 'D:\ai\python 3.11\python.exe' backend/main_server.py
+cd 'PATH\TO\Una'
+python backend/main_server.py
 ```
 
 开发模式再启动前端：
 
 ```powershell
-cd 'D:\ai\Una\frontend_react'
-& 'D:\ai\Node\npm.cmd' run dev
+cd frontend_react
+npm run dev
 ```
 
 - 开发入口：`http://127.0.0.1:5173/?view=voice`
@@ -114,7 +114,7 @@ Una/
 ## 🚀 部署与运行 | Getting Started
 
 ### 1. 配置环境 (Configuration)
-复制 `.env.example` -> `.env` 并在项目根目录编写或更新 `config.yaml`。填入你的 `silicon flow` API key 及配置 GPT-SoVITS 的本地路由端口。
+复制 `config.example.yaml` 为 `config.yaml`，再填写你自己的 API 密钥、GPT-SoVITS 地址和参考音频路径。真实的 `config.yaml`、数据库、长期记忆和用户媒体均已被 Git 忽略，请勿强制提交。
 
 ### 2. 启动前端 (Frontend Development)
 ```bash
