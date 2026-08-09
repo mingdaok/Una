@@ -1,9 +1,10 @@
 import WallGallery from '../components/WallGallery';
 import { useEffect, useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Mic, Send, LogIn, ArrowLeft, Volume2, Wifi, WifiOff, FastForward, Camera, Users } from 'lucide-react';
+import { Mic, Send, LogIn, ArrowLeft, Volume2, Wifi, WifiOff, FastForward, Camera } from 'lucide-react';
 import DiaryBook from '../components/DiaryBook';
 import Live2DViewer from '../components/Live2DViewer';
+import UnaNavigationDrawer from '../components/UnaNavigationDrawer';
 import SocialFeed from '../components/social/SocialFeed';
 import WeChatContacts from '../components/social/WeChatContacts';
 // 🔥 修复 1: 引用合并后的正确文件 (去掉 Fixed)
@@ -13,6 +14,7 @@ import { useAudioRecorder } from '../hooks/useAudioRecorder';
 import { getApiBase } from '../config';
 import { authFetch, authenticate, clearSession, getSession, refreshSession } from '../auth/session';
 import { loadLive2dRuntime } from '../live2d/loadLive2dRuntime';
+import { readSelectedLive2DModel } from '../live2d/modelSelection';
 
 export default function MainUnaPage() {
   const [live2dRuntimeReady, setLive2dRuntimeReady] = useState(
@@ -46,6 +48,10 @@ export default function MainUnaPage() {
   const [isBookOpen, setIsBookOpen] = useState(false);
   const [showSocial, setShowSocial] = useState(false);  // 朋友圈
   const [showChat, setShowChat] = useState(false);    // WeChat 聊天
+  const [isNavigationOpen, setIsNavigationOpen] = useState(false);
+  const [currentModel, setCurrentModel] = useState(readSelectedLive2DModel);
+  const [live2dSettingsRequest, setLive2dSettingsRequest] = useState(0);
+  const [pendingDiaryOpen, setPendingDiaryOpen] = useState(false);
 
   const videoRef = useRef(null);
 
@@ -125,6 +131,7 @@ export default function MainUnaPage() {
   };
 
   const handleLogout = () => {
+    setIsNavigationOpen(false);
     clearSession();
     setIsLoggedIn(false);
     setUser(null);
@@ -148,6 +155,32 @@ export default function MainUnaPage() {
       videoRef.current.play().catch(e => console.error(e));
     }
     setIsBookTransitioning(true);
+  };
+
+  useEffect(() => {
+    if (!pendingDiaryOpen || !isStudy) return undefined;
+    const frame = window.requestAnimationFrame(() => {
+      setPendingDiaryOpen(false);
+      handleOpenBook();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [pendingDiaryOpen, isStudy]);
+
+  const handleOpenDiaryFromNavigation = () => {
+    if (isStudy) {
+      handleOpenBook();
+      return;
+    }
+    setPendingDiaryOpen(true);
+    setScene('study');
+  };
+
+  const handleToggleSceneFromNavigation = () => {
+    setScene(isStudy ? 'living' : 'study');
+  };
+
+  const handleOpenCharacterSettings = () => {
+    setLive2dSettingsRequest(value => value + 1);
   };
 
   const handleVideoEnd = () => {
@@ -205,6 +238,9 @@ export default function MainUnaPage() {
                 motionEvent={motionEvent}
                 motionGeneration={motionGeneration}
                 actionOverride={motionEvent}
+                onModelChange={setCurrentModel}
+                settingsRequest={live2dSettingsRequest}
+                showSettingsButton={false}
               />
             )}
 
@@ -212,9 +248,6 @@ export default function MainUnaPage() {
               {connectionStatus === 'OPEN' ? <Wifi size={16} className="text-green-400/50" /> : <WifiOff size={16} className="text-red-500" />}
             </div>
             <div onClick={() => setScene('study')} className="absolute top-[10%] right-[5%] w-[35%] h-[40%] z-20 active:bg-white/10 transition-colors" />
-            <button onClick={handleLogout} className="absolute top-4 left-4 z-30 text-white/30 text-xs">退出</button>
-            <a href="./?view=voice" className="absolute top-4 left-16 z-30 text-white/60 text-xs">语音通话</a>
-
             {messages.length > 0 && (
               <div className="absolute bottom-[18%] w-full flex justify-center z-30 pointer-events-none">
                 <div
@@ -258,26 +291,28 @@ export default function MainUnaPage() {
                 <Mic size={20} />
               </button>
               <button onClick={handleSend} className="bg-[#8d6e63] p-3 rounded-full text-white shadow-lg"><Send size={20} /></button>
-              {/* 🌸 朋友圈入口 */}
-              <button
-                onClick={() => setShowSocial(true)}
-                className="p-3 rounded-full text-white shadow-lg bg-white/20 active:scale-90 transition-transform"
-                title="朋友圈"
-              >
-                <Users size={20} />
-              </button>
-              {/* 💬 WeChat 聊天入口 */}
-              <button
-                onClick={() => setShowChat(true)}
-                className="p-3 rounded-full text-white shadow-lg bg-pink-500/80 hover:bg-pink-500 active:scale-90 transition-transform"
-                title="和 UNA 聊天"
-              >
-                💬
-              </button>
             </div>
           </motion.div>
         )}
       </AnimatePresence>
+
+      <UnaNavigationDrawer
+        open={isNavigationOpen}
+        onOpenChange={setIsNavigationOpen}
+        user={user}
+        connectionStatus={connectionStatus}
+        scene={scene}
+        currentModel={currentModel}
+        avatarUrl={`${baseUrl}assets/live2d/panda_cake/1d025dfb-13ff-4107-a008-4375b01851be.png`}
+        onOpenChat={() => setShowChat(true)}
+        onOpenSocial={() => setShowSocial(true)}
+        onOpenDiary={handleOpenDiaryFromNavigation}
+        onToggleScene={handleToggleSceneFromNavigation}
+        onOpenCharacterSettings={handleOpenCharacterSettings}
+        onOpenSettings={handleOpenCharacterSettings}
+        onLogout={handleLogout}
+        hidden={showSocial || showChat || isBookOpen || isBookTransitioning}
+      />
 
       {/* === 书房场景 === */}
       {isStudy && (

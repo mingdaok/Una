@@ -1,11 +1,20 @@
 import { useEffect, useRef, useState } from 'react';
-import { Settings } from 'lucide-react';
+import { Check, Move, RotateCcw, Settings, UserRound, X } from 'lucide-react';
+import { AnimatePresence, motion } from 'framer-motion';
 import { API_HOST } from '../config';
 import { useLive2DController } from '../hooks/useLive2DController';
 import { resetLive2DModelState } from '../live2d/modelState';
 import { readSelectedLive2DModel, writeSelectedLive2DModel } from '../live2d/modelSelection';
 
-export default function Live2DViewer({ lipValue, emotion, motionEvent, motionGeneration }) {
+export default function Live2DViewer({
+  lipValue,
+  emotion,
+  motionEvent,
+  motionGeneration,
+  settingsRequest = 0,
+  showSettingsButton = true,
+  onModelChange,
+}) {
   // 接入 Live2D 高级控制层 (情感驱动 + 口型同步 + 参数冲突调度)
   // 注意：appRef 和 modelRef 在下方 useEffect 中创建，传入 Hook 后 Hook 内部会等待它们就绪
   const canvasRef = useRef(null);
@@ -28,6 +37,14 @@ export default function Live2DViewer({ lipValue, emotion, motionEvent, motionGen
   const scaleRef = useRef(modelScale);
   const xRef = useRef(modelX);
   const yRef = useRef(modelY);
+
+  useEffect(() => {
+    if (settingsRequest > 0) setShowSettings(true);
+  }, [settingsRequest]);
+
+  useEffect(() => {
+    onModelChange?.(currentModel);
+  }, [currentModel, onModelChange]);
 
   // 同步状态到 ref 和 localStorage，并实时更新实体的变换
   useEffect(() => {
@@ -274,55 +291,95 @@ export default function Live2DViewer({ lipValue, emotion, motionEvent, motionGen
         </div>
       )}
 
-      {/* 左上角设置按钮 */}
-      <div className="absolute top-4 left-16 z-50">
-        {/* 齿轮图标按钮 */}
+      {showSettingsButton && (
         <button
+          type="button"
+          aria-label="打开角色与显示设置"
           onClick={() => setShowSettings(v => !v)}
-          className="w-8 h-8 flex items-center justify-center rounded-full bg-black/20 backdrop-blur-sm text-white/50 hover:text-white hover:bg-black/40 transition-all active:scale-90"
+          className="absolute top-4 left-16 z-50 w-8 h-8 flex items-center justify-center rounded-full bg-black/20 backdrop-blur-sm text-white/50 hover:text-white hover:bg-black/40 transition-all active:scale-90"
         >
           <Settings size={16} />
         </button>
+      )}
 
-        {/* 下拉设置面板 */}
+      <AnimatePresence>
         {showSettings && (
-          <div className="mt-2 bg-black/50 backdrop-blur-md rounded-xl border border-white/10 p-3 min-w-[140px] shadow-xl">
-            <p className="text-white/40 text-xs mb-2 px-1">设置</p>
+          <motion.div
+            className="absolute inset-0 z-[70] flex items-center justify-center p-4 pointer-events-auto"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <button
+              type="button"
+              aria-label="关闭角色与显示设置"
+              className="absolute inset-0 w-full h-full border-0 bg-black/60 backdrop-blur-sm"
+              onClick={() => setShowSettings(false)}
+            />
+            <motion.section
+              role="dialog"
+              aria-modal="true"
+              aria-label="角色与显示"
+              initial={{ y: 18, scale: 0.98 }}
+              animate={{ y: 0, scale: 1 }}
+              exit={{ y: 18, scale: 0.98 }}
+              className="relative z-10 w-full max-w-sm overflow-hidden rounded-[28px] border border-[#decfc5] bg-[#fffaf4]/95 p-5 text-[#50352b] shadow-2xl backdrop-blur-xl"
+            >
+              <div className="mb-5 flex items-center justify-between">
+                <div>
+                  <p className="text-lg font-semibold">角色与显示</p>
+                  <p className="mt-1 text-xs text-[#927266]">调整模型位置、大小或切换角色</p>
+                </div>
+                <button
+                  type="button"
+                  aria-label="关闭角色与显示设置"
+                  onClick={() => setShowSettings(false)}
+                  className="grid h-10 w-10 place-items-center rounded-full text-[#7c584b] hover:bg-[#7c584b]/10"
+                >
+                  <X size={21} />
+                </button>
+              </div>
+
             <button
               onClick={() => {
                 setIsEditing(true);
                 setShowSettings(false);
               }}
-              className="w-full text-left px-3 py-2 rounded-lg text-sm transition-colors mb-2 text-white/70 hover:bg-white/10"
+              className="mb-5 flex w-full items-center gap-3 rounded-2xl border border-[#dccbc0] bg-white/60 px-4 py-3 text-left text-sm font-medium transition-colors hover:bg-white"
             >
-              📐 调整位置与大小
+              <Move size={20} className="text-[#a67460]" />
+              <span className="flex-1">调整位置与大小</span>
             </button>
-            <div className="h-[1px] w-full bg-white/10 mb-2"></div>
-            {/* 之前的动作测试面板被删除了 */}
-            <p className="text-white/40 text-xs mb-2 px-1">切换模型</p>
+
+            <p className="mb-2 px-1 text-xs font-medium text-[#927266]">切换模型</p>
             <button
               onClick={() => switchModel('hiyori')}
-              className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors mb-1 ${
+              className={`mb-2 flex w-full items-center gap-3 rounded-2xl border px-4 py-3 text-left text-sm transition-colors ${
                 currentModel === 'hiyori'
-                  ? 'bg-blue-500/80 text-white'
-                  : 'text-white/70 hover:bg-white/10'
+                  ? 'border-[#e9568c]/40 bg-[#e9568c]/10 text-[#50352b]'
+                  : 'border-[#dccbc0] bg-white/50 hover:bg-white'
               }`}
             >
-              🎀 Hiyori
+              <UserRound size={20} className="text-[#a67460]" />
+              <span className="flex-1">Hiyori</span>
+              {currentModel === 'hiyori' && <Check size={18} className="text-[#e9568c]" />}
             </button>
             <button
               onClick={() => switchModel('panda_cake')}
-              className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
+              className={`flex w-full items-center gap-3 rounded-2xl border px-4 py-3 text-left text-sm transition-colors ${
                 currentModel === 'panda_cake'
-                  ? 'bg-pink-500/80 text-white'
-                  : 'text-white/70 hover:bg-white/10'
+                  ? 'border-[#e9568c]/40 bg-[#e9568c]/10 text-[#50352b]'
+                  : 'border-[#dccbc0] bg-white/50 hover:bg-white'
               }`}
             >
-              🐼 粉色熊猫
+              <RotateCcw size={20} className="text-[#a67460]" />
+              <span className="flex-1">粉色熊猫</span>
+              {currentModel === 'panda_cake' && <Check size={18} className="text-[#e9568c]" />}
             </button>
-          </div>
+            </motion.section>
+          </motion.div>
         )}
-      </div>
+      </AnimatePresence>
     </div>
   );
 }
