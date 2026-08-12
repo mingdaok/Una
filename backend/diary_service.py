@@ -6,6 +6,9 @@ import yaml
 import asyncio
 from datetime import datetime
 
+from life_simulation.content_safety import ContentSafetyService
+from life_simulation.evidence import ContentEvidence, EvidenceSource
+
 # === 路径配置 ===
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(CURRENT_DIR)
@@ -38,13 +41,19 @@ if not os.path.exists(STATIC_DIR):
 
 
 class DiaryService:
-    def __init__(self, brain=None):
+    def __init__(self, brain=None, life_service=None):
         self.headers = {
             "Authorization": f"Bearer {SILICON_API_KEY}",
             "Content-Type": "application/json"
         }
         # brain_engine 实例，由 main_server 注入
         self.brain = brain
+        self.life_service = life_service
+        self.content_safety = (
+            ContentSafetyService(life_service.store, life_service.characters)
+            if life_service is not None
+            else None
+        )
         # 延迟导入，避免循环引用
         import database as db
         self.db = db
@@ -74,7 +83,36 @@ class DiaryService:
         - force=False 时，若今日已有日记则跳过。
         - 调用 brain_engine.write_daily_diary 获取内容和绘图 Prompt。
         """
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        life_events = []
+        life_event_context = ""
+        timezone = None
+        if self.life_service is not None:
+            try:
+                report = await asyncio.to_thread(self.life_service.settle_due, user_id)
+                profile = self.life_service.store.get_profile(user_id, "ai_una")
+                if profile and not profile["diaries_enabled"]:
+                    print(f"⏭️ [{user_id}] 用户已关闭 AI 生活日记")
+                    return None
+                if profile:
+                    from life_simulation.clock import get_timezone, utc_now
+
+                    timezone = get_timezone(profile["timezone"])
+                    local_now = utc_now().astimezone(timezone)
+                    day_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+                    life_events = self.life_service.store.list_events(
+                        user_id,
+                        "ai_una",
+                        limit=20,
+                        since=day_start.isoformat(),
+                    )
+                    life_event_context = "\n".join(
+                        f"- {event['summary']}（{event['location_id']}）"
+                        for event in reversed(life_events)
+                    )
+            except Exception as error:
+                print(f"⚠️ [{user_id}] 日记生活素材读取失败: {error}")
+        local_datetime = datetime.now(timezone) if timezone else datetime.now()
+        today_str = local_datetime.strftime("%Y-%m-%d")
         print(f"📝 [{user_id}] 开始生成 {today_str} 的日记...")
 
         if not force:
@@ -89,7 +127,10 @@ class DiaryService:
 
         # 1. 调用 brain_engine 生成日记内容 + 绘图 Prompt
         try:
-            llm_result = await self.brain.write_daily_diary(user_id)
+            llm_result = await self.brain.write_daily_diary(
+                user_id,
+                life_event_context=life_event_context,
+            )
         except Exception as e:
             print(f"❌ LLM 日记生成失败: {e}")
             return None
@@ -98,9 +139,78 @@ class DiaryService:
         mood = llm_result.get('mood', 'calm')
         image_prompt = llm_result.get('image_prompt', '')
 
+        evidence_payload = {}
+        validated_evidence = None
+        if self.content_safety is not None:
+            evidence = ContentEvidence(
+                sources=tuple(
+                    EvidenceSource(
+                        source_id=event["event_id"],
+                        source_type="una_life_event",
+                        actor_ids=tuple(dict.fromkeys([
+                            "ai_una", *event.get("participant_ids", [])
+                        ])),
+                        world_time=event.get("end_at"),
+                        disclosure_level=event.get("disclosure_level", "familiar"),
+                        status=event.get("status", "completed"),
+                        summary=event.get("summary", ""),
+                    )
+                    for event in life_events
+                ),
+                generation_reason=(
+                    "life_and_dialogue" if life_event_context
+                    else "dialogue_or_reflection"
+                ),
+                generator_version="una-diary-v2",
+            )
+            validation = self.content_safety.validate(
+                user_id,
+                content,
+                evidence,
+                author_id="ai_una",
+                channel="diary",
+            )
+            content = validation.text
+            validated_evidence = validation.evidence
+            evidence_payload = validated_evidence.as_dict()
+            if not validation.safe:
+                image_prompt = self.content_safety.fallback("image_prompt")
+
         if not image_prompt:
             # 降级默认 Prompt
             image_prompt = "Makoto Shinkai style, anime style, a quiet room at night, soft light from window, depth of field, 8k wallpaper"
+
+        if (
+            self.content_safety is not None
+            and validated_evidence is not None
+            and validated_evidence.validation_status != "blocked"
+            and life_event_context
+        ):
+            grounded_image_prompt = (
+                f"Verified scene facts:\n{life_event_context}\n"
+                f"Visual direction:\n{image_prompt}"
+            )
+            image_validation = self.content_safety.validate(
+                user_id,
+                grounded_image_prompt,
+                validated_evidence,
+                author_id="ai_una",
+                channel="image_prompt",
+            )
+            if image_validation.safe:
+                image_prompt = grounded_image_prompt
+            else:
+                image_prompt = self.content_safety.fallback("image_prompt")
+                validated_evidence = validated_evidence.with_validation(
+                    used_source_ids=validated_evidence.used_source_ids,
+                    status="passed",
+                    codes=(
+                        *validated_evidence.validation_codes,
+                        *(issue["code"] for issue in image_validation.issues),
+                        "image_prompt_fallback",
+                    ),
+                )
+                evidence_payload = validated_evidence.as_dict()
 
         print(f"🎨 [{user_id}] 绘图 Prompt: {image_prompt[:40]}...")
 
@@ -115,7 +225,14 @@ class DiaryService:
             content=content,
             mood=mood,
             memory_ref="auto_generated",
-            image_path=image_path or ""
+            image_path=image_path or "",
+            author_ai_id="ai_una",
+            source_event_ids=[event["event_id"] for event in life_events],
+            life_world_date=today_str,
+            visibility_level="private",
+            generation_reason="life_and_dialogue" if life_event_context else "dialogue_or_reflection",
+            idempotency_key=f"life-diary:{user_id}:ai_una:{today_str}:DAILY",
+            content_evidence=evidence_payload,
         )
 
         if success:

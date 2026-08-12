@@ -168,6 +168,32 @@ describe('useUnaCore WebSocket handling', () => {
         localStorage.clear();
     });
 
+    it('preserves proactive life-share metadata on a final reply', async () => {
+        const { result } = renderHook(() => useUnaCore('test_user'));
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+        act(() => mockWebSocket.onopen());
+
+        act(() => mockWebSocket.onmessage({
+            data: JSON.stringify({
+                type: 'final_reply',
+                text: '你不在的时候，我去河边散了会儿步。',
+                emotion: 'happy',
+                is_proactive: true,
+                proactive_kind: 'life_share',
+                proactive_delivery_id: 'delivery-1',
+                proactive_topic: 'outdoors',
+            }),
+        }));
+
+        expect(result.current.messages.at(-1)).toMatchObject({
+            isAI: true,
+            isProactive: true,
+            proactiveKind: 'life_share',
+            proactiveDeliveryId: 'delivery-1',
+            proactiveTopic: 'outdoors',
+        });
+    });
+
     it('should parse chat_action and set actionOverride', async () => {
         const { result } = renderHook(() => useUnaCore('test_user'));
         

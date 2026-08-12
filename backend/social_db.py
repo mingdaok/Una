@@ -39,6 +39,12 @@ def init_social_tables():
             emoji_pack_ids  TEXT    DEFAULT '[]',
             post_type       TEXT    DEFAULT 'text',
             visibility      TEXT    DEFAULT 'public',
+            source_event_ids TEXT   NOT NULL DEFAULT '[]',
+            life_world_time TEXT,
+            generation_reason TEXT,
+            idempotency_key TEXT,
+            content_evidence_json TEXT NOT NULL DEFAULT '{}',
+            deleted_at      TEXT,
             timestamp       DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -52,10 +58,46 @@ def init_social_tables():
             user_name   TEXT    DEFAULT '',
             content     TEXT    NOT NULL,
             reply_to_id INTEGER DEFAULT NULL,
+            generation_reason TEXT,
+            source_event_id TEXT,
+            idempotency_key TEXT,
             timestamp   DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (post_id) REFERENCES una_posts(id) ON DELETE CASCADE
         )
     """)
+
+    cursor.execute("PRAGMA table_info(una_comments)")
+    comment_columns = {row[1] for row in cursor.fetchall()}
+    comment_additions = {
+        "generation_reason": "TEXT",
+        "source_event_id": "TEXT",
+        "idempotency_key": "TEXT",
+        "content_evidence_json": "TEXT NOT NULL DEFAULT '{}'",
+    }
+    for name, definition in comment_additions.items():
+        if name not in comment_columns:
+            cursor.execute(f"ALTER TABLE una_comments ADD COLUMN {name} {definition}")
+    cursor.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_una_comments_life_idempotency
+           ON una_comments(idempotency_key) WHERE idempotency_key IS NOT NULL"""
+    )
+
+    cursor.execute("PRAGMA table_info(una_posts)")
+    post_columns = {row[1] for row in cursor.fetchall()}
+    post_additions = {
+        "source_event_ids": "TEXT NOT NULL DEFAULT '[]'",
+        "life_world_time": "TEXT",
+        "generation_reason": "TEXT",
+        "idempotency_key": "TEXT",
+        "deleted_at": "TEXT",
+    }
+    for name, definition in post_additions.items():
+        if name not in post_columns:
+            cursor.execute(f"ALTER TABLE una_posts ADD COLUMN {name} {definition}")
+    cursor.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_una_posts_life_idempotency
+           ON una_posts(idempotency_key) WHERE idempotency_key IS NOT NULL"""
+    )
 
     # 点赞表（联合唯一约束防止重复点赞）
     cursor.execute("""
@@ -141,7 +183,11 @@ init_social_tables()
 def create_post(owner_user_id: str, author_id: str, content: str, images: list = None,
                 location: str = "", author_name: str = "", author_type: str = "user",
                 author_avatar: str = "", emoji_pack_ids: list = None, 
-                post_type: str = "text", visibility: str = "public") -> dict | None:
+                post_type: str = "text", visibility: str = "public",
+                source_event_ids: list = None, life_world_time: str = None,
+                generation_reason: str = None, idempotency_key: str = None,
+                content_evidence: dict = None,
+                timestamp: str = None) -> dict | None:
     """
     发布一条新动态。
     :param owner_user_id:   所属的用户（租户隔离）
@@ -159,24 +205,70 @@ def create_post(owner_user_id: str, author_id: str, content: str, images: list =
     """
     images_json = json.dumps(images or [], ensure_ascii=False)
     emoji_ids_json = json.dumps(emoji_pack_ids or [], ensure_ascii=False)
+    source_event_ids_json = json.dumps(source_event_ids or [], ensure_ascii=False)
+    conn = None
     try:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute(
             """INSERT INTO una_posts
-               (owner_user_id, author_id, author_name, author_type, author_avatar, content, images, 
-                location, emoji_pack_ids, post_type, visibility)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (owner_user_id, author_id, author_name, author_type, author_avatar, content, images,
+                location, emoji_pack_ids, post_type, visibility, source_event_ids,
+                life_world_time, generation_reason, idempotency_key,
+                content_evidence_json, timestamp)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))""",
             (owner_user_id, author_id, author_name, author_type, author_avatar, content, images_json, 
-             location, emoji_ids_json, post_type, visibility)
+             location, emoji_ids_json, post_type, visibility, source_event_ids_json,
+             life_world_time, generation_reason, idempotency_key,
+             json.dumps(content_evidence or {}, ensure_ascii=False), timestamp)
         )
         post_id = cursor.lastrowid
         conn.commit()
-        conn.close()
         return get_post_by_id(post_id)
     except Exception as e:
         print(f"❌ [Social] create_post 失败: {e}")
         return None
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def has_ai_life_post_on_date(owner_user_id: str, life_date: str, ai_id: str = "ai_una") -> bool:
+    """判断某 AI 在生活世界日期内是否已经发布过事件动态。"""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        row = conn.execute(
+            """
+            SELECT 1 FROM una_posts
+            WHERE owner_user_id = ? AND author_id = ?
+              AND generation_reason = 'life_event'
+              AND substr(life_world_time, 1, 10) = ?
+              AND deleted_at IS NULL
+            LIMIT 1
+            """,
+            (owner_user_id, ai_id, life_date),
+        ).fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+
+def get_post_by_idempotency_key(owner_user_id: str, idempotency_key: str) -> dict | None:
+    """按租户和稳定键查找后台生成的动态。"""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            """
+            SELECT * FROM una_posts
+            WHERE owner_user_id = ? AND idempotency_key = ? AND deleted_at IS NULL
+            LIMIT 1
+            """,
+            (owner_user_id, idempotency_key),
+        ).fetchone()
+    finally:
+        conn.close()
+    return _build_post_dict(dict(row)) if row else None
 
 
 def get_post_by_id(post_id: int) -> dict | None:
@@ -250,6 +342,17 @@ def _build_post_dict(post: dict) -> dict:
     except Exception:
         post["emoji_pack_ids"] = []
 
+    try:
+        post["source_event_ids"] = json.loads(post.get("source_event_ids") or "[]")
+    except Exception:
+        post["source_event_ids"] = []
+    try:
+        post["content_evidence"] = json.loads(
+            post.get("content_evidence_json") or "{}"
+        )
+    except Exception:
+        post["content_evidence"] = {}
+
     # 🔥 实时关联最新头像：覆盖发布时保存的旧头像
     latest_avatar = _get_user_avatar(post.get("author_id", ""))
     if latest_avatar:
@@ -314,6 +417,23 @@ def toggle_like(post_id: int, user_id: str, user_name: str = "") -> dict:
         return {"action": "error", "like_count": 0}
 
 
+def ensure_like(post_id: int, user_id: str, user_name: str = "", timestamp: str = None) -> bool:
+    """幂等写入后台互动点赞；已存在时返回 False。"""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cursor = conn.execute(
+            """
+            INSERT OR IGNORE INTO una_post_likes (post_id, user_id, user_name, timestamp)
+            VALUES (?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+            """,
+            (post_id, user_id, user_name, timestamp),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
 def get_likes_by_post(post_id: int) -> list:
     """获取某条动态的点赞列表（用户 ID + 昵称）"""
     conn = sqlite3.connect(DB_PATH)
@@ -332,27 +452,54 @@ def get_likes_by_post(post_id: int) -> list:
 # 💬 评论操作
 # ====================================================
 def add_comment(post_id: int, user_id: str, content: str,
-                reply_to_id: int = None, user_name: str = "") -> dict | None:
+                reply_to_id: int = None, user_name: str = "",
+                generation_reason: str = None, source_event_id: str = None,
+                idempotency_key: str = None, timestamp: str = None) -> dict | None:
     """
     发表评论或楼中楼回复。
     :param reply_to_id: 被回复的评论 ID，为 None 则直接评论动态
     :return: 新评论的字典
     """
+    conn = None
     try:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute(
-            """INSERT INTO una_comments (post_id, user_id, user_name, content, reply_to_id)
-               VALUES (?, ?, ?, ?, ?)""",
-            (post_id, user_id, user_name, content, reply_to_id)
+            """INSERT INTO una_comments (
+                   post_id, user_id, user_name, content, reply_to_id,
+                   generation_reason, source_event_id, idempotency_key, timestamp
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))""",
+            (
+                post_id,
+                user_id,
+                user_name,
+                content,
+                reply_to_id,
+                generation_reason,
+                source_event_id,
+                idempotency_key,
+                timestamp,
+            )
         )
         comment_id = cursor.lastrowid
         conn.commit()
-        conn.close()
         return get_comment_by_id(comment_id)
+    except sqlite3.IntegrityError as e:
+        if conn is not None:
+            conn.close()
+            conn = None
+        if idempotency_key:
+            existing = get_comment_by_idempotency_key(post_id, idempotency_key)
+            if existing:
+                return existing
+        print(f"❌ [Social] add_comment 失败: {e}")
+        return None
     except Exception as e:
         print(f"❌ [Social] add_comment 失败: {e}")
         return None
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def get_comment_by_id(comment_id: int) -> dict | None:
@@ -364,6 +511,24 @@ def get_comment_by_id(comment_id: int) -> dict | None:
     row = cursor.fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+def get_comment_by_idempotency_key(post_id: int, idempotency_key: str) -> dict | None:
+    """读取某条动态下由后台生成的稳定评论。"""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            """
+            SELECT * FROM una_comments
+            WHERE post_id = ? AND idempotency_key = ?
+            LIMIT 1
+            """,
+            (post_id, idempotency_key),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
 
 
 def get_comment_tree(post_id: int) -> list:

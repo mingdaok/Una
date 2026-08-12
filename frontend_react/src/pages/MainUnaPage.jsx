@@ -7,6 +7,7 @@ import Live2DViewer from '../components/Live2DViewer';
 import UnaNavigationDrawer from '../components/UnaNavigationDrawer';
 import SocialFeed from '../components/social/SocialFeed';
 import WeChatContacts from '../components/social/WeChatContacts';
+import LifeWorldPage from '../components/life/LifeWorldPage';
 // 🔥 修复 1: 引用合并后的正确文件 (去掉 Fixed)
 import { useUnaCore } from '../hooks/useUnaCore';
 import { useVision } from '../hooks/useVision';
@@ -15,6 +16,7 @@ import { getApiBase } from '../config';
 import { authFetch, authenticate, clearSession, getSession, refreshSession } from '../auth/session';
 import { loadLive2dRuntime } from '../live2d/loadLive2dRuntime';
 import { readSelectedLive2DModel } from '../live2d/modelSelection';
+import { submitProactiveFeedback } from '../life/api';
 
 export default function MainUnaPage() {
   const [live2dRuntimeReady, setLive2dRuntimeReady] = useState(
@@ -48,6 +50,7 @@ export default function MainUnaPage() {
   const [isBookOpen, setIsBookOpen] = useState(false);
   const [showSocial, setShowSocial] = useState(false);  // 朋友圈
   const [showChat, setShowChat] = useState(false);    // WeChat 聊天
+  const [showLife, setShowLife] = useState(false);    // UNA 的生活
   const [isNavigationOpen, setIsNavigationOpen] = useState(false);
   const [currentModel, setCurrentModel] = useState(readSelectedLive2DModel);
   const [live2dSettingsRequest, setLive2dSettingsRequest] = useState(0);
@@ -65,6 +68,33 @@ export default function MainUnaPage() {
   // 第二个参数 sendStopSignal：录音停止并发送完音频后，自动向后端发 stop 触发识别
   const { isRecording, startRecording, stopRecording } = useAudioRecorder(sendAudioData, sendStopSignal);
   const [text, setText] = useState("");
+
+  const handleProactiveFeedback = async (deliveryId, reaction) => {
+    if (!deliveryId) return;
+    setMessages(current => current.map(message => (
+      message.proactiveDeliveryId === deliveryId
+        ? { ...message, proactiveFeedbackStatus: 'saving', proactiveFeedbackError: '' }
+        : message
+    )));
+    try {
+      await submitProactiveFeedback(deliveryId, reaction);
+      setMessages(current => current.map(message => (
+        message.proactiveDeliveryId === deliveryId
+          ? { ...message, proactiveFeedbackStatus: 'saved', proactiveFeedback: reaction }
+          : message
+      )));
+    } catch (error) {
+      setMessages(current => current.map(message => (
+        message.proactiveDeliveryId === deliveryId
+          ? {
+              ...message,
+              proactiveFeedbackStatus: 'error',
+              proactiveFeedbackError: error.message || '反馈没有保存，请稍后再试',
+            }
+          : message
+      )));
+    }
+  };
 
   // 📸 工具：补全音频 URL（解决 App 环境下相对路径无法播放的问题）
   const formatAudioUrl = (path) => {
@@ -132,6 +162,7 @@ export default function MainUnaPage() {
 
   const handleLogout = () => {
     setIsNavigationOpen(false);
+    setShowLife(false);
     clearSession();
     setIsLoggedIn(false);
     setUser(null);
@@ -266,7 +297,48 @@ export default function MainUnaPage() {
                         ${messages[messages.length - 1].isAI ? 'bg-white/90 text-[#5d4037] border-[#d7ccc8]' : 'bg-black/60 text-white border-white/20'}
                     `}
                 >
-                  <span>{messages[messages.length - 1].text}</span>
+                  <span className="flex min-w-0 flex-col gap-0.5">
+                    {messages[messages.length - 1].proactiveKind === 'life_share' && (
+                      <span className="text-[10px] font-medium text-[#8d6e63]/75">她主动提起</span>
+                    )}
+                    <span>{messages[messages.length - 1].text}</span>
+                    {messages[messages.length - 1].proactiveDeliveryId && !messages[messages.length - 1].proactiveFeedback && (
+                      <span
+                        className="mt-1.5 flex flex-wrap gap-1.5"
+                        role="group"
+                        aria-label="评价这次主动分享"
+                        onClick={event => event.stopPropagation()}
+                      >
+                        {[
+                          ['more', '喜欢听'],
+                          ['less', '少聊这类'],
+                          ['stop', '不再主动'],
+                        ].map(([reaction, label]) => (
+                          <button
+                            type="button"
+                            key={reaction}
+                            disabled={messages[messages.length - 1].proactiveFeedbackStatus === 'saving'}
+                            onClick={() => handleProactiveFeedback(messages[messages.length - 1].proactiveDeliveryId, reaction)}
+                            className="min-h-7 rounded-lg border border-[#bca79e] bg-white/65 px-2 text-[11px] font-medium text-[#6d4c41] transition-colors hover:bg-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[#8d6e63] active:scale-[0.98] disabled:cursor-wait disabled:opacity-55"
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </span>
+                    )}
+                    {messages[messages.length - 1].proactiveFeedback && (
+                      <span className="mt-1 text-[11px] text-[#8d6e63]" aria-live="polite">
+                        {messages[messages.length - 1].proactiveFeedback === 'more' && '记住了，以后可以多聊一点。'}
+                        {messages[messages.length - 1].proactiveFeedback === 'less' && '记住了，这类事情会少聊。'}
+                        {messages[messages.length - 1].proactiveFeedback === 'stop' && '已经关闭主动分享。'}
+                      </span>
+                    )}
+                    {messages[messages.length - 1].proactiveFeedbackError && (
+                      <span className="mt-1 text-[11px] text-[#a43f4d]" role="alert">
+                        {messages[messages.length - 1].proactiveFeedbackError}
+                      </span>
+                    )}
+                  </span>
                   {messages[messages.length - 1].isAI && <Volume2 size={14} className="text-[#8d6e63] min-w-[14px]" />}
                 </div>
               </div>
@@ -306,12 +378,13 @@ export default function MainUnaPage() {
         avatarUrl={`${baseUrl}assets/live2d/panda_cake/1d025dfb-13ff-4107-a008-4375b01851be.png`}
         onOpenChat={() => setShowChat(true)}
         onOpenSocial={() => setShowSocial(true)}
+        onOpenLife={() => setShowLife(true)}
         onOpenDiary={handleOpenDiaryFromNavigation}
         onToggleScene={handleToggleSceneFromNavigation}
         onOpenCharacterSettings={handleOpenCharacterSettings}
         onOpenSettings={handleOpenCharacterSettings}
         onLogout={handleLogout}
-        hidden={showSocial || showChat || isBookOpen || isBookTransitioning}
+        hidden={showSocial || showChat || showLife || isBookOpen || isBookTransitioning}
       />
 
       {/* === 书房场景 === */}
@@ -400,6 +473,28 @@ export default function MainUnaPage() {
               currentUserName={user?.username}
               apiBase={apiBase}
               onClose={() => setShowSocial(false)}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showLife && (
+          <motion.div
+            key="life"
+            initial={{ x: '100%' }}
+            animate={{ x: 0 }}
+            exit={{ x: '100%' }}
+            transition={{ type: 'tween', duration: 0.28 }}
+            className="fixed inset-0 z-[100]"
+          >
+            <LifeWorldPage
+              avatarUrl={`${baseUrl}assets/live2d/panda_cake/1d025dfb-13ff-4107-a008-4375b01851be.png`}
+              onClose={() => setShowLife(false)}
+              onOpenSocial={() => {
+                setShowLife(false);
+                setShowSocial(true);
+              }}
             />
           </motion.div>
         )}

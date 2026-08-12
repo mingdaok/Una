@@ -79,6 +79,7 @@ export default function PostCard({
   const initials = (p.author_name || p.author_id || "?").slice(0, 1).toUpperCase();
   const bgColor = avatarColor(p.author_id || "default");
   const isAI = p.author_type === "ai";
+  const isVirtualFriend = p.author_type === "npc";
 
   const getAvatarUrl = () => {
     if (p.author_avatar) {
@@ -113,6 +114,11 @@ export default function PostCard({
             AI
           </span>
         )}
+        {isVirtualFriend && (
+          <span className="absolute right-0 bottom-0 text-[9px] bg-stone-600 text-white px-1 rounded-full leading-4">
+            友
+          </span>
+        )}
       </div>
 
       <div className="flex-1 min-w-0">
@@ -122,6 +128,11 @@ export default function PostCard({
           {isAI && (
             <span className="ml-1 text-[10px] bg-blue-100 text-blue-500 px-1.5 py-0.5 rounded-full align-middle">
               AI
+            </span>
+          )}
+          {isVirtualFriend && (
+            <span className="ml-1 text-[10px] bg-stone-100 text-stone-600 px-1.5 py-0.5 rounded-full align-middle">
+              朋友
             </span>
           )}
         </p>

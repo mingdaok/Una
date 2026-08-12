@@ -11,6 +11,7 @@ import {
   MessageCircle,
   Mic2,
   Settings,
+  Sparkles,
   UserRoundCog,
   X,
 } from 'lucide-react';
@@ -52,6 +53,7 @@ export default function UnaNavigationDrawer({
   avatarUrl,
   onOpenChat,
   onOpenSocial,
+  onOpenLife,
   onOpenDiary,
   onToggleScene,
   onOpenCharacterSettings,
@@ -156,6 +158,7 @@ export default function UnaNavigationDrawer({
                 </MenuGroup>
 
                 <MenuGroup title="空间与回忆">
+                  <MenuRow icon={Sparkles} label="UNA 的生活" onClick={runAndClose(onOpenLife)} />
                   <MenuRow icon={BookOpenText} label="回忆日记" onClick={runAndClose(onOpenDiary)} />
                   <MenuRow icon={scene === 'study' ? DoorOpen : Home} label="切换场景" value={sceneLabel} onClick={runAndClose(onToggleScene)} />
                 </MenuGroup>

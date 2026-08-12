@@ -16,6 +16,7 @@ function renderDrawer(overrides = {}) {
     avatarUrl: '/avatar.png',
     onOpenChat: vi.fn(),
     onOpenSocial: vi.fn(),
+    onOpenLife: vi.fn(),
     onOpenDiary: vi.fn(),
     onToggleScene: vi.fn(),
     onOpenCharacterSettings: vi.fn(),
@@ -45,6 +46,7 @@ describe('UnaNavigationDrawer', () => {
     expect(screen.getByRole('link', { name: /实时语音/ }).getAttribute('href')).toBe('./?view=voice');
     expect(screen.getByRole('button', { name: /文字聊天/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: /UNA 动态/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /UNA 的生活/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: /回忆日记/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: /切换场景/ }).textContent).toContain('客厅');
     expect(screen.getByRole('button', { name: /角色与显示/ }).textContent).toContain('panda_cake');
@@ -58,6 +60,15 @@ describe('UnaNavigationDrawer', () => {
 
     expect(props.onOpenChange).toHaveBeenCalledWith(false);
     expect(props.onOpenSocial).toHaveBeenCalledOnce();
+  });
+
+  it('opens UNA life from the memory section', () => {
+    const { props } = renderDrawer();
+
+    fireEvent.click(screen.getByRole('button', { name: /UNA 的生活/ }));
+
+    expect(props.onOpenChange).toHaveBeenCalledWith(false);
+    expect(props.onOpenLife).toHaveBeenCalledOnce();
   });
 
   it('keeps logout as an explicit action', () => {

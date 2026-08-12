@@ -37,7 +37,12 @@ backend/temp_*.wav
 
 # Generated browser VAD runtime files
 frontend_react/public/vad/
-
 # Operating-system files
 .DS_Store
 Thumbs.db
+
+# Python and frontend test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+frontend_react/.npm-cache/

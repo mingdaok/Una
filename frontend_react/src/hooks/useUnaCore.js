@@ -429,6 +429,10 @@ export function useUnaCore(authenticated) {
                             visemes: data.visemes || [],
                             isAI: true,
                             emotion: data.emotion,
+                            isProactive: data.is_proactive === true,
+                            proactiveKind: data.proactive_kind || null,
+                            proactiveDeliveryId: data.proactive_delivery_id || null,
+                            proactiveTopic: data.proactive_topic || null,
                             date: new Date()
                         };
 

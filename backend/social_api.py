@@ -18,6 +18,44 @@ import database  # 🔥 引入消息记录模块，用于文本聊天记忆持�
 
 brain_instance = None  # 由 main_server.py 初始化后注入
 
+INTERNAL_POST_FIELDS = {
+    "owner_user_id",
+    "source_event_ids",
+    "life_world_time",
+    "generation_reason",
+    "idempotency_key",
+    "deleted_at",
+}
+INTERNAL_COMMENT_FIELDS = {
+    "generation_reason",
+    "source_event_id",
+    "idempotency_key",
+}
+
+
+def _client_comment(comment: dict) -> dict:
+    result = {
+        key: value
+        for key, value in comment.items()
+        if key not in INTERNAL_COMMENT_FIELDS and key != "replies"
+    }
+    result["replies"] = [
+        _client_comment(reply) for reply in comment.get("replies", [])
+    ]
+    return result
+
+
+def _client_post(post: dict) -> dict:
+    result = {
+        key: value
+        for key, value in post.items()
+        if key not in INTERNAL_POST_FIELDS and key != "comments"
+    }
+    result["comments"] = [
+        _client_comment(comment) for comment in post.get("comments", [])
+    ]
+    return result
+
 # ====================================================
 # 🤖 AI 自动化功能
 # ====================================================
@@ -332,7 +370,7 @@ async def create_post(
     if post:
         background_tasks.add_task(auto_comment_on_post, post["id"])
 
-    return {"status": "ok", "post": post}
+    return {"status": "ok", "post": _client_post(post)}
 
 
 # ====================================================
@@ -370,6 +408,7 @@ async def get_feed(
             if (media_id := media_service.media_id_from_url(url)) else url
             for url in post.get("images", [])
         ]
+    result["items"] = [_client_post(post) for post in result.get("items", [])]
     return result
 
 
@@ -441,7 +480,7 @@ async def add_comment(
         if should_ai_reply:
             background_tasks.add_task(auto_reply_comment, post_id, comment["id"])
 
-    return {"status": "ok", "comment": comment}
+    return {"status": "ok", "comment": _client_comment(comment)}
 
 
 @router.post("/post/{post_id}/comment/{comment_id}/ai-reply", summary="AI 自动回复评论")
@@ -495,7 +534,7 @@ async def ai_reply_comment(post_id: int, comment_id: int):
     if ai_comment is None:
         raise HTTPException(status_code=500, detail="AI 回复失败")
 
-    return {"status": "ok", "comment": ai_comment}
+    return {"status": "ok", "comment": _client_comment(ai_comment)}
 
 
 # ====================================================
