@@ -54,3 +54,38 @@ def test_multi_tenant_isolation_in_feed():
     feed_b = social_db.get_feed(owner_user_id="user_B")
     assert feed_b["total"] == 1
     assert feed_b["items"][0]["content"] == "This is user B's secret post"
+
+
+def test_life_post_keeps_event_source_and_daily_budget():
+    evidence = {
+        "version": 1,
+        "sources": [{"source_id": "event-1", "source_type": "una_life_event"}],
+        "used_source_ids": ["event-1"],
+        "validation_status": "passed",
+    }
+    post = social_db.create_post(
+        owner_user_id="user_A",
+        author_id="ai_una",
+        content="沿河散了会儿步。",
+        source_event_ids=["event-1"],
+        life_world_time="2026-08-10T08:30:00+08:00",
+        generation_reason="life_event",
+        idempotency_key="life-post:user_A:event-1",
+        content_evidence=evidence,
+    )
+
+    assert post["source_event_ids"] == ["event-1"]
+    assert post["content_evidence"] == evidence
+    assert social_db.has_ai_life_post_on_date("user_A", "2026-08-10") is True
+    assert social_db.has_ai_life_post_on_date("user_B", "2026-08-10") is False
+
+    duplicate = social_db.create_post(
+        owner_user_id="user_A",
+        author_id="ai_una",
+        content="重复事件不应再次发布。",
+        source_event_ids=["event-1"],
+        life_world_time="2026-08-10T09:00:00+08:00",
+        generation_reason="life_event",
+        idempotency_key="life-post:user_A:event-1",
+    )
+    assert duplicate is None

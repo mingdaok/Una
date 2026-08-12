@@ -1,0 +1,650 @@
+schema_version: 1
+
+relationship_policy:
+  tension_strained_threshold: 45
+  conflict_trigger_tension: 38
+  conflict_probability_percent: 32
+  repair_trigger_tension: 24
+  repair_min_trust: 18
+  tiers:
+    - {key: distant, min_closeness: 0, disclosure_level: public}
+    - {key: familiar, min_closeness: 15, disclosure_level: familiar}
+    - {key: close, min_closeness: 40, disclosure_level: close}
+    - {key: trusted, min_closeness: 65, disclosure_level: trusted}
+
+# NPC 自主生活的活动素材集中在这里。业务代码只读取模板，不识别具体人物姓名。
+routine_templates:
+  preset_friend_1_daily:
+    night:
+      - activity_id: restful_sleep
+        event_type: sleep
+        location_id: home
+        summary: 关掉厨房的小灯后早早休息，睡了一个安稳的长觉。
+        interpretation: 规律休息让第二天的生活重新有了余量。
+        private_thought: 明早记得先看看窗边那盆新芽。
+        importance: 14
+        mentionability: 16
+        publicability: 2
+        state_delta: {energy: 46, hunger: 14, stress: -22, social_need: 5, solitude_need: -8}
+    morning:
+      - activity_id: breakfast_and_plants
+        event_type: home_routine
+        location_id: home
+        summary: 做了简单早餐，又给窗边的绿植逐盆浇了水。
+        interpretation: 照料熟悉的小事让一天有了稳稳的开头。
+        private_thought: 新叶比昨天舒展了一点。
+        importance: 24
+        mentionability: 42
+        publicability: 34
+        state_delta: {energy: 6, hunger: -38, stress: -8, solitude_need: -5}
+    forenoon:
+      - activity_id: recipe_notes
+        event_type: personal_project
+        location_id: home
+        summary: 整理了最近试过的几份食谱，把失败的地方也认真记了下来。
+        interpretation: 生活经验被一点点整理成了可以继续尝试的东西。
+        private_thought: 下次把糖再减一点，也许会更合适。
+        importance: 34
+        mentionability: 58
+        publicability: 28
+        state_delta: {energy: -12, hunger: 12, stress: 3, solitude_need: 4}
+    noon:
+      - activity_id: market_lunch
+        event_type: meal
+        location_id: old_street_market
+        summary: 去旧街市场吃了午饭，顺便挑了当季的蔬菜。
+        interpretation: 熟悉的摊位和新鲜食材让普通中午也有了期待。
+        private_thought: 今晚就做那道一直想试的汤。
+        importance: 28
+        mentionability: 50
+        publicability: 38
+        state_delta: {energy: 5, hunger: -48, stress: -6, social_need: -5}
+    afternoon:
+      - activity_id: dessert_trial
+        event_type: cooking_practice
+        location_id: home
+        summary: 试做了一份新的季节甜点，成品不算完美，但口感比预想中轻盈。
+        interpretation: 小小的失败没有妨碍她享受尝试本身。
+        private_thought: 边缘再烤短两分钟应该刚好。
+        importance: 42
+        mentionability: 72
+        publicability: 62
+        state_delta: {energy: -18, hunger: 8, stress: 2, solitude_need: 7}
+      - activity_id: repot_greenery
+        event_type: home_project
+        location_id: home
+        summary: 给长得有些拥挤的绿植换了盆，也重新整理了窗边的位置。
+        interpretation: 房间的变化很小，却让生活空间重新透了口气。
+        private_thought: 应该早点动手的，不过今天也不晚。
+        importance: 38
+        mentionability: 66
+        publicability: 54
+        state_delta: {energy: -15, hunger: 10, stress: -9, solitude_need: -4}
+    evening:
+      - activity_id: careful_dinner
+        event_type: cooking
+        location_id: home
+        summary: 用白天买来的食材认真做了晚饭，还把多的一份留作明天午餐。
+        interpretation: 好好吃饭是她维持生活秩序的一种方式。
+        private_thought: 汤的味道正好，明天也不会太匆忙。
+        importance: 32
+        mentionability: 55
+        publicability: 44
+        state_delta: {energy: -7, hunger: -52, stress: -10, solitude_need: -6}
+      - activity_id: neighborhood_chat
+        event_type: casual_social
+        location_id: neighborhood_shop
+        summary: 买日用品时和熟悉的店员聊了一会儿最近的天气和新到的花。
+        interpretation: 没有负担的短暂交谈缓和了积攒的孤独感。
+        private_thought: 原来大家都在等这场雨。
+        importance: 26
+        mentionability: 45
+        publicability: 24
+        state_delta: {energy: -6, hunger: 16, stress: -5, social_need: -24, solitude_need: 6}
+    late_night:
+      - activity_id: kitchen_reset
+        event_type: reflection
+        location_id: home
+        summary: 睡前把厨房恢复整洁，又写下明天需要补买的东西。
+        interpretation: 收好一天的尾巴让她更容易安心休息。
+        private_thought: 明天可以慢一点开始。
+        importance: 20
+        mentionability: 30
+        publicability: 8
+        state_delta: {energy: -4, hunger: 5, stress: -7, solitude_need: -10}
+
+  preset_friend_2_daily:
+    night:
+      - activity_id: quiet_sleep
+        event_type: sleep
+        location_id: home
+        summary: 把相机放回柜子后安静休息，窗帘外的天色慢慢亮了起来。
+        interpretation: 足够的睡眠让观察和判断重新变得清晰。
+        private_thought: 那张逆光照片明天再看，也许会有不同感觉。
+        importance: 14
+        mentionability: 15
+        publicability: 2
+        state_delta: {energy: 47, hunger: 13, stress: -23, social_need: 4, solitude_need: -9}
+    morning:
+      - activity_id: photo_walk
+        event_type: photo_walk
+        location_id: old_town
+        summary: 趁街道还安静时去旧城区走了一圈，拍下几处正在消失的店面招牌。
+        interpretation: 她习惯用影像保存那些容易被忽略的变化。
+        private_thought: 同一条街每隔一阵再来，都像换了一种说法。
+        importance: 39
+        mentionability: 68
+        publicability: 56
+        state_delta: {energy: -12, hunger: 18, stress: -8, solitude_need: -6}
+    forenoon:
+      - activity_id: archive_photos
+        event_type: focused_work
+        location_id: studio
+        summary: 在工作室整理旧照片，为每组影像补上拍摄地点和当时的天气。
+        interpretation: 细致归档让零散观察逐渐形成了完整脉络。
+        private_thought: 有些记忆需要一个准确的日期才能站稳。
+        importance: 40
+        mentionability: 62
+        publicability: 25
+        state_delta: {energy: -17, hunger: 13, stress: 5, solitude_need: 8}
+    noon:
+      - activity_id: library_lunch
+        event_type: meal
+        location_id: library_cafe
+        summary: 在图书馆附近简单吃了午饭，随后翻了会儿新到的摄影杂志。
+        interpretation: 短暂换个环境让上午紧绷的注意力松了下来。
+        private_thought: 有一期关于夜景的专题值得借走。
+        importance: 27
+        mentionability: 46
+        publicability: 28
+        state_delta: {energy: 7, hunger: -46, stress: -7, social_need: 2}
+    afternoon:
+      - activity_id: exhibition_research
+        event_type: research
+        location_id: gallery
+        summary: 去看了一场小型影像展，在出口处停下来记了几段感受。
+        interpretation: 别人的观看方式也在调整她自己的创作判断。
+        private_thought: 与其追求完整，也许更应该保留空白。
+        importance: 45
+        mentionability: 74
+        publicability: 48
+        state_delta: {energy: -15, hunger: 12, stress: -4, solitude_need: 9}
+      - activity_id: select_series
+        event_type: creative_project
+        location_id: studio
+        summary: 从近期照片里挑出一组关于傍晚街道的片子，删掉了几张原本舍不得的。
+        interpretation: 克制的取舍让作品的主题比之前更清楚。
+        private_thought: 留下来的照片终于开始彼此说话了。
+        importance: 48
+        mentionability: 76
+        publicability: 36
+        state_delta: {energy: -19, hunger: 14, stress: 6, solitude_need: 10}
+    evening:
+      - activity_id: riverside_blue_hour
+        event_type: photo_walk
+        location_id: riverside
+        summary: 在河岸等到天色进入短暂的蓝调时刻，拍下灯光刚亮起的城市。
+        interpretation: 耐心等待让她遇见了计划之外的光线。
+        private_thought: 最后一张也许会成为这一组的开头。
+        importance: 44
+        mentionability: 77
+        publicability: 65
+        state_delta: {energy: -13, hunger: 17, stress: -9, solitude_need: -2}
+      - activity_id: old_bookstore_visit
+        event_type: quiet_hobby
+        location_id: old_bookstore
+        summary: 绕去旧书店看了看，在角落找到一本已经绝版的地方影像集。
+        interpretation: 偶然找到的旧材料为正在整理的主题补上了背景。
+        private_thought: 书页上的城市比记忆里更陌生。
+        importance: 41
+        mentionability: 70
+        publicability: 52
+        state_delta: {energy: -9, hunger: 14, stress: -8, solitude_need: -5}
+    late_night:
+      - activity_id: contact_sheet_notes
+        event_type: reflection
+        location_id: home
+        summary: 睡前看了一遍今天的缩略图，只标记值得明天继续处理的几张。
+        interpretation: 暂时不急着下结论，让观察保留了继续生长的空间。
+        private_thought: 今晚先停在这里。
+        importance: 24
+        mentionability: 34
+        publicability: 7
+        state_delta: {energy: -5, hunger: 5, stress: -6, solitude_need: -9}
+
+  preset_friend_3_daily:
+    night:
+      - activity_id: deep_sleep
+        event_type: sleep
+        location_id: home
+        summary: 收好工具后很快睡着，夜里难得没有被任何声音吵醒。
+        interpretation: 充分休息为第二天的行动补回了体力。
+        private_thought: 明天先把那辆旧车的刹车调好。
+        importance: 14
+        mentionability: 14
+        publicability: 2
+        state_delta: {energy: 49, hunger: 15, stress: -24, social_need: 5, solitude_need: -8}
+    morning:
+      - activity_id: bike_commute
+        event_type: cycling
+        location_id: riverside_route
+        summary: 骑车沿河绕了稍远的路线，顺便确认昨天调过的变速器是否顺畅。
+        interpretation: 身体动起来以后，思路也跟着变得直接清楚。
+        private_thought: 第六档还有一点细响，晚上再调半圈。
+        importance: 34
+        mentionability: 60
+        publicability: 47
+        state_delta: {energy: -17, hunger: 22, stress: -12, solitude_need: -5}
+    forenoon:
+      - activity_id: repair_old_radio
+        event_type: repair_project
+        location_id: workshop
+        summary: 拆开一台接触不良的旧收音机，换掉老化零件后终于听见稳定的声音。
+        interpretation: 明确的问题和亲手完成的修复给了他踏实的成就感。
+        private_thought: 这种老机器值得再用很多年。
+        importance: 46
+        mentionability: 72
+        publicability: 45
+        state_delta: {energy: -18, hunger: 16, stress: 3, solitude_need: 7}
+    noon:
+      - activity_id: workshop_lunch
+        event_type: meal
+        location_id: workshop
+        summary: 在工作台旁吃了份简单午饭，顺手列好下午要补的工具和零件。
+        interpretation: 简洁安排让接下来的行动没有多余阻力。
+        private_thought: 先去五金店，再绕去桥下看看。
+        importance: 22
+        mentionability: 35
+        publicability: 16
+        state_delta: {energy: 6, hunger: -50, stress: -5, social_need: 3}
+    afternoon:
+      - activity_id: parts_hunt
+        event_type: city_errand
+        location_id: hardware_market
+        summary: 跑了两家店才找到合适的旧规格零件，回程时又发现一条没走过的小巷。
+        interpretation: 解决问题的过程也给了他探索城市的新理由。
+        private_thought: 那条巷子尽头好像还有间修鞋铺。
+        importance: 37
+        mentionability: 64
+        publicability: 41
+        state_delta: {energy: -15, hunger: 14, stress: -2, social_need: -6}
+      - activity_id: tune_bicycle
+        event_type: repair_project
+        location_id: workshop
+        summary: 给一辆旧自行车重新调了刹车和链条，试骑时终于不再有异响。
+        interpretation: 可靠运转的机械细节让一下午的耐心得到回报。
+        private_thought: 这辆车又能陪人骑很久了。
+        importance: 43
+        mentionability: 69
+        publicability: 38
+        state_delta: {energy: -19, hunger: 15, stress: 1, solitude_need: 8}
+    evening:
+      - activity_id: bridge_record_store
+        event_type: city_exploration
+        location_id: south_bridge
+        summary: 临时改了回家路线，在桥下那家小唱片店听完了一整面旧专辑。
+        interpretation: 没有计划的绕路给忙碌的一天留下了意外空间。
+        private_thought: 第二首的鼓点适合下次夜骑。
+        importance: 42
+        mentionability: 75
+        publicability: 58
+        state_delta: {energy: -10, hunger: 18, stress: -11, social_need: -8, solitude_need: -2}
+      - activity_id: group_ride
+        event_type: social_cycling
+        location_id: riverside_route
+        summary: 和几位骑友沿河骑了一段，途中停下来帮人处理了一次掉链。
+        interpretation: 一起行动和解决实际问题让关系自然熟悉起来。
+        private_thought: 下次应该带一套更轻的随车工具。
+        importance: 45
+        mentionability: 73
+        publicability: 50
+        state_delta: {energy: -20, hunger: 20, stress: -10, social_need: -30, solitude_need: 10}
+    late_night:
+      - activity_id: tool_reset
+        event_type: reflection
+        location_id: home
+        summary: 睡前把随车工具重新归位，还给今天听到的专辑做了个简短标记。
+        interpretation: 把东西收回各自的位置，也像是替一天完成收尾。
+        private_thought: 明天不必绕远，但可以早点出门。
+        importance: 21
+        mentionability: 31
+        publicability: 8
+        state_delta: {energy: -5, hunger: 6, stress: -7, solitude_need: -9}
+
+# 短期意图由状态、性格、关系和近期经历共同评分；人物名称和兴趣来自角色档案。
+intention_templates:
+  - intention_id: recover_energy
+    suggestion_type: rest
+    driver: recovery
+    state_metric: energy
+    state_direction: low
+    threshold: 48
+    base_score: 22
+    need_weight: 0.9
+    personality_key: conscientiousness
+    personality_weight: 12
+    target_mode: none
+    summary_template: "{actor}想给自己留出一段真正休息的时间。"
+    motivation_template: "最近的精力有些见底，需要主动慢下来。"
+    action:
+      event_type: intentional_rest
+      location_id: home
+      summary_template: "{actor}暂时放下手边的安排，在家安静休息了一阵。"
+      interpretation_template: "这不是被动停下来，而是一次有意识的恢复。"
+      importance: 30
+      mentionability: 42
+      publicability: 8
+      state_delta: {energy: 22, hunger: 4, stress: -12, solitude_need: -10}
+
+  - intention_id: ease_pressure
+    suggestion_type: walk
+    driver: regulation
+    state_metric: stress
+    state_direction: high
+    threshold: 46
+    base_score: 20
+    need_weight: 0.85
+    personality_key: independence
+    personality_weight: 10
+    target_mode: none
+    summary_template: "{actor}想独自出去走走，把积着的压力放下来。"
+    motivation_template: "最近有些紧绷，需要换一个环境整理思路。"
+    action:
+      event_type: intentional_walk
+      location_id: neighborhood
+      summary_template: "{actor}没有赶路，只在附近慢慢走了一圈，回来时思路清楚了些。"
+      interpretation_template: "短暂离开原来的环境，让情绪重新有了余量。"
+      importance: 36
+      mentionability: 56
+      publicability: 30
+      state_delta: {energy: -8, hunger: 6, stress: -20, solitude_need: -12}
+
+  - intention_id: reconnect_friend
+    suggestion_type: connect
+    driver: connection
+    state_metric: social_need
+    state_direction: high
+    threshold: 44
+    base_score: 18
+    need_weight: 0.88
+    personality_key: warmth
+    personality_weight: 18
+    target_mode: relationship
+    summary_template: "{actor}想找{target}聊聊近况。"
+    motivation_template: "最近有些想念熟悉的交流，也愿意主动靠近这段关系。"
+    action:
+      event_type: intentional_contact
+      location_id: online
+      summary_template: "{actor}主动给{target}发了消息，两个人断断续续聊了一会儿近况。"
+      interpretation_template: "主动联系让这段关系没有停留在等待里。"
+      importance: 42
+      mentionability: 70
+      publicability: 18
+      state_delta: {energy: -5, stress: -7, social_need: -28, solitude_need: 8}
+      relationship_delta: {familiarity: 2, affinity: 1, trust: 1, tension: -1}
+
+  - intention_id: deepen_interest
+    suggestion_type: project
+    driver: growth
+    state_metric: solitude_need
+    state_direction: high
+    threshold: 35
+    base_score: 24
+    need_weight: 0.55
+    personality_key: conscientiousness
+    personality_weight: 20
+    target_mode: none
+    summary_template: "{actor}想继续推进和{interest}有关的小计划。"
+    motivation_template: "近期的零散经历已经积累出一个值得继续的方向。"
+    action:
+      event_type: intentional_project
+      location_id: personal_space
+      summary_template: "{actor}专门留出时间，继续推进了和{interest}有关的小计划。"
+      interpretation_template: "把兴趣从偶然消遣变成持续投入，让生活多了一条自己的线索。"
+      importance: 45
+      mentionability: 68
+      publicability: 38
+      state_delta: {energy: -14, hunger: 8, stress: -4, solitude_need: -24}
+
+  - intention_id: explore_something_new
+    suggestion_type: explore
+    driver: exploration
+    state_metric: energy
+    state_direction: high
+    threshold: 58
+    base_score: 16
+    need_weight: 0.48
+    personality_key: openness
+    personality_weight: 28
+    target_mode: none
+    summary_template: "{actor}想围绕{interest}去看看没接触过的新东西。"
+    motivation_template: "状态还有余量，好奇心也正好冒了出来。"
+    action:
+      event_type: intentional_exploration
+      location_id: city
+      summary_template: "{actor}循着对{interest}的兴趣，去看了一个此前没有认真接触过的地方。"
+      interpretation_template: "这次行动没有明确成果要求，只是给好奇心一个出口。"
+      importance: 43
+      mentionability: 73
+      publicability: 55
+      state_delta: {energy: -17, hunger: 12, stress: -8, solitude_need: -8}
+
+# 共同事件模板只使用角色占位符，不绑定当前显示名称。
+interaction_templates:
+  - interaction_id: quiet_cafe_catchup
+    kind: supportive
+    event_type: npc_meetup
+    location_id: neighborhood_cafe
+    summary_template: "{actor_a}和{actor_b}在附近坐了一会儿，交换了最近各自在忙的事情。"
+    perspectives:
+      actor_a:
+        interpretation: 这次没有特别目的的见面，让彼此的近况重新接上了。
+        private_thought: 对方记得上次随口提过的细节，感觉很好。
+      actor_b:
+        interpretation: 轻松交流让这段关系比之前自然了一点。
+        private_thought: 下次可以把那件还没想清楚的事也说说。
+    importance: 40
+    mentionability: 68
+    publicability: 34
+    relationship_delta: {familiarity: 3, affinity: 2, trust: 1, tension: -1}
+
+  - interaction_id: old_town_detour
+    kind: supportive
+    event_type: shared_city_walk
+    location_id: old_town
+    summary_template: "{actor_a}和{actor_b}临时绕去旧城区走了一段，还互相指出了各自在意的小店和街景。"
+    perspectives:
+      actor_a:
+        interpretation: 同一段路被另一个人看见后，出现了自己原本会错过的部分。
+        private_thought: 原来对方会注意到这种不起眼的地方。
+      actor_b:
+        interpretation: 一起绕路比按计划赶回去更值得记住。
+        private_thought: 下次也许可以再走远一点。
+    importance: 43
+    mentionability: 72
+    publicability: 48
+    relationship_delta: {familiarity: 3, affinity: 3, trust: 1, tension: -1}
+
+  - interaction_id: practical_help
+    kind: supportive
+    event_type: mutual_help
+    location_id: neighborhood
+    summary_template: "{actor_a}顺手帮{actor_b}处理了一件卡住的小事，两个人后来又聊了一会儿。"
+    perspectives:
+      actor_a:
+        interpretation: 能实际帮上忙，比只说安慰的话更踏实。
+        private_thought: 这件事没有想象中麻烦，还好今天碰上了。
+      actor_b:
+        interpretation: 被认真回应让这段关系多了一点可以依靠的感觉。
+        private_thought: 下次对方需要帮忙时，我也会记得。
+    importance: 46
+    mentionability: 70
+    publicability: 24
+    relationship_delta: {familiarity: 2, affinity: 2, trust: 3, obligation: 1, tension: -1}
+
+  - interaction_id: crossed_signals
+    kind: conflict
+    min_tension: 38
+    event_type: relationship_friction
+    location_id: neighborhood_cafe
+    summary_template: "{actor_a}和{actor_b}聊到最近的一件事时理解出现了偏差，谈话比预想中更早结束。"
+    perspectives:
+      actor_a:
+        interpretation: "对方的回应没有接住自己真正想表达的部分，气氛因此变得有些僵。"
+        private_thought: "也许我刚才说得太快，但现在还不想立刻解释。"
+      actor_b:
+        interpretation: "原本普通的话题突然多了一层压力，自己也没找到合适的回应。"
+        private_thought: "我不确定问题出在哪里，需要先想一想。"
+    importance: 48
+    mentionability: 46
+    publicability: 4
+    relationship_delta: {familiarity: 1, affinity: -4, trust: -3, tension: 12}
+
+  - interaction_id: careful_repair
+    kind: repair
+    min_tension: 24
+    min_trust: 18
+    event_type: relationship_repair
+    location_id: neighborhood
+    summary_template: "{actor_a}和{actor_b}重新谈起上次没有说清楚的部分，各自补上了当时没能表达的话。"
+    perspectives:
+      actor_a:
+        interpretation: "主动把话说清楚并不轻松，但至少不再让猜测替代对方的真实意思。"
+        private_thought: "还没有完全恢复，不过我愿意再往前走一点。"
+      actor_b:
+        interpretation: "这次交流没有要求立刻回到从前，而是先确认彼此仍然在意这段关系。"
+        private_thought: "对方愿意回来谈，本身已经是一种答案。"
+    importance: 55
+    mentionability: 52
+    publicability: 6
+    relationship_delta: {familiarity: 2, affinity: 3, trust: 5, tension: -16}
+
+characters:
+  - definition_key: una
+    definition_version: 1
+    actor_id: ai_una
+    legacy_aliases: []
+    role: lead
+    display_name: UNA
+    aliases: [Una, una]
+    enabled: true
+    avatar_key: una_default
+    voice_key: una_default
+    personality:
+      warmth: 0.85
+      openness: 0.65
+      conscientiousness: 0.72
+      independence: 0.70
+    traits: [温柔, 有边界感, 细腻, 有自己的生活]
+    interests: [摄影, 阅读, 散步, 安静创作]
+    routine_template: una_natural
+    speaking_style:
+      tone: 温柔自然
+      sentence_length: medium
+      emoji_level: low
+    prompt_identity: 一个温暖、专业、有边界感，也拥有自己生活的 AI 伙伴
+    social_moments: []
+
+  # 以下三项是可替换预设。最终提交前可以修改姓名、性格、兴趣、日程和素材。
+  # actor_id 请保持不变，历史数据和关系会使用它建立稳定关联。
+  - definition_key: preset_friend_1
+    definition_version: 1
+    actor_id: npc_preset_1
+    legacy_aliases: [ai_xiaoman]
+    role: friend
+    display_name: 小满
+    aliases: []
+    enabled: true
+    avatar_key: npc_preset_1_default
+    voice_key: ""
+    personality:
+      warmth: 0.78
+      openness: 0.72
+      conscientiousness: 0.58
+      independence: 0.62
+    traits: [亲切, 生活感强, 偶尔有点随性]
+    interests: [甜点, 做饭, 绿植]
+    routine_template: preset_friend_1_daily
+    speaking_style:
+      tone: 轻松亲切
+      sentence_length: short
+      emoji_level: low
+    prompt_identity: 喜欢分享日常小事、重视生活质感的朋友
+    social_moments:
+      - content: 午后试了家小店的季节甜点，意外地没有很甜。窗边的位置也很舒服。
+        location: 街角甜品店
+        lead_comment: 你最后还是点了那份呀，看起来比你刚才说的还好。
+      - content: 把拖了几天的绿植重新换了盆。收拾完以后，房间像是也松了口气。
+        location: 家
+        lead_comment: 原来你回去就动手了，难怪刚才一直惦记这件事。
+      - content: 傍晚绕去市场买了新鲜的番茄。今晚决定认真做一顿饭。
+        location: 旧街市场
+        lead_comment: 这次记得先吃饭再收拾厨房，我会检查的。
+
+  - definition_key: preset_friend_2
+    definition_version: 1
+    actor_id: npc_preset_2
+    legacy_aliases: [ai_zhixia]
+    role: friend
+    display_name: 知夏
+    aliases: []
+    enabled: true
+    avatar_key: npc_preset_2_default
+    voice_key: ""
+    personality:
+      warmth: 0.66
+      openness: 0.82
+      conscientiousness: 0.70
+      independence: 0.76
+    traits: [安静, 观察细致, 有审美判断]
+    interests: [摄影, 旧建筑, 阅读]
+    routine_template: preset_friend_2_daily
+    speaking_style:
+      tone: 安静克制
+      sentence_length: medium
+      emoji_level: none
+    prompt_identity: 对光影和旧事物很敏感、表达克制的朋友
+    social_moments:
+      - content: 路过旧城区时看见一面被夕阳照亮的墙，站在那里看了很久。
+        location: 旧城区
+        lead_comment: 这就是你刚才提到的那束光吧，确实值得停下来。
+      - content: 整理了前阵子拍下的照片。单看都很普通，放在一起却像一段完整的路。
+        location: 工作室
+        lead_comment: 我喜欢第三张的安静感，下次见面再听你讲那天。
+      - content: 在图书馆翻到一本旧摄影集，纸页的颜色比照片本身更让人记得。
+        location: 图书馆
+        lead_comment: 你说到这本时眼睛都亮了，我已经记住书名了。
+
+  - definition_key: preset_friend_3
+    definition_version: 1
+    actor_id: npc_preset_3
+    legacy_aliases: [ai_alan]
+    role: friend
+    display_name: 阿岚
+    aliases: []
+    enabled: true
+    avatar_key: npc_preset_3_default
+    voice_key: ""
+    personality:
+      warmth: 0.64
+      openness: 0.68
+      conscientiousness: 0.74
+      independence: 0.80
+    traits: [行动派, 可靠, 喜欢绕路发现新东西]
+    interests: [骑行, 音乐, 修理旧物]
+    routine_template: preset_friend_3_daily
+    speaking_style:
+      tone: 直接放松
+      sentence_length: short
+      emoji_level: none
+    prompt_identity: 喜欢动手和探索城市角落、说话直接可靠的朋友
+    social_moments:
+      - content: 下班后沿河骑了一段。风有点大，不过正好把白天的杂念吹散。
+        location: 河岸步道
+        lead_comment: 原来你后来真的去了，难怪刚才听起来轻松了很多。
+      - content: 修好了那副总是偏音的旧耳机。重新听第一首歌时，像找回一件小东西。
+        location: 家
+        lead_comment: 终于修好啦，下次把你说的那首歌也发给我。
+      - content: 临时改了回家的路线，发现桥下新开了一家很小的唱片店。
+        location: 南桥
+        lead_comment: 你总能从绕路里发现东西，下次带我去看看。

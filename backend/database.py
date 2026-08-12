@@ -2,6 +2,7 @@ import sqlite3
 import os
 import hashlib
 import datetime
+import json
 from settings import settings
 
 # 🔥 核心修复：确保路径绝对正确，防止 nohup 启动时找不到 DB
@@ -21,6 +22,7 @@ def init_db():
             content TEXT,
             mood_score INTEGER DEFAULT 0,
             audio_path TEXT,
+            content_evidence_json TEXT NOT NULL DEFAULT '{}',
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -86,6 +88,10 @@ def init_db():
         if 'audio_path' not in columns:
             print("⚠️ 正在迁移数据库: 添加 audio_path 字段...")
             cursor.execute("ALTER TABLE chat_history ADD COLUMN audio_path TEXT")
+        if 'content_evidence_json' not in columns:
+            cursor.execute(
+                "ALTER TABLE chat_history ADD COLUMN content_evidence_json TEXT NOT NULL DEFAULT '{}'"
+            )
             
     except Exception as e:
         print(f"❌ 数据库迁移警告: {e}")
@@ -255,13 +261,29 @@ def get_private_media(media_id):
         conn.close()
 
 
-def add_message(user_id, role, content, mood_score=0, audio_path=None):
+def add_message(
+    user_id,
+    role,
+    content,
+    mood_score=0,
+    audio_path=None,
+    content_evidence=None,
+):
     try:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO chat_history (user_id, role, content, mood_score, audio_path) VALUES (?, ?, ?, ?, ?)",
-            (user_id, role, content, mood_score, audio_path)
+            """INSERT INTO chat_history
+               (user_id, role, content, mood_score, audio_path, content_evidence_json)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                user_id,
+                role,
+                content,
+                mood_score,
+                audio_path,
+                json.dumps(content_evidence or {}, ensure_ascii=False),
+            )
         )
         conn.commit()
         conn.close()
@@ -274,7 +296,9 @@ def get_recent_history(user_id, limit=50):
         cursor = conn.cursor()
         # 获取最近 limit 条记录 (倒序)
         cursor.execute(
-            "SELECT role, content, audio_path, timestamp, mood_score FROM chat_history WHERE user_id = ? ORDER BY id DESC LIMIT ?",
+            """SELECT role, content, audio_path, timestamp, mood_score,
+                      content_evidence_json
+               FROM chat_history WHERE user_id = ? ORDER BY id DESC LIMIT ?""",
             (user_id, limit)
         )
         rows = cursor.fetchall()
@@ -294,6 +318,10 @@ def get_recent_history(user_id, limit=50):
                 "timestamp": r[3],
                 "mood_score": r[4] or 0
             }
+            try:
+                item["content_evidence"] = json.loads(r[5] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                item["content_evidence"] = {}
             formatted_data.append(item)
             
         return formatted_data[::-1] # 反转回正序 (从旧到新)
@@ -420,6 +448,13 @@ def init_diary_table():
                 mood TEXT,
                 memory_ref TEXT,
                 image_path TEXT,
+                author_ai_id TEXT NOT NULL DEFAULT 'ai_una',
+                source_event_ids TEXT NOT NULL DEFAULT '[]',
+                life_world_date TEXT,
+                visibility_level TEXT NOT NULL DEFAULT 'private',
+                generation_reason TEXT,
+                idempotency_key TEXT,
+                content_evidence_json TEXT NOT NULL DEFAULT '{}',
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -430,6 +465,22 @@ def init_diary_table():
             if 'user_id' not in cols:
                 print("⚠️ 迁移 una_diary 表：添加 user_id 字段...")
                 cursor.execute("ALTER TABLE una_diary ADD COLUMN user_id TEXT DEFAULT 'default'")
+            diary_additions = {
+                'author_ai_id': "TEXT NOT NULL DEFAULT 'ai_una'",
+                'source_event_ids': "TEXT NOT NULL DEFAULT '[]'",
+                'life_world_date': "TEXT",
+                'visibility_level': "TEXT NOT NULL DEFAULT 'private'",
+                'generation_reason': "TEXT",
+                'idempotency_key': "TEXT",
+                'content_evidence_json': "TEXT NOT NULL DEFAULT '{}'",
+            }
+            for name, definition in diary_additions.items():
+                if name not in cols:
+                    cursor.execute(f"ALTER TABLE una_diary ADD COLUMN {name} {definition}")
+            cursor.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS idx_una_diary_life_idempotency
+                   ON una_diary(idempotency_key) WHERE idempotency_key IS NOT NULL"""
+            )
         except Exception as e:
             print(f"Diary Migration Warning: {e}")
         conn.commit()
@@ -439,7 +490,23 @@ def init_diary_table():
 
 init_diary_table()
 
-def save_diary(user_id, date, diary_type, content, mood, memory_ref="", image_path=""):
+def save_diary(
+    user_id,
+    date,
+    diary_type,
+    content,
+    mood,
+    memory_ref="",
+    image_path="",
+    author_ai_id="ai_una",
+    source_event_ids=None,
+    life_world_date=None,
+    visibility_level="private",
+    generation_reason=None,
+    idempotency_key=None,
+    content_evidence=None,
+):
+    conn = None
     try:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
@@ -449,15 +516,38 @@ def save_diary(user_id, date, diary_type, content, mood, memory_ref="", image_pa
             return False
 
         cursor.execute(
-            "INSERT INTO una_diary (user_id, date, type, content, mood, memory_ref, image_path) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (user_id, date, diary_type, content, mood, memory_ref, image_path)
+            """
+            INSERT INTO una_diary (
+                user_id, date, type, content, mood, memory_ref, image_path,
+                author_ai_id, source_event_ids, life_world_date, visibility_level,
+                generation_reason, idempotency_key, content_evidence_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                date,
+                diary_type,
+                content,
+                mood,
+                memory_ref,
+                image_path,
+                author_ai_id,
+                json.dumps(source_event_ids or [], ensure_ascii=False),
+                life_world_date or date,
+                visibility_level,
+                generation_reason,
+                idempotency_key,
+                json.dumps(content_evidence or {}, ensure_ascii=False),
+            )
         )
         conn.commit()
-        conn.close()
         return True
     except Exception as e:
         print(f"Save Diary Error: {e}")
         return False
+    finally:
+        if conn is not None:
+            conn.close()
 
 def get_diaries(user_id, limit=20):
     try:
@@ -472,6 +562,14 @@ def get_diaries(user_id, limit=20):
         results = []
         for row in rows:
             d = dict(row)
+            try:
+                d['source_event_ids'] = json.loads(d.get('source_event_ids') or '[]')
+            except (TypeError, json.JSONDecodeError):
+                d['source_event_ids'] = []
+            try:
+                d['content_evidence'] = json.loads(d.get('content_evidence_json') or '{}')
+            except (TypeError, json.JSONDecodeError):
+                d['content_evidence'] = {}
             # 修正图片路径，确保前端能访问
             if d.get('image_path'):
                 d['img'] = f"/static/mobile/diary_images/{os.path.basename(d['image_path'])}"
@@ -515,6 +613,27 @@ def get_all_user_ids():
         return [r[0] for r in rows]
     except Exception as e:
         print(f"Get All Users Error: {e}")
+        return []
+
+
+def get_all_active_user_ids():
+    """返回启用账号及历史本地用户，供后台生活任务逐步初始化。"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id AS user_id FROM app_users WHERE is_active = 1
+            UNION
+            SELECT DISTINCT user_id FROM chat_history
+            WHERE user_id IS NOT NULL AND user_id != ''
+            """
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [row[0] for row in rows]
+    except Exception as e:
+        print(f"Get Active Users Error: {e}")
         return []
 
 def get_random_user_msg(user_id):

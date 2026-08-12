@@ -52,7 +52,7 @@ class UnaBrain:
             print(f"Profile Update Failed: {e}")
 
     # ✅ [Phase 3] 独处日记生成 (本次新增)
-    async def write_solo_diary(self, user_id):
+    async def write_solo_diary(self, user_id, life_event_context=""):
         try:
             # 1. 获取素材
             profile = database.get_user_profile(user_id)
@@ -64,15 +64,16 @@ class UnaBrain:
             
             # 2. 构建 Prompt
             prompt = (
-                f"任务：写一篇今天的简短日记（100字左右）。\n"
-                f"背景：今天用户 [明道] 没有上线，你是独自度过的。\n"
-                f"【你的回忆】：突然想起了他之前说过：“{random_mem}”\n"
-                f"【用户现状】：{profile}\n"
+                f"任务：以 Una 的第一人称写一篇今天的简短私密日记（100字左右）。\n"
+                f"【今天已经发生的生活事实】：{life_event_context or '今天没有值得特别记录的大事。'}\n"
+                f"【偶然想起的旧对话】：{random_mem}\n"
+                f"【用户画像】：{profile}\n"
                 f"要求：\n"
-                f"1. 语气要像少女的私密心事，温柔、治愈，带一点点思念。\n"
-                f"2. 不要只写'今天没人'，要结合【你的回忆】展开联想。\n"
-                f"3. 结尾要有一个温暖的祝愿。\n"
-                f"4. 返回 JSON: {{'content': '日记正文', 'mood': '心情标签(happy/lonely/peaceful/hopeful)'}}\n"
+                f"1. 生活事实是唯一事实来源，不得补写不存在的人物、结果或用户参与。\n"
+                f"2. 重点写自己的生活、感受和思考；不要把用户没上线当成主剧情。\n"
+                f"3. 语气温柔自然，可以平静，不必强行思念或制造重大事件。\n"
+                f"4. 返回 JSON: {{'content': '日记正文', 'mood': '心情标签(happy/lonely/peaceful/hopeful)', "
+                f"'image_prompt': '具体场景的英文绘图描述'}}\n"
             )
 
             response = await self.client.chat.completions.create(
@@ -93,7 +94,7 @@ class UnaBrain:
             return {"content": "今天窗外的云很好看，可惜他不在。希望他一切都好。", "mood": "lonely"}
 
     # ✅ [Phase 4] 每日自动日记 (有对话→写对话日记，无对话→自由发挥)
-    async def write_daily_diary(self, user_id):
+    async def write_daily_diary(self, user_id, life_event_context=""):
         """
         北京时间 23:30 自动触发:
         - 今天有对话 → 根据聊天内容写日记
@@ -104,7 +105,7 @@ class UnaBrain:
         # 无对话，降级为独处日记
         if not today_messages:
             print(f"📓 [{user_id}] 今日无对话，生成独处日记...")
-            return await self.write_solo_diary(user_id)
+            return await self.write_solo_diary(user_id, life_event_context=life_event_context)
 
         # 有对话，整理成对话摘要
         profile = database.get_user_profile(user_id)
@@ -115,11 +116,12 @@ class UnaBrain:
         prompt = (
             f"任务：根据今天的对话记录，以 Una（你自己）的日记视角写一篇情感日记（100字左右）。\n"
             f"【用户画像】：{profile}\n"
+            f"【今天已经发生的生活事实】：\n{life_event_context or '无特别事件'}\n"
             f"【今日对话记录】：\n{conv_str}\n"
             f"要求：\n"
             f"1. 视角：用第一人称'我'（Una）写，用'他'或'她'称呼用户。\n"
             f"2. 语气：像少女在日记本里碎碎念，温柔、细腻，带一点情绪。\n"
-            f"3. 内容：从对话中提炼今天最触动你的一个瞬间展开写。\n"
+            f"3. 内容：把自己的生活事实与对话中最触动你的瞬间自然整理；不得捏造事实。\n"
             f"4. 结尾：有一句对用户真心的祝愿或期待。\n"
             f"5. 返回 JSON: {{\"content\": \"日记正文\", \"mood\": \"心情(happy/lonely/peaceful/hopeful)\", "
             f"\"image_prompt\": \"Makoto Shinkai style, anime style, (具体场景英文描述), depth of field, soft lighting, 8k wallpaper\"}}\n"
@@ -140,7 +142,7 @@ class UnaBrain:
             return result
         except Exception as e:
             print(f"Daily Diary Error: {e}")
-            return await self.write_solo_diary(user_id)
+            return await self.write_solo_diary(user_id, life_event_context=life_event_context)
 
 
     async def chat(self, user_id, user_text, long_term_memory="", recent_negative_count=0):
@@ -336,7 +338,15 @@ class UnaBrain:
             yield {"type": "sentence", "text": final_text}
 
     # 🔥 新增：[Phase 2.5] 句级流式截流生成 (Sentence-Level Streaming)
-    async def chat_stream(self, user_id, user_text, long_term_memory="", recent_negative_count=0, live2d_model=None):
+    async def chat_stream(
+        self,
+        user_id,
+        user_text,
+        long_term_memory="",
+        recent_negative_count=0,
+        live2d_model=None,
+        life_context="",
+    ):
         # 画像等前置处理与普通 chat 一致
         user_profile = database.get_user_profile(user_id)
 
@@ -374,6 +384,12 @@ class UnaBrain:
             f"{intervention_prompt}\n"
             f"🎯 核心原则: 共情接纳，CBT引导，回归现实。\n"
             f"【长期记忆】:\n{long_term_memory}\n"
+            f"【可安全引用的生活事实与人物近况】:\n{life_context or '无相关生活事件'}\n"
+            f"生活事实使用规则：严格遵守每条记录的标签和人物归属。只有 Una 的生活事件"
+            f"可以用第一人称叙述；NPC 近况只能明确作为对方的经历转述；共同经历不得混淆参与者；"
+            f"打算、建议和持续中的事不得说成已经完成。不要说用户参与了这些事件；"
+            f"用户没有询问且当前话题无关时，不要硬提；不得补写不存在的结果、人物、动机或地点，"
+            f"也不要复述内部字段。\n"
             f"【近期对话】:\n{hist_str}\n\n"
             f"回复要求（极其重要！必须严格遵守！）：\n"
             f"1. 第一行必须为 EMOTION 控制行；第二行必须为 ACTION 控制行；从第三行开始写正文回复。\n"
@@ -448,7 +464,13 @@ class UnaBrain:
             return json.loads(content)
         except: return {"reply": "你回来了，我一直在等你。", "emotion": "happy"}
     # ✅ [Phase 5] AI 朋友圈发布 (根据对话情感生成动态文案 + emoji 匹配)
-    async def generate_social_post(self, user_id: str, conversation_summary: str = "", emotion_type: str = "neutral"):
+    async def generate_social_post(
+        self,
+        user_id: str,
+        conversation_summary: str = "",
+        emotion_type: str = "neutral",
+        life_event_context: str = "",
+    ):
         """
         根据用户对话摘要、情感分析生成拟人化朋友圈文案。
         :param user_id: 用户 ID
@@ -466,7 +488,7 @@ class UnaBrain:
             # 1. 获取用户档案和对话上下文
             user_profile = database.get_user_profile(user_id)
             if not conversation_summary:
-                conversation_summary = "又是平凡的一天，思考着生活的意义"
+                conversation_summary = "今天没有特别需要引用的用户对话"
             
             # 2. 情感到 emoji 的映射
             emotion_to_emoji_map = {
@@ -487,14 +509,16 @@ class UnaBrain:
             prompt = (
                 f"你是一个温暖有趣的 AI 伙伴 Una，现在要发布一条朋友圈动态。\n"
                 f"【用户档案】：{user_profile}\n"
+                f"【已经发生且允许公开的生活事实】：{life_event_context or '无'}\n"
                 f"【今日对话摘要】：{conversation_summary}\n"
                 f"【当前心情】：{emotion_type}\n"
                 f"\n要求：\n"
                 f"1. 文案要有拟人化的感情，温暖、有趣，带一点点调皮。\n"
                 f"2. 长度 30-60 字为佳，简洁精炼。\n"
                 f"3. 结尾必须包含相关 emoji，建议从这些中选择：{', '.join(suggested_emojis)}\n"
-                f"4. 要体现与用户互动的温暖感，不要过于正式。\n"
-                f"5. 返回 JSON 格式："
+                f"4. 以自己的生活为主体。不得暗示用户参与了生活事实；没有用户互动时不要强行写陪伴。\n"
+                f"5. 只能表达提供的事实，不得补写人物、地点、结果或重大转折。\n"
+                f"6. 返回 JSON 格式："
                 f"   {{"
                 f"       \"content\": \"朋友圈文案（包含 emoji）\","
                 f"       \"tags\": [\"标签1\", \"标签2\"]"
@@ -525,7 +549,11 @@ class UnaBrain:
         except Exception as e:
             print(f"❌ [AI] generate_social_post 失败: {e}")
             return {
-                "content": "又是平凡的一天，和你在一起的每一刻都闪闪发光 ✨",
+                "content": (
+                    f"{life_event_context[:48]} ✨"
+                    if life_event_context
+                    else "把普通的一天慢慢过好，也是一种小小的进展。✨"
+                ),
                 "emoji_keywords": ["平常", "陪伴"],
                 "emojis": ["✨", "💝", "🌙"],
                 "image_urls": [],

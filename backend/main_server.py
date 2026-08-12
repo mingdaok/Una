@@ -9,7 +9,6 @@ import uuid
 import json
 import asyncio
 import threading
-import datetime
 import subprocess 
 import time  # 新增：用于心跳计时
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -93,6 +92,36 @@ except ImportError:
         print(f"⚠️ 找不到 social_api.py: {_e}")
         social_router = None
         social_api_module = None
+
+try:
+    from life_simulation.api import (
+        life_chat_context_service,
+        life_content_safety_service,
+        life_choice_service,
+        life_proactive_service,
+        life_service,
+        router as life_router,
+    )
+    from life_simulation.social_world import LifeSocialWorldService
+    life_social_world_service = LifeSocialWorldService(
+        life_service.store,
+        social_db,
+        life_service.characters,
+        life_service.npc_life,
+        life_service.npc_interactions,
+        life_service.npc_intentions,
+        life_service.npc_suggestions,
+        content_safety=life_content_safety_service,
+    )
+except Exception as _e:
+    print(f"⚠️ AI 生活模拟模块初始化失败: {_e}")
+    life_service = None
+    life_router = None
+    life_chat_context_service = None
+    life_content_safety_service = None
+    life_social_world_service = None
+    life_choice_service = None
+    life_proactive_service = None
 
 from auth_api import auth_service, get_current_user, router as auth_router
 from media_service import register_media, media_url, router as media_router, sign_history_audio_urls
@@ -188,6 +217,10 @@ if social_router:
     app.include_router(social_router)
     print("✅ [Social] 朋友圈 API 路由已挂载")
 
+if life_router:
+    app.include_router(life_router)
+    print("✅ [Life] AI 生活模拟 API 路由已挂载")
+
 # === 初始化核心引擎 ===
 ASSETS_DIR = os.path.join(STATIC_DIR, "mobile", "assets")
 INDEX_HTML = os.path.join(STATIC_DIR, "mobile", "index.html")
@@ -221,7 +254,7 @@ voice_call_service = VoiceCallService(
 )
 app.include_router(create_voice_call_router(auth_service, voice_call_service))
 # 将 brain 实例注入 DiaryService
-diary_service = DiaryService(brain=brain)
+diary_service = DiaryService(brain=brain, life_service=life_service)
 vision_service = VisionService() if 'VisionService' in globals() and VisionService else None
 executor = ThreadPoolExecutor(max_workers=2)
 
@@ -250,7 +283,6 @@ class ConnectionManager:
             self.active_connections[user_id] = []
         self.active_connections[user_id].append(websocket)
         print(f"🔌 用户[{user_id}] 已连接, 当前连接数: {len(self.active_connections[user_id])}")
-        asyncio.create_task(self.trigger_welcome_back(user_id))
 
     def disconnect(self, websocket: WebSocket, user_id: str):
         if user_id in self.active_connections:
@@ -259,21 +291,27 @@ class ConnectionManager:
                 print(f"🔌 用户[{user_id}] 断开连接, 剩余连接数: {len(self.active_connections[user_id])}")
 
     async def broadcast_to_user(self, user_id: str, message: dict):
+        delivered = 0
         if user_id in self.active_connections:
             if isinstance(message, dict) and message.get('audio_url'):
                 message['audio_url'] = make_absolute_audio_url(message['audio_url'])
             for connection in list(self.active_connections[user_id]):
                 try:
                     await connection.send_json(message)
+                    delivered += 1
                 except asyncio.CancelledError:
                     raise
                 except Exception:
                     self.disconnect(connection, user_id)
+        return delivered
     
-    async def send_ai_reply(self, reply_text, emotion, user_id, mood_score=0, is_proactive=False, audio_url=None, visemes=None):
+    async def send_ai_reply(
+        self, reply_text, emotion, user_id, mood_score=0, is_proactive=False,
+        audio_url=None, visemes=None, persist_proactive=False, metadata=None,
+    ):
         reply_text = sanitize_reply_text(reply_text)
         if not reply_text:
-            return
+            return False
         if not audio_url or visemes is None:
             audio_url, visemes = await generate_audio_file(reply_text, emotion)
         audio_url = protect_generated_audio(user_id, audio_url)
@@ -281,11 +319,17 @@ class ConnectionManager:
         if not is_proactive:
             database.add_message(user_id, "ai", reply_text, mood_score, audio_url)
         
-        await self.broadcast_to_user(user_id, {
+        payload = {
             "type": "final_reply", "text": reply_text, "audio_url": audio_url,
             "visemes": visemes or [],
             "emotion": emotion, "crisis_level": "NORMAL"
-        })
+        }
+        if metadata:
+            payload.update(metadata)
+        delivered = await self.broadcast_to_user(user_id, payload)
+        if is_proactive and persist_proactive and delivered:
+            database.add_message(user_id, "ai", reply_text, mood_score, audio_url)
+        return bool(delivered)
 
     # 🔥 新增：用于单独发送一小段语音碎片的通道
     async def send_ai_reply_chunk(
@@ -350,19 +394,43 @@ class ConnectionManager:
         return True
 
     async def trigger_welcome_back(self, user_id: str):
-        last_time, last_content, last_mood = database.get_last_interaction(user_id)
-        if not last_time: return
+        if life_proactive_service is None:
+            return
+        last_time, _, _ = database.get_last_interaction(user_id)
+        if not last_time:
+            return
+        share = None
         try:
-            time_str = last_time.split(".")[0]
-            last_dt = datetime.datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
-            now_dt = datetime.datetime.utcnow() 
-            diff_hours = (now_dt - last_dt).total_seconds() / 3600.0
-            if diff_hours < 2.0:
+            share = await asyncio.to_thread(
+                life_proactive_service.claim_for_reconnect, user_id, last_time
+            )
+            if share is None:
                 return
-            welcome_data = await brain.make_proactive_greeting(user_id, last_time, last_content, last_mood, diff_hours)
             await asyncio.sleep(1.0)
-            await self.send_ai_reply(welcome_data['reply'], welcome_data.get('emotion', 'happy'), user_id, is_proactive=True)
-        except Exception as e: print(f"Welcome Error: {e}")
+            delivered = await self.send_ai_reply(
+                share.text,
+                share.emotion,
+                user_id,
+                is_proactive=True,
+                persist_proactive=True,
+                metadata={
+                    "is_proactive": True,
+                    "proactive_kind": "life_share",
+                    "proactive_delivery_id": share.delivery_id,
+                    "proactive_topic": share.topic,
+                },
+            )
+            action = life_proactive_service.complete if delivered else life_proactive_service.release
+            await asyncio.to_thread(action, user_id, share)
+        except Exception as error:
+            if share is not None:
+                await asyncio.to_thread(
+                    life_proactive_service.release,
+                    user_id,
+                    share,
+                    error=type(error).__name__,
+                )
+            print(f"Life share delivery error: {error}")
 
 ws_manager = ConnectionManager()
 speech_stream_coordinator = SpeechStreamCoordinator(max_parallel_synthesis=1)
@@ -415,6 +483,14 @@ async def process_and_push_response(user_text, user_id, live2d_model=None):
 
     loop = asyncio.get_running_loop()
     recall_task = loop.run_in_executor(None, memory_service.recall, user_id, search_query)
+    life_context_task = None
+    if life_chat_context_service is not None:
+        life_context_task = loop.run_in_executor(
+            None,
+            life_chat_context_service.build_context_bundle,
+            user_id,
+            user_text,
+        )
     asyncio.create_task(brain.update_profile_task(user_id, user_text))
 
     recent_moods = database.get_recent_mood_scores(user_id, 5)
@@ -430,6 +506,23 @@ async def process_and_push_response(user_text, user_id, live2d_model=None):
         print("⚠️ [RAG] 记忆检索超时(>1.0s)，跳过长期记忆，直接启动 LLM")
         relevant_memories = ""
 
+    life_context = ""
+    life_evidence = None
+    if life_context_task is not None:
+        try:
+            context_result = await asyncio.wait_for(life_context_task, timeout=0.35)
+            if isinstance(context_result, str):
+                life_context = context_result
+            else:
+                life_context = context_result.text
+                life_evidence = context_result.evidence
+                if life_content_safety_service is not None:
+                    life_evidence = life_content_safety_service.prepare_evidence(
+                        life_evidence
+                    )
+        except asyncio.TimeoutError:
+            print("⚠️ [Life] 生活记忆检索超时(>0.35s)，本轮聊天跳过")
+
     # 🌊 开始启动流式迭代
     full_reply_text = ""
     current_emotion = "neutral"
@@ -437,6 +530,9 @@ async def process_and_push_response(user_text, user_id, live2d_model=None):
     chunk_index = 0
     delivery_demux = ControlPrefixDemux(live2d_model=live2d_model)
     reply_id = uuid.uuid4().hex
+    safety_blocked = False
+    safety_codes = set()
+    buffered_life_chunks = []
 
     async def render_speech_unit(unit, trace):
         return await ws_manager.send_ai_reply_chunk(
@@ -457,11 +553,30 @@ async def process_and_push_response(user_text, user_id, live2d_model=None):
     )
     await speech_delivery.start()
 
-    async def publish_text_chunk(raw_text):
-        nonlocal full_reply_text, chunk_index
+    async def publish_text_chunk(raw_text, *, bypass_safety=False):
+        nonlocal full_reply_text, chunk_index, safety_blocked
         text_chunk = sanitize_reply_text(raw_text)
         if not text_chunk:
             return
+
+        if safety_blocked and not bypass_safety:
+            return
+        if (
+            not bypass_safety
+            and life_content_safety_service is not None
+            and life_evidence is not None
+        ):
+            validation = life_content_safety_service.validate(
+                user_id,
+                text_chunk,
+                life_evidence,
+                author_id="ai_una",
+                channel="chat",
+            )
+            if not validation.safe:
+                safety_blocked = True
+                safety_codes.update(issue["code"] for issue in validation.issues)
+                return
 
         full_reply_text += text_chunk
         await ws_manager.broadcast_to_user(user_id, {
@@ -480,7 +595,14 @@ async def process_and_push_response(user_text, user_id, live2d_model=None):
 
     try:
         # 使用流式接口获取片段
-        async for item in brain.chat_stream(user_id, user_text, long_term_memory=relevant_memories, recent_negative_count=negative_count, live2d_model=live2d_model):
+        async for item in brain.chat_stream(
+            user_id,
+            user_text,
+            long_term_memory=relevant_memories,
+            recent_negative_count=negative_count,
+            live2d_model=live2d_model,
+            life_context=life_context,
+        ):
             if item["type"] == "meta":
                 current_emotion = item.get("emotion", "neutral")
                 current_mood_score = item.get("mood_score", 0)
@@ -494,17 +616,70 @@ async def process_and_push_response(user_text, user_id, live2d_model=None):
                     await ws_manager.broadcast_to_user(user_id, event)
             elif item["type"] == "sentence":
                 _, safe_body = delivery_demux.feed(item.get("text", ""))
-                await publish_text_chunk(safe_body)
+                if life_evidence is not None and life_content_safety_service is not None:
+                    if safe_body:
+                        buffered_life_chunks.append(safe_body)
+                else:
+                    await publish_text_chunk(safe_body)
 
     except Exception as e:
         print(f"Streaming error: {e}")
         if not full_reply_text: full_reply_text = "..."
 
     _, safe_tail = delivery_demux.finish()
-    await publish_text_chunk(safe_tail)
+    if life_evidence is not None and life_content_safety_service is not None:
+        if safe_tail:
+            buffered_life_chunks.append(safe_tail)
+        candidate_reply = sanitize_reply_text("".join(buffered_life_chunks))
+        validation = life_content_safety_service.validate(
+            user_id,
+            candidate_reply,
+            life_evidence,
+            author_id="ai_una",
+            channel="chat",
+        )
+        safety_codes.update(issue["code"] for issue in validation.issues)
+        if validation.safe:
+            for buffered_chunk in buffered_life_chunks:
+                await publish_text_chunk(buffered_chunk, bypass_safety=True)
+        else:
+            safety_blocked = True
+    else:
+        await publish_text_chunk(safe_tail)
+    if safety_blocked and life_content_safety_service is not None:
+        await publish_text_chunk(
+            life_content_safety_service.fallback("chat"),
+            bypass_safety=True,
+        )
     full_reply_text = sanitize_reply_text(full_reply_text)
 
-    database.add_message(user_id, "ai", full_reply_text, current_mood_score, None)
+    evidence_payload = {}
+    if life_evidence is not None and life_content_safety_service is not None:
+        final_validation = life_content_safety_service.validate(
+            user_id,
+            full_reply_text,
+            life_evidence,
+            author_id="ai_una",
+            channel="chat",
+        )
+        safety_codes.update(issue["code"] for issue in final_validation.issues)
+        evidence = final_validation.evidence
+        if safety_blocked:
+            evidence = evidence.with_validation(
+                used_source_ids=final_validation.used_source_ids,
+                status="blocked",
+                codes=safety_codes,
+            )
+        evidence_payload = evidence.as_dict()
+
+    database.add_message(
+        user_id,
+        "ai",
+        full_reply_text,
+        current_mood_score,
+        None,
+        content_evidence=evidence_payload,
+    )
     summary = await speech_delivery.finish(full_text=full_reply_text)
     print(
         f"🏁 [Stream] reply={reply_id} 流式音频结束给用户 {user_id}, "
@@ -549,6 +724,7 @@ async def websocket_endpoint(websocket: WebSocket, ticket: str):
         await websocket.close(code=1008)
         return
     await ws_manager.connect(websocket, user_id)
+    asyncio.create_task(settle_and_trigger_life_share(user_id))
     temp_audio = os.path.join(CURRENT_DIR, f"temp_{user_id}.wav")
     converted_audio = os.path.join(CURRENT_DIR, f"temp_{user_id}_16k.wav")
     loop = asyncio.get_event_loop()
@@ -819,12 +995,51 @@ async def voice_input_api(req: VoiceInputRequest, current_user: dict = Depends(g
 # =========================================================================
 #               🕥 定时任务：北京时间 23:30 自动生成日记
 # =========================================================================
+async def settle_user_life(user_id: str):
+    """在线程中结算生活，并同步物化可见的朋友社交痕迹。"""
+    if life_service is None:
+        return None
+    try:
+        report = await asyncio.to_thread(life_service.settle_due, user_id)
+    except Exception as error:
+        print(f"❌ [{user_id}] AI 生活补算失败: {error}")
+        return None
+    if life_social_world_service is not None:
+        try:
+            await asyncio.to_thread(life_social_world_service.materialize_due, user_id)
+        except Exception as error:
+            print(f"❌ [{user_id}] AI 朋友社交痕迹生成失败: {error}")
+    if life_choice_service is not None:
+        try:
+            await asyncio.to_thread(life_choice_service.materialize_due, user_id)
+        except Exception as error:
+            print(f"❌ [{user_id}] AI 共同商量节点生成失败: {error}")
+    return report
+
+
+async def settle_and_trigger_life_share(user_id: str):
+    """Settle first so reconnect sharing sees the complete offline window."""
+    await settle_user_life(user_id)
+    await ws_manager.trigger_welcome_back(user_id)
+
+
+async def scheduled_life_settlement_job():
+    """每 15 分钟增量结算启用账号的生活窗口。"""
+    if life_service is None:
+        return
+    user_ids = database.get_all_active_user_ids()
+    print(f"🌿 [生活模拟] 开始检查 {len(user_ids)} 个用户的待结算窗口...")
+    for uid in user_ids:
+        await settle_user_life(uid)
+    print("✅ [生活模拟] 本轮增量结算完成")
+
+
 async def scheduled_diary_job():
     """
     每天北京时间 23:30 触发，为所有有历史对话的用户自动生成当日日记。
     北京时间 (CST, UTC+8) 23:30 = UTC 15:30，使用 Asia/Shanghai 时区。
     """
-    user_ids = database.get_all_user_ids()
+    user_ids = database.get_all_active_user_ids()
     print(f"📅 [定时任务] 开始为 {len(user_ids)} 个用户生成日记...")
     for uid in user_ids:
         try:
@@ -836,28 +1051,56 @@ async def scheduled_diary_job():
 
 async def scheduled_social_post_job():
     """
-    每天北京时间 09:00、12:00、18:00 触发，AI 自动发朋友圈。
+    每天北京时间 09:00、12:00、18:00 检查是否有适合公开的生活事件。
     """
-    user_ids = database.get_all_user_ids()
-    print(f"📅 [定时任务] 开始为 {len(user_ids)} 个用户发布 AI 朋友圈...")
+    if life_service is None:
+        return
+    user_ids = database.get_all_active_user_ids()
+    print(f"📅 [定时任务] 开始为 {len(user_ids)} 个用户检查 AI 朋友圈候选...")
     for uid in user_ids:
         try:
-            today_messages = database.get_today_messages(uid)
-            conversation_summary = "\n".join([m['content'] for m in today_messages[-8:]]) if today_messages else ""
-            emotion_type = "happy"
-            if today_messages:
-                # 简单情感判断：最后一句中含 sad 关键词时
-                last = today_messages[-1]['content']
-                if any(w in last for w in ['难过', '悲伤', '失落', '痛苦']):
-                    emotion_type = 'sad'
-                elif any(w in last for w in ['开心', '高兴', '快乐', '兴奋']):
-                    emotion_type = 'happy'
-                elif any(w in last for w in ['疲惫', '安静', '宁静']):
-                    emotion_type = 'calm'
-                else:
-                    emotion_type = 'thoughtful'
+            await settle_user_life(uid)
+            profile = life_service.store.get_profile(uid, "ai_una")
+            if not profile or not profile["social_posts_enabled"]:
+                continue
 
-            social_payload = await brain.generate_social_post(uid, conversation_summary=conversation_summary, emotion_type=emotion_type)
+            from life_simulation.clock import get_timezone, utc_now
+
+            local_now = utc_now().astimezone(get_timezone(profile["timezone"]))
+            life_date = local_now.strftime("%Y-%m-%d")
+            if social_db.has_ai_life_post_on_date(uid, life_date, ai_id="ai_una"):
+                continue
+
+            day_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+            events = life_service.store.list_events(
+                uid,
+                "ai_una",
+                limit=20,
+                since=day_start.isoformat(),
+            )
+            candidates = [
+                event
+                for event in events
+                if event["publicability"] >= 45
+                and event["disclosure_level"] != "private"
+                and event["event_type"] not in {"sleep", "period_summary"}
+            ]
+            if not candidates:
+                continue
+            chosen = max(
+                candidates,
+                key=lambda event: (
+                    event["publicability"],
+                    event["importance"],
+                    event["end_at"],
+                ),
+            )
+            life_context = f"{chosen['summary']}（地点：{chosen['location_id']}）"
+            social_payload = await brain.generate_social_post(
+                uid,
+                emotion_type="thoughtful",
+                life_event_context=life_context,
+            )
             if not social_payload or not social_payload.get('content'):
                 continue
 
@@ -867,6 +1110,27 @@ async def scheduled_social_post_job():
             extra_emojis = ''.join(social_payload.get('emojis', [])[:2])
             if extra_emojis and extra_emojis not in content:
                 content = f"{content} {extra_emojis}"
+
+            evidence_payload = {}
+            if life_content_safety_service is not None:
+                from life_simulation.evidence import evidence_from_event
+
+                evidence = evidence_from_event(
+                    chosen,
+                    source_type="una_life_event",
+                    actor_ids=("ai_una", *chosen.get("participant_ids", [])),
+                    generation_reason="life_event",
+                    generator_version="una-social-post-v2",
+                )
+                validation = life_content_safety_service.validate(
+                    uid,
+                    content,
+                    evidence,
+                    author_id="ai_una",
+                    channel="post",
+                )
+                content = validation.text
+                evidence_payload = validation.evidence.as_dict()
 
             social_db.create_post(
                 owner_user_id=uid,
@@ -879,11 +1143,16 @@ async def scheduled_social_post_job():
                 location='',
                 emoji_pack_ids=emoji_pack_ids,
                 post_type='ai',
-                visibility='public'
+                visibility='public',
+                source_event_ids=[chosen["event_id"]],
+                life_world_time=chosen["end_at"],
+                generation_reason="life_event",
+                idempotency_key=f"life-post:{uid}:ai_una:{chosen['event_id']}",
+                content_evidence=evidence_payload,
             )
         except Exception as e:
             print(f"❌ [{uid}] AI 自动发圈失败: {e}")
-    print("✅ [定时任务] AI 朋友圈发布完成")
+    print("✅ [定时任务] AI 朋友圈候选检查完成")
 
 
 from contextlib import asynccontextmanager
@@ -892,6 +1161,15 @@ from contextlib import asynccontextmanager
 async def lifespan(application):
     """FastAPI 生命周期：启动时初始化定时调度器"""
     scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
+    scheduler.add_job(
+        scheduled_life_settlement_job,
+        "interval",
+        minutes=15,
+        id="life_settlement",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
     # 每天北京时间 23:30 触发
     scheduler.add_job(
         scheduled_diary_job,
@@ -907,6 +1185,7 @@ async def lifespan(application):
         replace_existing=True
     )
     scheduler.start()
+    print("🌿 [Scheduler] AI 生活增量结算已启动 (每 15 分钟)")
     print("⏰ [Scheduler] 日记定时任务已启动 (每天北京时间 23:30)")
     print("⏰ [Scheduler] AI 自动发圈任务已启动 (每天北京时间 09:00/12:00/18:00)")
     try:

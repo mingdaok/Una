@@ -61,13 +61,30 @@ def test_social_post_owner_comes_from_authenticated_user(client):
     )
 
     assert created.status_code == 200
-    assert created.json()["post"]["owner_user_id"] != "pretend-bob"
+    assert "owner_user_id" not in created.json()["post"]
+    assert "idempotency_key" not in created.json()["post"]
+    import social_db
+    social_db.add_comment(
+        post_id=created.json()["post"]["id"],
+        user_id="ai_una",
+        user_name="UNA",
+        content="只展示给用户的评论正文",
+        generation_reason="npc_social_world",
+        source_event_id="private-event-id",
+        idempotency_key="private-comment-key",
+    )
 
     alice_feed = client.get("/api/social/feed", headers=alice_headers)
     bob_feed = client.get("/api/social/feed", headers=bob_headers)
 
     assert alice_feed.status_code == 200
     assert alice_feed.json()["total"] == 1
+    assert "owner_user_id" not in alice_feed.json()["items"][0]
+    assert "source_event_ids" not in alice_feed.json()["items"][0]
+    comment = alice_feed.json()["items"][0]["comments"][0]
+    assert "generation_reason" not in comment
+    assert "source_event_id" not in comment
+    assert "idempotency_key" not in comment
     assert bob_feed.status_code == 200
     assert bob_feed.json()["total"] == 0
 

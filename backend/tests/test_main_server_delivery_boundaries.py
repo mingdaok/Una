@@ -134,6 +134,107 @@ def test_voice_call_router_is_separate_and_lifespan_closes_runtime(main_server, 
     run_scenario(scenario())
 
 
+def test_life_settlement_materializes_friend_social_world(main_server, monkeypatch):
+    calls = []
+
+    class FakeLifeService:
+        @staticmethod
+        def settle_due(user_id):
+            calls.append(("settle", user_id))
+            return "settlement-report"
+
+    class FakeSocialWorld:
+        @staticmethod
+        def materialize_due(user_id):
+            calls.append(("social", user_id))
+
+    monkeypatch.setattr(main_server, "life_service", FakeLifeService())
+    monkeypatch.setattr(main_server, "life_social_world_service", FakeSocialWorld())
+
+    async def scenario():
+        result = await main_server.settle_user_life("user-a")
+        assert result == "settlement-report"
+
+    run_scenario(scenario())
+    assert calls == [("settle", "user-a"), ("social", "user-a")]
+
+
+def test_reconnect_settles_before_attempting_life_share(main_server, monkeypatch):
+    calls = []
+
+    async def settle(user_id):
+        calls.append(("settle", user_id))
+
+    async def welcome(user_id):
+        calls.append(("share", user_id))
+
+    monkeypatch.setattr(main_server, "settle_user_life", settle)
+    monkeypatch.setattr(main_server.ws_manager, "trigger_welcome_back", welcome)
+
+    run_scenario(main_server.settle_and_trigger_life_share("user-a"))
+
+    assert calls == [("settle", "user-a"), ("share", "user-a")]
+
+
+def test_welcome_back_delivers_claimed_life_share_with_protocol_metadata(
+    main_server, monkeypatch
+):
+    calls = []
+    share = SimpleNamespace(
+        delivery_id="delivery-1",
+        source_event_id="event-1",
+        topic="creative",
+        text="你回来啦。我刚刚完成了一幅画，很想第一个告诉你。",
+        emotion="excited",
+    )
+
+    class FakeProactiveService:
+        @staticmethod
+        def claim_for_reconnect(user_id, last_time):
+            calls.append(("claim", user_id, last_time))
+            return share
+
+        @staticmethod
+        def complete(user_id, claimed):
+            calls.append(("complete", user_id, claimed.delivery_id))
+
+        @staticmethod
+        def release(user_id, claimed):
+            calls.append(("release", user_id, claimed.delivery_id))
+
+    async def no_sleep(_delay):
+        return None
+
+    async def send(*args, **kwargs):
+        calls.append(("send", args, kwargs))
+        return True
+
+    monkeypatch.setattr(main_server, "life_proactive_service", FakeProactiveService())
+    monkeypatch.setattr(
+        main_server.database,
+        "get_last_interaction",
+        lambda user_id: ("2026-08-10 00:00:00", "上次聊天", 0),
+        raising=False,
+    )
+    monkeypatch.setattr(main_server.asyncio, "sleep", no_sleep)
+    manager = main_server.ConnectionManager()
+    monkeypatch.setattr(manager, "send_ai_reply", send)
+
+    run_scenario(manager.trigger_welcome_back("user-a"))
+
+    sent = next(call for call in calls if call[0] == "send")
+    assert sent[2]["is_proactive"] is True
+    assert sent[2]["persist_proactive"] is True
+    assert sent[2]["metadata"] == {
+        "is_proactive": True,
+        "proactive_kind": "life_share",
+        "proactive_delivery_id": "delivery-1",
+        "proactive_topic": "creative",
+    }
+    assert ("complete", "user-a", "delivery-1") in calls
+    assert not any(call[0] == "release" for call in calls)
+
+
 def test_voice_call_worklet_and_vad_assets_are_mounted_at_frontend_urls(main_server):
     mounts = {
         getattr(route, "path", None): route
@@ -309,7 +410,7 @@ def test_chat_reply_waits_for_speech_delivery_before_end(main_server, monkeypatc
         monkeypatch.setattr(main_server.memory_service, "recall", lambda *args: "", raising=False)
         monkeypatch.setattr(main_server.memory_service, "remember", lambda *args: None, raising=False)
         monkeypatch.setattr(main_server.database, "get_recent_mood_scores", lambda *args: [])
-        monkeypatch.setattr(main_server.database, "add_message", lambda *args: None)
+        monkeypatch.setattr(main_server.database, "add_message", lambda *args, **kwargs: None)
         monkeypatch.setattr(main_server.ws_manager, "broadcast_to_user", broadcast)
         monkeypatch.setattr(main_server.ws_manager, "send_ai_reply_chunk", send_chunk)
 
@@ -333,6 +434,106 @@ def test_chat_reply_waits_for_speech_delivery_before_end(main_server, monkeypatc
     assert [event["type"] for event in events].index("audio_stream_chunk") < [
         event["type"] for event in events
     ].index("audio_stream_end")
+
+
+def test_chat_blocks_false_npc_first_person_claim_and_persists_evidence(
+    main_server, monkeypatch, tmp_path
+):
+    from life_simulation.content_safety import ContentSafetyService
+    from life_simulation.evidence import ContentEvidence, EvidenceSource
+    from life_simulation.service import LifeSettlementService
+    from life_simulation.store import LifeStore
+
+    store = LifeStore(str(tmp_path / "chat-stream-safety.sqlite3"))
+    life = LifeSettlementService(store)
+    life.ensure_world("user-chat")
+    connection = store._connect()
+    try:
+        connection.execute(
+            """
+            INSERT INTO ai_actor_events (
+                event_id, owner_user_id, actor_id, schedule_id, event_type, status,
+                start_at, end_at, location_id, summary, facts_json, importance,
+                mentionability, publicability, interpretation, private_thought,
+                disclosure_level, idempotency_key, created_at
+            ) VALUES (
+                'npc-event-1', 'user-chat', 'npc_preset_1', NULL, 'test',
+                'completed', '2026-05-01T08:00:00+00:00',
+                '2026-05-01T09:00:00+00:00', 'market', '去市场挑选花材',
+                '{}', 50, 80, 80, '', '', 'familiar', 'test:npc-event-1',
+                '2026-05-01T09:00:00+00:00'
+            )
+            """
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    safety = ContentSafetyService(store, life.characters)
+    evidence = ContentEvidence(
+        sources=(EvidenceSource(
+            "npc-event-1",
+            "npc_life_event",
+            actor_ids=("npc_preset_1",),
+            disclosure_level="familiar",
+            summary="去市场挑选花材",
+        ),),
+        generation_reason="chat_life_context",
+        generator_version="test-v1",
+    )
+    saved = []
+    events = []
+
+    class Brain:
+        async def update_profile_task(self, *args):
+            pass
+
+        async def chat_stream(self, *args, **kwargs):
+            assert "小满" in kwargs["life_context"]
+            # 单个片段都不足以判断冒领，组合后才构成错误事实声明。
+            yield {"type": "sentence", "text": "我今天"}
+            yield {"type": "sentence", "text": "去了市场挑选花材。"}
+
+    class Context:
+        @staticmethod
+        def build_context_bundle(*args):
+            return SimpleNamespace(
+                text="- [NPC近况·小满] 去市场挑选花材",
+                evidence=evidence,
+            )
+
+    async def broadcast(user_id, event):
+        events.append(event)
+
+    async def send_chunk(*args, **kwargs):
+        return True
+
+    def add_message(*args, **kwargs):
+        saved.append((args, kwargs))
+
+    async def scenario():
+        monkeypatch.setattr(main_server, "brain", Brain())
+        monkeypatch.setattr(main_server, "life_chat_context_service", Context())
+        monkeypatch.setattr(main_server, "life_content_safety_service", safety)
+        monkeypatch.setattr(main_server.memory_service, "recall", lambda *args: "", raising=False)
+        monkeypatch.setattr(main_server.memory_service, "remember", lambda *args: None, raising=False)
+        monkeypatch.setattr(main_server.database, "get_recent_mood_scores", lambda *args: [])
+        monkeypatch.setattr(main_server.database, "add_message", add_message)
+        monkeypatch.setattr(main_server.ws_manager, "broadcast_to_user", broadcast)
+        monkeypatch.setattr(main_server.ws_manager, "send_ai_reply_chunk", send_chunk)
+
+        await main_server.process_and_push_response("小满最近怎么样", "user-chat")
+
+    run_scenario(scenario())
+
+    text = "".join(
+        event["text"] for event in events if event["type"] == "text_stream_chunk"
+    )
+    assert text == safety.fallback("chat")
+    assistant_args, assistant_kwargs = saved[-1]
+    assert assistant_args[1] == "ai"
+    assert assistant_args[2] == safety.fallback("chat")
+    assert assistant_kwargs["content_evidence"]["validation_status"] == "blocked"
+    assert "npc_experience_claimed_by_una" in assistant_kwargs["content_evidence"]["validation_codes"]
 
 
 def test_vision_reply_uses_ordered_delivery_and_sanitizes_text(main_server, monkeypatch):
@@ -361,7 +562,7 @@ def test_vision_reply_uses_ordered_delivery_and_sanitizes_text(main_server, monk
         monkeypatch.setattr(main_server, "vision_service", Vision())
         monkeypatch.setattr(main_server.ws_manager, "broadcast_to_user", broadcast)
         monkeypatch.setattr(main_server.ws_manager, "send_ai_reply_chunk", send_chunk)
-        monkeypatch.setattr(main_server.database, "add_message", lambda *args: None)
+        monkeypatch.setattr(main_server.database, "add_message", lambda *args, **kwargs: None)
 
         result = await main_server.vision_chat_api(
             main_server.PhotoRequest(image="data"), {"id": "user-vision"}
@@ -513,7 +714,7 @@ def test_live2d_candidate_routes_to_v3_director_with_runtime_model(
         monkeypatch.setattr(main_server.memory_service, "recall", lambda *args: "", raising=False)
         monkeypatch.setattr(main_server.memory_service, "remember", lambda *args: None, raising=False)
         monkeypatch.setattr(main_server.database, "get_recent_mood_scores", lambda *args: [])
-        monkeypatch.setattr(main_server.database, "add_message", lambda *args: None)
+        monkeypatch.setattr(main_server.database, "add_message", lambda *args, **kwargs: None)
         monkeypatch.setattr(
             main_server.ws_manager, "broadcast_to_user",
             lambda user_id, event: asyncio.sleep(0, result=events.append(event)),
