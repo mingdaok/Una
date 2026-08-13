@@ -5,7 +5,7 @@
 > 最近更新：2026-08-14
 > 适用项目：UNA / AI 生活模拟
 > 前置版本：`NPC 自主生活 v1`
-> 实现基线：独立开发区 `docs/npc-agency-v2-delivery-baseline.md`
+> 实现基线：`docs/npc-agency-v2-delivery-baseline.md`
 > 后续开发要求：开始相关开发前，先阅读本文和 `docs/npc-autonomous-life-v1.md`。
 
 ## 1. 文档目的
@@ -1002,7 +1002,7 @@ npc-agency-v2
 
 ## 22. 分阶段实施计划
 
-本节保留为实施与验收追踪记录。五个阶段均已完成主体实现，详细自动化证据见独立开发区的 `docs/npc-agency-v2-delivery-baseline.md`。
+本节保留为实施与验收追踪记录。五个阶段均已完成主体实现，详细自动化证据见 `docs/npc-agency-v2-delivery-baseline.md`。
 
 ### 阶段一：状态驱动的自由选择（已完成）
 
@@ -1146,20 +1146,20 @@ npc-agency-v2
 
 #### A. 启动开发环境
 
-在独立开发区打开两个 PowerShell 终端。终端一启动后端：
+在主工作区打开两个 PowerShell 终端。终端一启动后端：
 
 ```powershell
-cd D:\ai\Una\.worktrees\npc-agency-v2-phase1
+cd D:\ai\Una
 $env:UNA_ENV='development'
 python start.py
 ```
 
-也可以直接在 VS Code 中运行独立开发区根目录的 `start.py`。不要从仓库根目录直接执行 `python backend/main_server.py`：这种启动方式不会自动建立项目导入路径，而且可能绕过 VS Code 已选择的依赖环境。`start.py` 会自动打开 `8000` 页面；本轮前端验收仍使用下面单独启动的 `5173` 页面，可以关闭自动打开的旧静态页。
+也可以直接在 VS Code 中运行主工作区根目录的 `start.py`。不要直接执行 `python backend/main_server.py`：这种启动方式不会自动建立项目导入路径，而且可能绕过 VS Code 已选择的依赖环境。`start.py` 会自动打开 `8000` 页面；本轮前端验收仍使用下面单独启动的 `5173` 页面，可以关闭自动打开的旧静态页。
 
-终端二启动独立开发区的最新前端：
+终端二启动主工作区的最新前端：
 
 ```powershell
-cd D:\ai\Una\.worktrees\npc-agency-v2-phase1\frontend_react
+cd D:\ai\Una\frontend_react
 $env:VITE_API_BASE_URL='http://127.0.0.1:8000'
 npm.cmd run dev
 ```
