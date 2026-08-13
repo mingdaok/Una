@@ -332,6 +332,12 @@ def test_intention_lifecycle_schema_is_versioned(tmp_path):
         (9, "npc_user_suggestions_agency_v1"),
         (10, "npc_acceptance_tools_v1"),
         (11, "unified_content_evidence_v1"),
+        (12, "npc_agency_v2_phase1"),
+        (13, "npc_goals_commitments_plans_v2"),
+        (14, "npc_bidirectional_social_v2"),
+        (15, "npc_world_environment_v2"),
+        (16, "npc_important_decision_llm_v2"),
+        (17, "npc_long_horizon_agency_v2"),
     ]
     assert {
         "priority",

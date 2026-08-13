@@ -83,6 +83,53 @@ def test_relationship_tiers_are_directional_and_exposed_safely(tmp_path):
     assert "private_summary" in relationship
 
 
+def test_interaction_memories_are_owner_scoped_and_reach_decision_planning(tmp_path):
+    store, service = make_service(tmp_path)
+    seed_bidirectional_relation(
+        store,
+        service,
+        "npc_preset_1",
+        "npc_preset_2",
+        familiarity=55,
+        affinity=50,
+        trust=48,
+        tension=6,
+    )
+    actor = service.characters.get_actor("user-a", "npc_preset_1")
+    memories = store.list_actor_memories("user-a", actor["actor_id"])
+    relationships = store.list_relationships("user-a", actor["actor_id"])
+
+    assert memories[0]["metadata"]["other_actor_id"] == "npc_preset_2"
+    assert store.list_actor_memories("user-b", actor["actor_id"]) == []
+
+    plan = service.npc_life.engine.plan(
+        "user-a",
+        actor,
+        LifeWindow(
+            key="evening",
+            label="晚上",
+            start_at=START + timedelta(hours=1),
+            end_at=START + timedelta(hours=5),
+        ),
+        state=store.get_actor_state("user-a", actor["actor_id"]),
+        relationships=tuple(relationships),
+        memories=tuple(memories),
+    )
+    evidence = plan["decision"]["candidate_scores"]
+
+    assert any(item["source"] == "relationship" for item in evidence)
+    assert any(item["source"] == "memory" for item in evidence)
+    assert any(
+        item["components"]["relationship_motivation"] > 0
+        for item in evidence if item["source"] == "relationship"
+    )
+    assert any(
+        item["components"]["memory_relevance"] > 0
+        for item in evidence if item["source"] == "memory"
+    )
+    assert "测试关系种子" not in str(evidence)
+
+
 def test_high_closeness_pair_is_preferred_for_interaction(tmp_path):
     _, service = make_service(tmp_path)
     seed_bidirectional_relation(

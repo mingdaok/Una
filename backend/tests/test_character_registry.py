@@ -26,6 +26,8 @@ def test_default_catalog_has_three_editable_presets_and_legacy_aliases():
         "npc_preset_3",
     ]
     assert catalog.canonical_actor_id("ai_xiaoman") == "npc_preset_1"
+    assert catalog.action_atoms
+    assert catalog.get("npc_preset_2").decision_style["novelty_seeking"] > 0
     assert catalog.canonical_actor_id("ai_zhixia") == "npc_preset_2"
     assert catalog.canonical_actor_id("ai_alan") == "npc_preset_3"
 

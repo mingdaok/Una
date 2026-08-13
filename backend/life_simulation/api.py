@@ -22,7 +22,9 @@ from .content_safety_eval import ContentSafetyEvaluator
 from .continuity import story_stage_label
 from .proactive import LifeProactiveService
 from .quality import LifeQualityEvaluator
+from .quality_jobs import QualityEvaluationJobService
 from .service import LifeSettlementService
+from .locations import location_name
 from .store import DEFAULT_AI_ID, LifeStore
 
 
@@ -155,6 +157,15 @@ def _client_relationship(relationship: dict) -> dict:
     return {key: relationship[key] for key in fields}
 
 
+def _client_quality_job(job: dict) -> dict:
+    fields = (
+        "job_id", "seeds", "days", "status", "progress_current",
+        "progress_total", "cancel_requested", "result", "error_text",
+        "created_at", "started_at", "finished_at",
+    )
+    return {key: job[key] for key in fields if key in job}
+
+
 def _client_story_choice(choice: dict) -> dict:
     fields = (
         "choice_id",
@@ -233,6 +244,10 @@ def _client_actor_state(state: Optional[dict]) -> Optional[dict]:
             "stress",
             "social_need",
             "solitude_need",
+            "boredom",
+            "focus",
+            "confidence",
+            "comfort",
             "mood",
             "last_settled_at",
             "updated_at",
@@ -242,7 +257,7 @@ def _client_actor_state(state: Optional[dict]) -> Optional[dict]:
 
 
 def _client_actor_schedule(schedule: dict) -> dict:
-    return {
+    result = {
         key: schedule[key]
         for key in (
             "schedule_id",
@@ -255,13 +270,32 @@ def _client_actor_schedule(schedule: dict) -> dict:
             "starts_at",
             "ends_at",
             "status",
+            "decision_engine_version",
         )
         if key in schedule
     }
+    result["location_name"] = location_name(schedule.get("location_id"))
+    return result
+
+
+def _actor_event_source(event: dict) -> str:
+    facts = event.get("facts") or {}
+    if facts.get("simulator_version") == "npc-rules-v1":
+        return "v1 固定模板"
+    return {
+        "routine": "习惯候选",
+        "need": "状态驱动",
+        "state": "状态驱动",
+        "goal": "目标驱动",
+        "relationship": "关系驱动",
+        "memory": "记忆驱动",
+        "environment": "环境机会",
+        "commitment": "承诺行动",
+    }.get(facts.get("candidate_source"), "自主行动")
 
 
 def _client_actor_event(event: dict) -> dict:
-    return {
+    result = {
         key: event[key]
         for key in (
             "event_id",
@@ -281,6 +315,9 @@ def _client_actor_event(event: dict) -> dict:
         )
         if key in event
     }
+    result["source"] = _actor_event_source(event)
+    result["location_name"] = location_name(event.get("location_id"))
+    return result
 
 
 def _client_interaction_event(event: dict) -> dict:
@@ -307,6 +344,7 @@ def _client_interaction_event(event: dict) -> dict:
         }
         for item in event.get("participants", [])
     ]
+    result["location_name"] = location_name(event.get("location_id"))
     perspective = event.get("perspective")
     if perspective:
         result["perspective"] = {
@@ -321,6 +359,15 @@ def _client_interaction_event(event: dict) -> dict:
             if key in perspective
         }
     return result
+
+
+def _debug_interaction_invitation(invitation: dict) -> dict:
+    fields = (
+        "invitation_id", "initiator_actor_id", "target_actor_id",
+        "interaction_template", "starts_at", "ends_at", "location_id",
+        "status", "reason_code", "public_reason", "decision_score", "updated_at",
+    )
+    return {key: invitation[key] for key in fields if key in invitation}
 
 
 def _client_actor_intention(intention: dict) -> dict:
@@ -363,6 +410,44 @@ def _client_actor_suggestion(suggestion: dict) -> dict:
         )
         if key in suggestion
     }
+
+
+def _debug_actor_decision(decision: dict) -> dict:
+    """Developer-only decision evidence; never used by ordinary actor APIs."""
+    return {
+        key: decision[key]
+        for key in (
+            "decision_id",
+            "actor_id",
+            "decision_at",
+            "state_version",
+            "selected_candidate_id",
+            "candidate_scores",
+            "rejected_candidates",
+            "reason_codes",
+            "random_seed_hash",
+            "temperature",
+            "used_llm",
+            "llm_model",
+            "fallback_reason",
+            "engine_version",
+        )
+        if key in decision
+    }
+
+
+def _debug_actor_goal(goal: dict) -> dict:
+    return {key: goal[key] for key in (
+        "goal_id", "actor_id", "goal_type", "title", "priority", "progress",
+        "deadline", "status", "origin", "next_review_at", "created_at", "updated_at",
+    ) if key in goal}
+
+
+def _debug_actor_commitment(commitment: dict) -> dict:
+    return {key: commitment[key] for key in (
+        "commitment_id", "actor_id", "commitment_type", "title", "starts_at",
+        "ends_at", "location_id", "participant_ids", "flexibility", "status",
+    ) if key in commitment}
 
 
 class LifeSettingsBody(BaseModel):
@@ -429,6 +514,7 @@ def create_life_router(
     choices = choices or LifeChoiceService(service.store, service.characters)
     acceptance = LifeAcceptanceService(service)
     quality = LifeQualityEvaluator()
+    quality_jobs = QualityEvaluationJobService(service.store, quality)
     content_quality = ContentQualityAuditor(service.store, service.characters)
     content_safety_evaluator = ContentSafetyEvaluator()
 
@@ -476,10 +562,57 @@ def create_life_router(
             current_user: dict = Depends(get_current_user),
         ):
             del current_user  # Authentication is required; evaluation worlds are temporary.
+            if body.days > 7:
+                raise HTTPException(
+                    status_code=400,
+                    detail="超过 7 天的评估请使用后台评估任务接口",
+                )
             try:
                 return quality.evaluate(body.seeds, days=body.days)
             except ValueError as error:
                 raise HTTPException(status_code=400, detail=str(error)) from error
+
+        @router.post("/acceptance/evaluation-jobs", status_code=202)
+        def create_quality_evaluation_job(
+            body: QualityEvaluationBody,
+            current_user: dict = Depends(get_current_user),
+        ):
+            try:
+                return _client_quality_job(quality_jobs.create(
+                    current_user["id"], seeds=body.seeds, days=body.days
+                ))
+            except ValueError as error:
+                raise HTTPException(status_code=400, detail=str(error)) from error
+
+        @router.get("/acceptance/evaluation-jobs")
+        def list_quality_evaluation_jobs(
+            limit: int = Query(default=20, ge=1, le=100),
+            current_user: dict = Depends(get_current_user),
+        ):
+            return {
+                "items": [
+                    _client_quality_job(item)
+                    for item in quality_jobs.list(current_user["id"], limit=limit)
+                ]
+            }
+
+        @router.get("/acceptance/evaluation-jobs/{job_id}")
+        def get_quality_evaluation_job(
+            job_id: str, current_user: dict = Depends(get_current_user),
+        ):
+            job = quality_jobs.get(current_user["id"], job_id)
+            if job is None:
+                raise HTTPException(status_code=404, detail="评估任务不存在")
+            return _client_quality_job(job)
+
+        @router.post("/acceptance/evaluation-jobs/{job_id}/cancel")
+        def cancel_quality_evaluation_job(
+            job_id: str, current_user: dict = Depends(get_current_user),
+        ):
+            job = quality_jobs.cancel(current_user["id"], job_id)
+            if job is None:
+                raise HTTPException(status_code=404, detail="评估任务不存在")
+            return _client_quality_job(job)
 
         @router.post("/acceptance/content-audit")
         def audit_generated_content(
@@ -502,6 +635,119 @@ def create_life_router(
         ):
             del current_user  # Authentication required; corpus runs in a temporary DB.
             return content_safety_evaluator.evaluate()
+
+        @router.get("/acceptance/actors/{actor_id}/decisions")
+        def inspect_actor_decisions(
+            actor_id: str,
+            limit: int = Query(default=30, ge=1, le=100),
+            current_user: dict = Depends(get_current_user),
+        ):
+            decisions = service.list_actor_decisions(
+                current_user["id"], actor_id, limit=limit
+            )
+            if decisions is None:
+                raise HTTPException(status_code=404, detail="NPC 不存在或未启用")
+            return {
+                "items": [_debug_actor_decision(item) for item in decisions],
+                "count": len(decisions),
+            }
+
+        @router.get("/acceptance/actors/{actor_id}/planning")
+        def inspect_actor_planning(
+            actor_id: str,
+            current_user: dict = Depends(get_current_user),
+        ):
+            planning = service.inspect_actor_planning(current_user["id"], actor_id)
+            if planning is None:
+                raise HTTPException(status_code=404, detail="NPC 不存在或未启用")
+            return {
+                "goals": [_debug_actor_goal(item) for item in planning["goals"]],
+                "commitments": [
+                    _debug_actor_commitment(item) for item in planning["commitments"]
+                ],
+                "plans": [service.npc_life.plan_manager.client_plan(item) for item in planning["plans"]],
+                "invitations": [
+                    _debug_interaction_invitation(item)
+                    for item in planning["invitations"]
+                ],
+                "environment": {
+                    "weather": planning["environment"]["weather"],
+                    "opportunities": [
+                        {
+                            key: item[key]
+                            for key in (
+                                "opportunity_id", "opportunity_type", "title",
+                                "starts_at", "ends_at", "location_id",
+                                "action_type", "tags", "status", "cooldown_key",
+                            )
+                            if key in item
+                        }
+                        for item in planning["environment"]["opportunities"]
+                    ],
+                },
+                "decision_context": {
+                    "relationships": [
+                        {
+                            key: item[key]
+                            for key in (
+                                "other_ai_id", "display_name", "familiarity",
+                                "affinity", "trust", "tension",
+                                "last_interaction_at",
+                            )
+                            if key in item
+                        }
+                        for item in planning["decision_context"]["relationships"]
+                    ],
+                    "memory_signals": [
+                        {
+                            key: item[key]
+                            for key in (
+                                "memory_id", "memory_kind", "source_kind",
+                                "confidence", "learned_at",
+                            )
+                            if key in item
+                        }
+                        for item in planning["decision_context"]["memory_signals"]
+                    ],
+                },
+                "reflections": [
+                    {
+                        key: item[key]
+                        for key in (
+                            "reflection_id", "period_type", "period_start",
+                            "period_end", "summary", "source_event_ids",
+                            "goal_changes", "memory_changes", "created_at",
+                        )
+                        if key in item
+                    }
+                    for item in planning["reflections"]
+                ],
+                "goal_transitions": [
+                    {
+                        key: item[key]
+                        for key in (
+                            "transition_id", "goal_id", "previous_status",
+                            "next_status", "reason_code", "public_reason",
+                            "evidence_event_ids", "decided_at",
+                        )
+                        if key in item
+                    }
+                    for item in planning["goal_transitions"]
+                ],
+                "llm_calls": [
+                    {
+                        key: item[key]
+                        for key in (
+                            "call_id", "actor_id", "decision_at", "state_version",
+                            "status", "trigger_reason", "selected_candidate_id",
+                            "model", "latency_ms", "input_tokens", "output_tokens",
+                            "fallback_reason",
+                        )
+                        if key in item
+                    }
+                    for item in planning["llm_calls"]
+                ],
+            }
 
     @router.get("/status")
     def get_status(

@@ -10,6 +10,7 @@ from typing import Any, Optional, TYPE_CHECKING
 
 import yaml
 
+from .action_catalog import ActionCatalog, parse_action_atoms
 from .clock import utc_now
 
 if TYPE_CHECKING:
@@ -98,12 +99,15 @@ class CharacterDefinition:
     avatar_key: str
     voice_key: str
     personality: dict[str, float]
+    decision_style: dict[str, float]
     traits: tuple[str, ...]
     interests: tuple[str, ...]
     routine_template: str
     speaking_style: dict[str, Any]
     prompt_identity: str
     social_moments: tuple[SocialMomentDefinition, ...]
+    available_resources: tuple[str, ...]
+    forbidden_actions: tuple[str, ...]
 
 
 class CharacterCatalog:
@@ -115,6 +119,7 @@ class CharacterCatalog:
         interaction_templates: tuple[InteractionTemplateDefinition, ...],
         intention_templates: tuple[IntentionTemplateDefinition, ...],
         relationship_policy: dict[str, Any],
+        action_atoms: ActionCatalog,
     ):
         self.schema_version = schema_version
         self.definitions = tuple(definitions)
@@ -122,6 +127,7 @@ class CharacterCatalog:
         self.interaction_templates = interaction_templates
         self.intention_templates = intention_templates
         self.relationship_policy = relationship_policy
+        self.action_atoms = action_atoms
         self._by_id = {definition.actor_id: definition for definition in definitions}
         self._aliases: dict[str, str] = {}
         for definition in definitions:
@@ -178,6 +184,30 @@ def _parse_definition(raw: dict[str, Any]) -> CharacterDefinition:
         if number < 0 or number > 1:
             raise ValueError(f"角色 {actor_id} 的人格权重 {key} 必须在 0..1")
         normalized_personality[str(key)] = number
+    decision_style = raw.get("decision_style") or {}
+    if not isinstance(decision_style, dict):
+        raise ValueError(f"角色 {actor_id} 的 decision_style 必须是对象")
+    decision_defaults = {
+        "spontaneity": 0.45,
+        "routine_preference": 0.65,
+        "novelty_seeking": 0.40,
+        "plan_commitment": 0.70,
+        "social_initiative": 0.50,
+        "risk_tolerance": 0.30,
+        "persistence": 0.65,
+        "emotional_sensitivity": 0.55,
+    }
+    unknown_style = set(decision_style) - set(decision_defaults)
+    if unknown_style:
+        raise ValueError(
+            f"角色 {actor_id} 的 decision_style 包含未知字段: {sorted(unknown_style)}"
+        )
+    normalized_style = dict(decision_defaults)
+    for key, value in decision_style.items():
+        number = float(value)
+        if number < 0 or number > 1:
+            raise ValueError(f"角色 {actor_id} 的决策参数 {key} 必须在 0..1")
+        normalized_style[str(key)] = number
     return CharacterDefinition(
         definition_key=_required_text(raw, "definition_key", actor_id),
         definition_version=max(1, int(raw.get("definition_version", 1))),
@@ -190,12 +220,21 @@ def _parse_definition(raw: dict[str, Any]) -> CharacterDefinition:
         avatar_key=str(raw.get("avatar_key", "")).strip(),
         voice_key=str(raw.get("voice_key", "")).strip(),
         personality=normalized_personality,
+        decision_style=normalized_style,
         traits=tuple(str(item).strip() for item in raw.get("traits", []) if str(item).strip()),
         interests=tuple(str(item).strip() for item in raw.get("interests", []) if str(item).strip()),
         routine_template=str(raw.get("routine_template", "")).strip(),
         speaking_style=dict(raw.get("speaking_style") or {}),
         prompt_identity=str(raw.get("prompt_identity", "")).strip(),
         social_moments=moments,
+        available_resources=tuple(
+            str(item).strip() for item in raw.get("available_resources", ())
+            if str(item).strip()
+        ),
+        forbidden_actions=tuple(
+            str(item).strip() for item in raw.get("forbidden_actions", ())
+            if str(item).strip()
+        ),
     )
 
 
@@ -450,6 +489,7 @@ def load_character_catalog(path: str | None = None) -> CharacterCatalog:
     intention_templates = _parse_intention_templates(
         raw.get("intention_templates", [])
     )
+    action_atoms = parse_action_atoms(raw.get("action_atoms", {}))
     relationship_policy = raw.get("relationship_policy") or {}
     if not isinstance(relationship_policy, dict):
         raise ValueError("relationship_policy 必须是对象")
@@ -500,6 +540,7 @@ def load_character_catalog(path: str | None = None) -> CharacterCatalog:
         interaction_templates,
         intention_templates,
         relationship_policy,
+        action_atoms,
     )
 
 
@@ -604,12 +645,15 @@ class CharacterRegistry:
                     "avatar_key": definition.avatar_key,
                     "voice_key": definition.voice_key,
                     "personality": dict(definition.personality),
+                    "decision_style": dict(definition.decision_style),
                     "traits": list(definition.traits),
                     "interests": list(definition.interests),
                     "routine_template": definition.routine_template,
                     "speaking_style": dict(definition.speaking_style),
                     "prompt_identity": definition.prompt_identity,
                     "social_moments": list(definition.social_moments),
+                    "available_resources": list(definition.available_resources),
+                    "forbidden_actions": list(definition.forbidden_actions),
                 }
             )
         return result

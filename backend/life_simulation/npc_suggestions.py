@@ -11,6 +11,10 @@ from .character_registry import CharacterRegistry, IntentionTemplateDefinition
 from .clock import parse_datetime, utc_now
 from .npc_intentions import NpcIntentionService
 from .store import DEFAULT_AI_ID, LifeStore
+from .important_decisions import ImportantDecisionAdvisor
+from .candidates import ActionCandidate
+from .models import LifeWindow
+from .utility import ScoredCandidate
 
 
 SUGGESTION_RULES_VERSION = "npc-suggestion-rules-v1"
@@ -40,10 +44,12 @@ class NpcSuggestionService:
         store: LifeStore,
         characters: CharacterRegistry,
         intentions: NpcIntentionService,
+        important_advisor: ImportantDecisionAdvisor | None = None,
     ):
         self.store = store
         self.characters = characters
         self.intentions = intentions
+        self.important_advisor = important_advisor or ImportantDecisionAdvisor.from_environment(store)
 
     def submit(
         self,
@@ -82,6 +88,11 @@ class NpcSuggestionService:
         else:
             outcome, reason, response, evaluation = self._evaluate(
                 owner_user_id, actor, template, current
+            )
+            outcome, reason, response = self._advise_important_suggestion(
+                owner_user_id, actor, template, current,
+                outcome=outcome, reason=reason, response=response,
+                evaluation=evaluation, message=message,
             )
         suggestion, created = self.store.create_actor_suggestion(
             owner_user_id,
@@ -282,6 +293,49 @@ class NpcSuggestionService:
             "谢谢你想到我，但这件事现在不太适合我，我想保留自己的安排。",
             evaluation,
         )
+
+    def _advise_important_suggestion(
+        self, owner: str, actor: dict[str, Any], template: IntentionTemplateDefinition,
+        now: datetime, *, outcome: str, reason: str, response: str,
+        evaluation: dict[str, Any], message: str,
+    ) -> tuple[str, str, str]:
+        important = bool(message.strip()) and (
+            len(message.strip()) >= 24
+            or template.suggestion_type in {"connect", "project"}
+        )
+        if not important:
+            return outcome, reason, response
+        candidates = tuple(
+            ScoredCandidate(
+                candidate=ActionCandidate(
+                    candidate_id=f"suggestion:{template.intention_id}:{status}",
+                    action_type=f"suggestion_{status}",
+                    activity_id=f"suggestion:{status}",
+                    location_id="internal",
+                    summary={
+                        "accepted": "接受建议并转成自己的目标。",
+                        "adjusted": "按自己的节奏调整后采纳建议。",
+                        "declined": "拒绝这次建议，保留原有安排。",
+                    }[status],
+                    source="suggestion", duration_minutes=1,
+                    metadata={"suggestion_impact": "important"},
+                ),
+                score=(int(evaluation.get("score", 50)) if status == outcome else 46),
+                components={"goal_progress": 20 if status != "declined" else 0},
+            ) for status in ("accepted", "adjusted", "declined")
+        )
+        state = self.store.get_actor_state(owner, actor["actor_id"]) or {}
+        advice = self.important_advisor.consider(
+            owner, actor, state,
+            LifeWindow("user_suggestion", "重要用户建议", now, now + timedelta(minutes=1)),
+            candidates,
+            rule_selected_id=f"suggestion:{template.intention_id}:{outcome}",
+            has_hard_commitment=False,
+        )
+        if not advice.used_llm:
+            return outcome, reason, response
+        selected = advice.selected_candidate_id.rsplit(":", 1)[-1]
+        return selected, "important_decision_llm", advice.public_reason or response
 
     def _template(self, suggestion_type: str) -> IntentionTemplateDefinition:
         matches = [

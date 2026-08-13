@@ -35,12 +35,19 @@ def test_world_seeds_three_independent_npc_states_and_persistent_schedules(tmp_p
         "npc_preset_3",
     ]
     assert len({state["energy"] for state in states}) >= 2
+    assert all(0 <= state["boredom"] <= 100 for state in states)
+    assert all(0 <= state["focus"] <= 100 for state in states)
+    assert all(0 <= state["confidence"] <= 100 for state in states)
     summaries = []
     schedule_ids = []
     for actor_id in ("npc_preset_1", "npc_preset_2", "npc_preset_3"):
         schedules = store.list_actor_schedules("user-a", actor_id)
         assert schedules
         assert all(item["status"] == "planned" for item in schedules)
+        assert all(
+            item["decision_engine_version"] == "npc-agency-v2"
+            for item in schedules
+        )
         schedule_ids.extend(item["schedule_id"] for item in schedules)
         summaries.extend(item["summary"] for item in schedules)
     assert len(schedule_ids) == len(set(schedule_ids))
@@ -70,6 +77,13 @@ def test_npc_settlement_creates_owner_scoped_events_and_is_idempotent(tmp_path):
             "user-a", actor_id, status="completed"
         )
         assert len(completed) == 2
+        decisions = store.list_actor_decisions("user-a", actor_id)
+        assert len(decisions) == 2
+        assert all(
+            decision["engine_version"] == "npc-agency-v2"
+            for decision in decisions
+        )
+        assert all(decision["used_llm"] is False for decision in decisions)
 
 
 def test_each_npc_follows_its_configured_routine(tmp_path):

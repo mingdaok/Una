@@ -81,13 +81,15 @@ export async function loadNpcActors({ signal } = {}) {
 
 export async function loadNpcActorDebug(actorId, { signal } = {}) {
   const id = encodeURIComponent(actorId);
-  const [life, events, interactions, relationships, intentions, suggestions] = await Promise.all([
+  const [life, events, interactions, relationships, intentions, suggestions, decisions, planning] = await Promise.all([
     lifeRequest(`/actors/${id}/life`, { signal }),
     lifeRequest(`/actors/${id}/events?limit=50`, { signal }),
     lifeRequest(`/actors/${id}/interactions?limit=50`, { signal }),
     lifeRequest(`/actors/${id}/relationships?limit=30`, { signal }),
     lifeRequest(`/actors/${id}/intentions?limit=30`, { signal }),
     lifeRequest(`/actors/${id}/suggestions?limit=30`, { signal }),
+    loadNpcDecisionEvidence(id, { signal }),
+    loadNpcPlanningEvidence(id, { signal }),
   ]);
   return {
     ...life,
@@ -96,7 +98,33 @@ export async function loadNpcActorDebug(actorId, { signal } = {}) {
     relationships: relationships.items || [],
     intentions: intentions.items || life.intentions || [],
     suggestions: suggestions.items || [],
+    decisions,
+    ...planning,
   };
+}
+
+async function loadNpcPlanningEvidence(encodedActorId, { signal } = {}) {
+  try {
+    return await lifeRequest(
+      `/acceptance/actors/${encodedActorId}/planning`, { signal },
+    );
+  } catch (error) {
+    if (error.status === 404) return { goals: [], commitments: [], plans: [], invitations: [], environment: { weather: null, opportunities: [] }, decision_context: { relationships: [], memory_signals: [] }, reflections: [], goal_transitions: [], llm_calls: [] };
+    throw error;
+  }
+}
+
+async function loadNpcDecisionEvidence(encodedActorId, { signal } = {}) {
+  try {
+    const page = await lifeRequest(
+      `/acceptance/actors/${encodedActorId}/decisions?limit=30`,
+      { signal },
+    );
+    return page.items || [];
+  } catch (error) {
+    if (error.status === 404) return [];
+    throw error;
+  }
 }
 
 export async function loadLifeAcceptanceStatus({ signal } = {}) {
@@ -136,6 +164,25 @@ export async function evaluateLifeQuality(seeds, days, { signal } = {}) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ seeds, days }),
     signal,
+  });
+}
+
+export async function createLifeQualityJob(seeds, days, { signal } = {}) {
+  return lifeRequest('/acceptance/evaluation-jobs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ seeds, days }),
+    signal,
+  });
+}
+
+export async function loadLifeQualityJob(jobId, { signal } = {}) {
+  return lifeRequest(`/acceptance/evaluation-jobs/${encodeURIComponent(jobId)}`, { signal });
+}
+
+export async function cancelLifeQualityJob(jobId, { signal } = {}) {
+  return lifeRequest(`/acceptance/evaluation-jobs/${encodeURIComponent(jobId)}/cancel`, {
+    method: 'POST', signal,
   });
 }
 

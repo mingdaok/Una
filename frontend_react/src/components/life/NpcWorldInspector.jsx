@@ -5,6 +5,7 @@ import {
   BarChart3,
   CalendarClock,
   Clock3,
+  CloudSun,
   FlaskConical,
   GitBranch,
   HeartHandshake,
@@ -20,7 +21,9 @@ import {
   advanceLifeAcceptance,
   auditLifeContent,
   evaluateContentSafety,
-  evaluateLifeQuality,
+  createLifeQualityJob,
+  loadLifeQualityJob,
+  cancelLifeQualityJob,
   loadLifeAcceptanceStatus,
   loadNpcActorDebug,
   loadNpcActors,
@@ -124,6 +127,10 @@ function Overview({ data, virtualNow }) {
         <Metric label="压力" value={state.stress} />
         <Metric label="社交需要" value={state.social_need} />
         <Metric label="独处需要" value={state.solitude_need} />
+        <Metric label="无聊" value={state.boredom} />
+        <Metric label="专注" value={state.focus} />
+        <Metric label="自信" value={state.confidence} />
+        <Metric label="舒适" value={state.comfort} />
       </section>
       <section className="npc-inspector-panel">
         <header><CalendarClock size={17} /><h3>未来日程</h3><span>{data.schedule?.length || 0} 项{virtualNow ? ' · 模拟时间' : ''}</span></header>
@@ -132,7 +139,7 @@ function Overview({ data, virtualNow }) {
             {data.schedule.map(item => (
               <article key={item.schedule_id}>
                 <time>{formatScheduleTime(item.starts_at, virtualNow)}</time>
-                <div><strong>{item.summary}</strong><small>{item.window_key} · {item.location_id} · {item.status}</small></div>
+                <div><strong>{item.summary}</strong><small>{item.window_key} · {item.location_name || item.location_id} · {item.status}</small></div>
               </article>
             ))}
           </div>
@@ -156,10 +163,22 @@ function Overview({ data, virtualNow }) {
 }
 
 function Timeline({ data }) {
+  const invitationLabels = { accepted: '已接受', postponed: '已推迟', rejected: '已拒绝' };
   const items = useMemo(() => [
-    ...(data.events || []).map(item => ({ ...item, source: item.schedule_id ? '固定日程' : '自主行动' })),
+    ...(data.events || []).map(item => ({ ...item, source: item.source || '自主行动' })),
     ...(data.interactions || []).map(item => ({ ...item, source: '共同互动' })),
-  ].sort((a, b) => new Date(b.end_at) - new Date(a.end_at)), [data.events, data.interactions]);
+    ...(data.invitations || []).map(item => ({
+      ...item,
+      event_id: item.invitation_id,
+      source: '邀请决策',
+      summary: `${invitationLabels[item.status] || item.status}：${item.public_reason || '没有公开原因'}`,
+      event_type: 'social_invitation',
+      participants: [
+        { actor_id: item.initiator_actor_id },
+        { actor_id: item.target_actor_id },
+      ],
+    })),
+  ].sort((a, b) => new Date(b.end_at) - new Date(a.end_at)), [data.events, data.interactions, data.invitations]);
   if (!items.length) return <Empty>还没有生活事件或共同互动。</Empty>;
   return (
     <div className="npc-inspector-timeline">
@@ -168,7 +187,7 @@ function Timeline({ data }) {
           <span className="npc-inspector-source">{item.source}</span>
           <time>{formatTime(item.end_at)}</time>
           <h3>{item.summary}</h3>
-          <p>{item.event_type} · {item.location_id}</p>
+          <p>{item.event_type} · {item.location_name || item.location_id}</p>
           {item.participants?.length > 0 && (
             <small>参与者：{item.participants.map(person => person.actor_id).join('、')}</small>
           )}
@@ -204,8 +223,144 @@ function Relationships({ data }) {
 }
 
 function Decisions({ data }) {
+  const latestDecision = data.decisions?.[0];
   return (
     <div className="npc-inspector-decision-grid">
+      <section className="npc-inspector-panel">
+        <header><Activity size={17} /><h3>行动决策证据</h3><span>{data.decisions?.length || 0}</span></header>
+        {!latestDecision ? <Empty>暂无 v2 行动决策记录，或当前不是开发环境。</Empty> : (
+          <div className="npc-inspector-list">
+            <article>
+              <time>{formatTime(latestDecision.decision_at)}</time>
+              <div>
+                <strong>{latestDecision.candidate_scores?.find(item => item.selected)?.summary || latestDecision.selected_candidate_id}</strong>
+                <small>
+                  {latestDecision.engine_version} · 温度 {latestDecision.temperature}
+                  {' · '}种子 {latestDecision.random_seed_hash}
+                  {latestDecision.fallback_reason ? ` · 回退 ${latestDecision.fallback_reason}` : ''}
+                </small>
+              </div>
+            </article>
+            {(latestDecision.candidate_scores || []).map(item => (
+              <article key={item.candidate_id}>
+                <time>{Math.round((item.probability || 0) * 100)}%</time>
+                <div>
+                  <strong>{item.selected ? '已选择 · ' : ''}{item.summary}</strong>
+                  <small>{item.action_type} · {item.location_id} · 得分 {item.score}</small>
+                  <small>{Object.entries(item.components || {}).filter(([, value]) => value).map(([key, value]) => `${key} ${value > 0 ? '+' : ''}${value}`).join(' · ')}</small>
+                </div>
+              </article>
+            ))}
+            {(latestDecision.rejected_candidates || []).map(item => (
+              <article key={`rejected-${item.candidate_id}`}>
+                <time>淘汰</time>
+                <div><strong>{item.action_type} · {item.location_id}</strong><small>{item.reason_code} · {item.detail}</small></div>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+      <section className="npc-inspector-panel">
+        <header>
+          <HeartHandshake size={17} />
+          <h3>关系与记忆信号</h3>
+          <span>{(data.decision_context?.relationships?.length || 0) + (data.decision_context?.memory_signals?.length || 0)}</span>
+        </header>
+        {!data.decision_context?.relationships?.length && !data.decision_context?.memory_signals?.length ? (
+          <Empty>当前决策没有可用的关系或记忆信号。</Empty>
+        ) : (
+          <div className="npc-inspector-list">
+            {(data.decision_context?.relationships || []).map(item => (
+              <article key={`relationship-${item.other_ai_id}`}>
+                <time>关系</time>
+                <div>
+                  <strong>{item.display_name || item.other_ai_id}</strong>
+                  <small>{item.display_name || item.other_ai_id} · 好感 {item.affinity ?? 0} · 信任 {item.trust ?? 0} · 紧张 {item.tension ?? 0}</small>
+                </div>
+              </article>
+            ))}
+            {(data.decision_context?.memory_signals || []).map(item => (
+              <article key={`memory-${item.memory_id}`}>
+                <time>记忆</time>
+                <div>
+                  <strong>{item.memory_kind} · {item.source_kind}</strong>
+                  <small>{item.memory_kind} · {item.source_kind} · 置信 {item.confidence ?? 0}</small>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+      <section className="npc-inspector-panel">
+        <header><Sparkles size={17} /><h3>重要决策 LLM</h3><span>{data.llm_calls?.length || 0}</span></header>
+        {!data.llm_calls?.length ? <Empty>当前未调用重要决策模型，普通行为仍由规则完成。</Empty> : (
+          <div className="npc-inspector-list">{data.llm_calls.map(call => (
+            <article key={call.call_id}>
+              <time>{call.status}</time>
+              <div>
+                <strong>{call.model || '模型未返回'} · {call.trigger_reason}</strong>
+                <small>{formatTime(call.decision_at)} · {call.latency_ms ?? 0}ms · token {call.input_tokens || 0} / {call.output_tokens || 0}{call.fallback_reason ? ` · 回退 ${call.fallback_reason}` : ''}</small>
+              </div>
+            </article>
+          ))}</div>
+        )}
+      </section>
+      <section className="npc-inspector-panel">
+        <header><Sparkles size={17} /><h3>长期目标</h3><span>{data.goals?.length || 0}</span></header>
+        {!data.goals?.length ? <Empty>暂无持久目标记录。</Empty> : (
+          <div className="npc-inspector-list">{data.goals.map(goal => (
+            <article key={goal.goal_id}>
+              <time>{Math.round((goal.progress || 0) * 100)}%</time>
+              <div><strong>{goal.title}</strong><small>{goal.goal_type} · {STATUS_LABELS[goal.status] || goal.status} · 优先级 {goal.priority}</small></div>
+            </article>
+          ))}</div>
+        )}
+        {!!data.goal_transitions?.length && <div className="npc-inspector-list">{data.goal_transitions.map(item => (
+          <article key={item.transition_id}>
+            <time>{formatTime(item.decided_at)}</time>
+            <div><strong>{item.previous_status} → {item.next_status}</strong><small>{item.reason_code} · {item.public_reason}</small></div>
+          </article>
+        ))}</div>}
+      </section>
+      <section className="npc-inspector-panel">
+        <header><History size={17} /><h3>反思与记忆巩固</h3><span>{data.reflections?.length || 0}</span></header>
+        {!data.reflections?.length ? <Empty>尚未到日级或周级反思时间。</Empty> : (
+          <div className="npc-inspector-list">{data.reflections.map(item => (
+            <article key={item.reflection_id}>
+              <time>{item.period_type === 'weekly' ? '周反思' : '日反思'}</time>
+              <div><strong>{item.summary}</strong><small>{formatTime(item.period_end)} · 事件 {item.source_event_ids?.length || 0} · 记忆变更 {item.memory_changes?.length || 0} · 目标变更 {item.goal_changes?.length || 0}</small></div>
+            </article>
+          ))}</div>
+        )}
+      </section>
+      <section className="npc-inspector-panel">
+        <header><CalendarClock size={17} /><h3>承诺与计划变更</h3><span>{data.plans?.length || 0}</span></header>
+        {!data.plans?.length ? <Empty>暂无计划差异记录。</Empty> : (
+          <div className="npc-inspector-list">{data.plans.map(plan => (
+            <article key={plan.plan_id}>
+              <time>{formatTime(plan.starts_at)}</time>
+              <div>
+                <strong>{plan.actual_action?.summary || plan.original_action?.summary || plan.plan_type}</strong>
+                <small>{plan.plan_type} · {STATUS_LABELS[plan.status] || plan.status}{plan.reason_code ? ` · ${plan.reason_code}` : ''}</small>
+                {plan.public_reason && <small>{plan.public_reason}</small>}
+              </div>
+            </article>
+          ))}</div>
+        )}
+        {!!data.commitments?.length && <small>未来承诺：{data.commitments.map(item => `${item.title}（${item.flexibility}）`).join(' · ')}</small>}
+      </section>
+      <section className="npc-inspector-panel">
+        <header><CloudSun size={17} /><h3>环境与世界机会</h3><span>{data.environment?.opportunities?.length || 0}</span></header>
+        <small>当前天气：{data.environment?.weather?.condition || '未知'} · 强度 {data.environment?.weather?.severity ?? 0}</small>
+        {!data.environment?.opportunities?.length ? <Empty>当前附近没有可用的公共机会。</Empty> : (
+          <div className="npc-inspector-list">{data.environment.opportunities.map(item => (
+            <article key={item.opportunity_id}>
+              <time>{item.opportunity_type === 'unexpected' ? '意外' : '公共'}</time>
+              <div><strong>{item.title}</strong><small>{formatTime(item.starts_at)} · {item.location_id} · {item.action_type}</small></div>
+            </article>
+          ))}</div>
+        )}
+      </section>
       <section className="npc-inspector-panel">
         <header><GitBranch size={17} /><h3>意图历史</h3><span>{data.intentions?.length || 0}</span></header>
         {!data.intentions?.length ? <Empty>暂无意图记录。</Empty> : (
@@ -240,7 +395,7 @@ function Decisions({ data }) {
 }
 
 
-function QualityEvaluation({ seedText, days, busy, error, result, onSeedTextChange, onDaysChange, onRun }) {
+function QualityEvaluation({ seedText, days, busy, error, result, job, onSeedTextChange, onDaysChange, onRun, onCancel }) {
   const metrics = result?.metrics;
   return (
     <div className="npc-quality">
@@ -249,10 +404,11 @@ function QualityEvaluation({ seedText, days, busy, error, result, onSeedTextChan
         <div className="npc-quality-form">
           <label>种子（逗号或换行分隔）<textarea aria-label="批量评估种子" value={seedText} disabled={busy} onChange={event => onSeedTextChange(event.target.value)} /></label>
           <label>每个种子模拟天数<select aria-label="评估天数" value={days} disabled={busy} onChange={event => onDaysChange(Number(event.target.value))}>
-            {[1, 2, 3, 5, 7].map(value => <option key={value} value={value}>{value} 天</option>)}
+            {[1, 2, 3, 5, 7, 30, 90].map(value => <option key={value} value={value}>{value} 天</option>)}
           </select></label>
-          <button type="button" disabled={busy} onClick={onRun}><Play size={14} />{busy ? '正在批量模拟…' : '开始评估'}</button>
+          <button type="button" disabled={busy} onClick={onRun}><Play size={14} />{busy ? '后台批量模拟中…' : '开始后台评估'}</button>
         </div>
+        {job && <div className="npc-quality-job" role="status"><span>任务 {job.job_id.slice(0, 8)} · {job.status}</span><strong>{job.progress_current} / {job.progress_total}</strong>{['queued', 'running'].includes(job.status) && <button type="button" onClick={onCancel}>取消</button>}</div>}
         {error && <p className="npc-quality-error" role="alert">{error}</p>}
       </section>
       {!result && !busy && <Empty>运行后会在这里显示生活密度、重复率、互动、意图与建议分布。</Empty>}
@@ -428,6 +584,7 @@ export default function NpcWorldInspector({ onClose }) {
   const [qualityBusy, setQualityBusy] = useState(false);
   const [qualityError, setQualityError] = useState('');
   const [qualityResult, setQualityResult] = useState(null);
+  const [qualityJob, setQualityJob] = useState(null);
   const [contentAuditBusy, setContentAuditBusy] = useState(false);
   const [contentAuditError, setContentAuditError] = useState('');
   const [contentAuditResult, setContentAuditResult] = useState(null);
@@ -548,12 +705,26 @@ export default function NpcWorldInspector({ onClose }) {
     setQualityBusy(true);
     setQualityError('');
     try {
-      setQualityResult(await evaluateLifeQuality(seeds, qualityDays));
+      const job = await createLifeQualityJob(seeds, qualityDays);
+      setQualityJob(job);
+      let current = job;
+      while (['queued', 'running'].includes(current.status)) {
+        await new Promise(resolve => window.setTimeout(resolve, 750));
+        current = await loadLifeQualityJob(current.job_id);
+        setQualityJob(current);
+      }
+      if (current.status === 'completed') setQualityResult(current.result);
+      if (current.status === 'failed') throw new Error(current.error_text || '后台评估失败');
     } catch (failure) {
       setQualityError(failure.message || '无法完成批量质量评估');
     } finally {
       setQualityBusy(false);
     }
+  };
+
+  const handleQualityCancel = async () => {
+    if (!qualityJob) return;
+    setQualityJob(await cancelLifeQualityJob(qualityJob.job_id));
   };
 
   const handleContentAudit = async () => {
@@ -640,9 +811,11 @@ export default function NpcWorldInspector({ onClose }) {
               busy={qualityBusy}
               error={qualityError}
               result={qualityResult}
+              job={qualityJob}
               onSeedTextChange={setQualitySeeds}
               onDaysChange={setQualityDays}
               onRun={handleQualityRun}
+              onCancel={handleQualityCancel}
             />}
             {tab === 'content-audit' && <ContentAudit
               busy={contentAuditBusy}
@@ -657,7 +830,7 @@ export default function NpcWorldInspector({ onClose }) {
           </div>
         )}
       </main>
-      <footer className="npc-inspector-foot"><History size={14} />这里只展示用户安全字段；私人想法和内部评分不会进入前端。</footer>
+      <footer className="npc-inspector-foot"><History size={14} />私人想法不会进入前端；候选内部评分仅在开发环境的检查页面展示。</footer>
     </div>
   );
 }

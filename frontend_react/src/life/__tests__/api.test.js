@@ -3,9 +3,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   advanceLifeAcceptance,
   auditLifeContent,
+  cancelLifeQualityJob,
+  createLifeQualityJob,
   evaluateLifeQuality,
   evaluateContentSafety,
   loadLifeAcceptanceStatus,
+  loadLifeQualityJob,
   loadLifeDashboard,
   loadNpcActorDebug,
   loadNpcActors,
@@ -100,6 +103,8 @@ describe('life api', () => {
       '/api/life/actors/npc_preset_1/relationships?limit=30': { items: [{ other_ai_id: 'npc_preset_2' }] },
       '/api/life/actors/npc_preset_1/intentions?limit=30': { items: [{ intention_instance_id: 'intent-1' }] },
       '/api/life/actors/npc_preset_1/suggestions?limit=30': { items: [{ suggestion_id: 'suggest-1' }] },
+      '/api/life/acceptance/actors/npc_preset_1/decisions?limit=30': { items: [{ decision_id: 'decision-1' }] },
+      '/api/life/acceptance/actors/npc_preset_1/planning': { goals: [{ goal_id: 'goal-1' }], commitments: [], plans: [], invitations: [{ invitation_id: 'invite-1' }], environment: { weather: { condition: 'rain' }, opportunities: [{ opportunity_id: 'world-1' }] }, llm_calls: [{ call_id: 'call-1' }] },
     };
     authFetch.mockImplementation(path => Promise.resolve(response(payloads[path])));
 
@@ -112,6 +117,11 @@ describe('life api', () => {
     expect(debug.relationships[0].other_ai_id).toBe('npc_preset_2');
     expect(debug.intentions[0].intention_instance_id).toBe('intent-1');
     expect(debug.suggestions[0].suggestion_id).toBe('suggest-1');
+    expect(debug.decisions[0].decision_id).toBe('decision-1');
+    expect(debug.goals[0].goal_id).toBe('goal-1');
+    expect(debug.invitations[0].invitation_id).toBe('invite-1');
+    expect(debug.environment.opportunities[0].opportunity_id).toBe('world-1');
+    expect(debug.llm_calls[0].call_id).toBe('call-1');
   });
 
   it('控制开发环境的可复现验收时钟', async () => {
@@ -151,6 +161,23 @@ describe('life api', () => {
       method: 'POST',
       body: JSON.stringify({ seeds: ['seed-a', 'seed-b'], days: 5 }),
     }));
+  });
+
+  it('创建、查询并取消长周期后台质量评估', async () => {
+    authFetch
+      .mockResolvedValueOnce(response({ job_id: 'job/1', status: 'queued' }))
+      .mockResolvedValueOnce(response({ job_id: 'job/1', status: 'running' }))
+      .mockResolvedValueOnce(response({ job_id: 'job/1', status: 'cancelled' }));
+
+    await createLifeQualityJob(['long-a'], 90);
+    await loadLifeQualityJob('job/1');
+    await cancelLifeQualityJob('job/1');
+
+    expect(authFetch).toHaveBeenNthCalledWith(1, '/api/life/acceptance/evaluation-jobs', expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ seeds: ['long-a'], days: 90 }),
+    }));
+    expect(authFetch).toHaveBeenNthCalledWith(2, '/api/life/acceptance/evaluation-jobs/job%2F1', expect.any(Object));
+    expect(authFetch).toHaveBeenNthCalledWith(3, '/api/life/acceptance/evaluation-jobs/job%2F1/cancel', expect.objectContaining({ method: 'POST' }));
   });
 
   it('提交当前用户生成内容的只读审计', async () => {

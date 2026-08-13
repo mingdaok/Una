@@ -15,6 +15,7 @@ from .npc_life import NpcLifeService
 from .npc_interactions import NpcInteractionService
 from .npc_intentions import NpcIntentionService
 from .npc_suggestions import NpcSuggestionService
+from .reflection import ReflectionService
 from .store import DEFAULT_AI_ID, LifeStore
 
 
@@ -45,14 +46,19 @@ class LifeSettlementService:
         )
         self.npc_life = npc_life or NpcLifeService(store, self.characters)
         self.npc_interactions = npc_interactions or NpcInteractionService(
-            store, self.characters
+            store, self.characters,
+            important_advisor=self.npc_life.important_decisions,
         )
         self.relationship_dynamics = self.npc_interactions.dynamics
         self.npc_intentions = npc_intentions or NpcIntentionService(
             store, self.characters
         )
         self.npc_suggestions = npc_suggestions or NpcSuggestionService(
-            store, self.characters, self.npc_intentions
+            store, self.characters, self.npc_intentions,
+            important_advisor=self.npc_life.important_decisions,
+        )
+        self.reflections = ReflectionService(
+            store, self.npc_life.important_decisions
         )
 
     def _current_time(
@@ -213,18 +219,27 @@ class LifeSettlementService:
 
         final_state = self.store.get_state(owner_user_id, ai_id)
         report.last_settled_at = final_state["last_settled_at"] if final_state else None
+        invitation_preparation = self.npc_interactions.prepare_due(
+            owner_user_id,
+            profile["timezone"],
+            now=current,
+        ).as_dict()
         report.npc_settlement = self.npc_life.settle_due(
             owner_user_id,
             profile["timezone"],
             now=current,
             max_windows=max_windows,
         ).as_dict()
-        report.interaction_settlement = self.npc_interactions.materialize_due(
+        interaction_settlement = self.npc_interactions.materialize_due(
             owner_user_id,
             profile["timezone"],
             now=current,
             lead_ai_id=ai_id,
         ).as_dict()
+        report.interaction_settlement = {
+            key: int(invitation_preparation.get(key, 0)) + int(value)
+            for key, value in interaction_settlement.items()
+        }
         report.suggestion_settlement = self.npc_suggestions.reconsider_due(
             owner_user_id,
             profile["timezone"],
@@ -235,6 +250,19 @@ class LifeSettlementService:
             profile["timezone"],
             now=current,
         ).as_dict()
+        reflection_report = self.reflections.reflect_due(
+            owner_user_id,
+            self.characters.list_contacts(owner_user_id),
+            now=current,
+        )
+        report.reflection_settlement = {
+            "created": reflection_report.created,
+            "memories_created": reflection_report.memories_created,
+            "memories_consolidated": reflection_report.memories_consolidated,
+            "memories_decayed": reflection_report.memories_decayed,
+            "relationships_decayed": reflection_report.relationships_decayed,
+            "goal_transitions": reflection_report.goal_transitions,
+        }
         return report
 
     def get_actor_life(
@@ -309,6 +337,81 @@ class LifeSettlementService:
         return self.store.list_actor_events(
             owner_user_id, canonical_id, **filters
         )
+
+    def list_actor_decisions(
+        self,
+        owner_user_id: str,
+        actor_id: str,
+        *,
+        now: Optional[datetime] = None,
+        settle: bool = True,
+        **filters: Any,
+    ) -> Optional[list[dict[str, Any]]]:
+        life = self.get_actor_life(
+            owner_user_id, actor_id, now=now, settle=settle
+        )
+        if life is None:
+            return None
+        return self.store.list_actor_decisions(
+            owner_user_id, life["actor"]["actor_id"], **filters
+        )
+
+    def inspect_actor_planning(
+        self,
+        owner_user_id: str,
+        actor_id: str,
+        *,
+        now: Optional[datetime] = None,
+    ) -> Optional[dict[str, Any]]:
+        current = self._current_time(owner_user_id, now)
+        life = self.get_actor_life(owner_user_id, actor_id, now=current, settle=True)
+        if life is None:
+            return None
+        canonical_id = life["actor"]["actor_id"]
+        return {
+            "goals": self.store.list_actor_goals(owner_user_id, canonical_id, limit=50),
+            "commitments": self.store.list_actor_commitments(
+                owner_user_id, canonical_id,
+                after=(current - timedelta(days=1)).isoformat(),
+                before=(current + timedelta(days=7)).isoformat(), limit=100,
+            ),
+            "plans": self.store.list_actor_plans(
+                owner_user_id, canonical_id,
+                after=(current - timedelta(days=7)).isoformat(),
+                before=(current + timedelta(days=2)).isoformat(), limit=100,
+            ),
+            "invitations": self.store.list_interaction_invitations(
+                owner_user_id, actor_id=canonical_id, limit=100,
+            ),
+            "environment": {
+                "weather": self.npc_life.environment.weather_for(
+                    owner_user_id, current
+                ),
+                "opportunities": self.store.list_world_opportunities(
+                    owner_user_id,
+                    after=(current - timedelta(days=1)).isoformat(),
+                    before=(current + timedelta(days=2)).isoformat(),
+                    limit=100,
+                ),
+            },
+            "decision_context": {
+                "relationships": self.store.list_relationships(
+                    owner_user_id, canonical_id
+                ),
+                "memory_signals": self.store.list_actor_memories(
+                    owner_user_id, canonical_id, limit=50
+                ),
+            },
+            "reflections": self.store.list_actor_reflections(
+                owner_user_id, canonical_id, limit=30
+            ),
+            "goal_transitions": self.store.list_goal_transitions(
+                owner_user_id, canonical_id, limit=50
+            ),
+            "llm_calls": self.store.list_decision_llm_calls(
+                owner_user_id, canonical_id, limit=50,
+            ),
+        }
 
     def list_actor_interactions(
         self,
@@ -386,7 +489,7 @@ class LifeSettlementService:
     ) -> dict[str, Any]:
         current = self._current_time(owner_user_id, now)
         profile, _ = self.ensure_world(owner_user_id, now=current)
-        return self.npc_suggestions.submit(
+        suggestion = self.npc_suggestions.submit(
             owner_user_id,
             actor_id,
             suggestion_type=suggestion_type,
@@ -396,6 +499,13 @@ class LifeSettlementService:
             timezone_name=profile["timezone"],
             now=current,
         )
+        self.npc_life.plan_manager.adopt_suggestion(
+            owner_user_id,
+            self.characters.canonical_actor_id(actor_id),
+            suggestion,
+            now=current,
+        )
+        return suggestion
 
     def list_actor_suggestions(
         self,

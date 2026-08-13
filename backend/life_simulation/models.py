@@ -121,6 +121,7 @@ class SettlementReport:
     interaction_settlement: dict[str, Any] = field(default_factory=dict)
     intention_settlement: dict[str, Any] = field(default_factory=dict)
     suggestion_settlement: dict[str, Any] = field(default_factory=dict)
+    reflection_settlement: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -137,4 +138,5 @@ class SettlementReport:
             "interaction_settlement": self.interaction_settlement,
             "intention_settlement": self.intention_settlement,
             "suggestion_settlement": self.suggestion_settlement,
+            "reflection_settlement": self.reflection_settlement,
         }

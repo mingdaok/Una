@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import uuid
@@ -336,6 +337,10 @@ class LifeStore:
                     stress INTEGER NOT NULL DEFAULT 24,
                     social_need INTEGER NOT NULL DEFAULT 28,
                     solitude_need INTEGER NOT NULL DEFAULT 22,
+                    boredom INTEGER NOT NULL DEFAULT 28,
+                    focus INTEGER NOT NULL DEFAULT 55,
+                    confidence INTEGER NOT NULL DEFAULT 50,
+                    comfort INTEGER NOT NULL DEFAULT 70,
                     mood_json TEXT NOT NULL DEFAULT '{}',
                     active_goals_json TEXT NOT NULL DEFAULT '[]',
                     last_settled_at TEXT NOT NULL,
@@ -360,6 +365,7 @@ class LifeStore:
                     starts_at TEXT NOT NULL,
                     ends_at TEXT NOT NULL,
                     status TEXT NOT NULL DEFAULT 'planned',
+                    decision_engine_version TEXT NOT NULL DEFAULT 'npc-rules-v1',
                     plan_json TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
@@ -402,6 +408,171 @@ class LifeStore:
 
                 CREATE INDEX IF NOT EXISTS idx_ai_actor_events_owner_actor_time
                     ON ai_actor_events(owner_user_id, actor_id, end_at DESC);
+
+                CREATE TABLE IF NOT EXISTS ai_actor_decisions (
+                    decision_id TEXT PRIMARY KEY,
+                    owner_user_id TEXT NOT NULL,
+                    actor_id TEXT NOT NULL,
+                    decision_at TEXT NOT NULL,
+                    state_version INTEGER NOT NULL,
+                    selected_candidate_id TEXT NOT NULL,
+                    candidate_scores_json TEXT NOT NULL DEFAULT '[]',
+                    rejected_candidates_json TEXT NOT NULL DEFAULT '[]',
+                    reason_codes_json TEXT NOT NULL DEFAULT '[]',
+                    random_seed_hash TEXT NOT NULL,
+                    temperature REAL NOT NULL,
+                    used_llm INTEGER NOT NULL DEFAULT 0,
+                    llm_model TEXT,
+                    fallback_reason TEXT,
+                    engine_version TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE (
+                        owner_user_id, actor_id, decision_at,
+                        state_version, engine_version
+                    ),
+                    FOREIGN KEY (owner_user_id, actor_id)
+                        REFERENCES ai_actor_profiles(owner_user_id, actor_id)
+                        ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_ai_actor_decisions_owner_actor_time
+                    ON ai_actor_decisions(owner_user_id, actor_id, decision_at DESC);
+
+                CREATE TABLE IF NOT EXISTS ai_decision_llm_calls (
+                    call_id TEXT PRIMARY KEY,
+                    owner_user_id TEXT NOT NULL,
+                    actor_id TEXT NOT NULL,
+                    decision_at TEXT NOT NULL,
+                    state_version INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    trigger_reason TEXT NOT NULL,
+                    selected_candidate_id TEXT,
+                    model TEXT,
+                    latency_ms INTEGER,
+                    input_tokens INTEGER NOT NULL DEFAULT 0,
+                    output_tokens INTEGER NOT NULL DEFAULT 0,
+                    fallback_reason TEXT,
+                    created_at TEXT NOT NULL,
+                    UNIQUE (owner_user_id, actor_id, decision_at, state_version)
+                );
+                CREATE INDEX IF NOT EXISTS idx_ai_decision_llm_calls_budget
+                    ON ai_decision_llm_calls(owner_user_id, actor_id, decision_at);
+
+                CREATE TABLE IF NOT EXISTS ai_actor_goals (
+                    goal_id TEXT PRIMARY KEY,
+                    owner_user_id TEXT NOT NULL,
+                    actor_id TEXT NOT NULL,
+                    goal_type TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    priority INTEGER NOT NULL,
+                    progress REAL NOT NULL DEFAULT 0,
+                    deadline TEXT,
+                    status TEXT NOT NULL DEFAULT 'candidate',
+                    origin TEXT NOT NULL,
+                    origin_ref_id TEXT,
+                    next_review_at TEXT NOT NULL,
+                    abandon_conditions_json TEXT NOT NULL DEFAULT '[]',
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE (owner_user_id, actor_id, origin, origin_ref_id),
+                    FOREIGN KEY (owner_user_id, actor_id)
+                        REFERENCES ai_actor_profiles(owner_user_id, actor_id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_ai_actor_goals_owner_actor_status
+                    ON ai_actor_goals(owner_user_id, actor_id, status, priority DESC);
+
+                CREATE TABLE IF NOT EXISTS ai_actor_commitments (
+                    commitment_id TEXT PRIMARY KEY,
+                    owner_user_id TEXT NOT NULL,
+                    actor_id TEXT NOT NULL,
+                    commitment_type TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    starts_at TEXT NOT NULL,
+                    ends_at TEXT NOT NULL,
+                    location_id TEXT NOT NULL,
+                    participant_ids_json TEXT NOT NULL DEFAULT '[]',
+                    flexibility TEXT NOT NULL DEFAULT 'soft',
+                    status TEXT NOT NULL DEFAULT 'accepted',
+                    origin_event_id TEXT,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE (owner_user_id, actor_id, starts_at, commitment_type),
+                    FOREIGN KEY (owner_user_id, actor_id)
+                        REFERENCES ai_actor_profiles(owner_user_id, actor_id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_ai_actor_commitments_owner_actor_time
+                    ON ai_actor_commitments(owner_user_id, actor_id, starts_at, ends_at);
+
+                CREATE TABLE IF NOT EXISTS ai_actor_plans (
+                    plan_id TEXT PRIMARY KEY,
+                    owner_user_id TEXT NOT NULL,
+                    actor_id TEXT NOT NULL,
+                    schedule_id TEXT,
+                    commitment_id TEXT,
+                    goal_id TEXT,
+                    plan_type TEXT NOT NULL,
+                    starts_at TEXT NOT NULL,
+                    ends_at TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'planned',
+                    original_action_json TEXT NOT NULL DEFAULT '{}',
+                    actual_action_json TEXT,
+                    reason_code TEXT,
+                    public_reason TEXT,
+                    private_reason TEXT,
+                    confidence REAL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE (owner_user_id, actor_id, starts_at, plan_type),
+                    FOREIGN KEY (schedule_id) REFERENCES ai_actor_schedules(schedule_id) ON DELETE SET NULL,
+                    FOREIGN KEY (commitment_id) REFERENCES ai_actor_commitments(commitment_id) ON DELETE SET NULL,
+                    FOREIGN KEY (goal_id) REFERENCES ai_actor_goals(goal_id) ON DELETE SET NULL,
+                    FOREIGN KEY (owner_user_id, actor_id)
+                        REFERENCES ai_actor_profiles(owner_user_id, actor_id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_ai_actor_plans_owner_actor_time
+                    ON ai_actor_plans(owner_user_id, actor_id, starts_at, status);
+
+                CREATE TABLE IF NOT EXISTS ai_interaction_invitations (
+                    invitation_id TEXT PRIMARY KEY,
+                    owner_user_id TEXT NOT NULL,
+                    initiator_actor_id TEXT NOT NULL,
+                    target_actor_id TEXT NOT NULL,
+                    interaction_template TEXT NOT NULL,
+                    starts_at TEXT NOT NULL,
+                    ends_at TEXT NOT NULL,
+                    location_id TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'proposed',
+                    reason_code TEXT,
+                    public_reason TEXT,
+                    private_reason TEXT,
+                    decision_score INTEGER,
+                    idempotency_key TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_ai_interaction_invitations_owner_time
+                    ON ai_interaction_invitations(owner_user_id, starts_at, status);
+
+                CREATE TABLE IF NOT EXISTS ai_world_opportunities (
+                    opportunity_id TEXT PRIMARY KEY,
+                    owner_user_id TEXT NOT NULL,
+                    opportunity_type TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    starts_at TEXT NOT NULL,
+                    ends_at TEXT NOT NULL,
+                    location_id TEXT NOT NULL,
+                    action_type TEXT NOT NULL,
+                    tags_json TEXT NOT NULL DEFAULT '[]',
+                    status TEXT NOT NULL DEFAULT 'available',
+                    cooldown_key TEXT,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    UNIQUE (owner_user_id, opportunity_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_ai_world_opportunities_owner_time
+                    ON ai_world_opportunities(owner_user_id, starts_at, ends_at, status);
 
                 CREATE TABLE IF NOT EXISTS ai_interaction_events (
                     event_id TEXT PRIMARY KEY,
@@ -579,6 +750,42 @@ class LifeStore:
                 11,
                 "unified_content_evidence_v1",
                 self._extend_content_evidence_tables,
+            )
+            self._apply_schema_migration(
+                connection,
+                12,
+                "npc_agency_v2_phase1",
+                self._extend_npc_agency_v2_tables,
+            )
+            self._apply_schema_migration(
+                connection,
+                13,
+                "npc_goals_commitments_plans_v2",
+                self._extend_npc_phase2_tables,
+            )
+            self._apply_schema_migration(
+                connection,
+                14,
+                "npc_bidirectional_social_v2",
+                self._extend_npc_phase3_tables,
+            )
+            self._apply_schema_migration(
+                connection,
+                15,
+                "npc_world_environment_v2",
+                self._extend_npc_phase4_tables,
+            )
+            self._apply_schema_migration(
+                connection,
+                16,
+                "npc_important_decision_llm_v2",
+                self._extend_npc_phase5_tables,
+            )
+            self._apply_schema_migration(
+                connection,
+                17,
+                "npc_long_horizon_agency_v2",
+                self._extend_npc_long_horizon_tables,
             )
             connection.commit()
         finally:
@@ -838,6 +1045,263 @@ class LifeStore:
 
             CREATE INDEX IF NOT EXISTS idx_ai_actor_events_owner_actor_time
                 ON ai_actor_events(owner_user_id, actor_id, end_at DESC);
+            """
+        )
+
+    def _extend_npc_agency_v2_tables(self, connection: sqlite3.Connection) -> None:
+        state_additions = {
+            "boredom": "INTEGER NOT NULL DEFAULT 28",
+            "focus": "INTEGER NOT NULL DEFAULT 55",
+            "confidence": "INTEGER NOT NULL DEFAULT 50",
+            "comfort": "INTEGER NOT NULL DEFAULT 70",
+        }
+        existing_state = self._column_names(connection, "ai_actor_states")
+        for name, definition in state_additions.items():
+            if name not in existing_state:
+                connection.execute(
+                    f"ALTER TABLE ai_actor_states ADD COLUMN {name} {definition}"
+                )
+        existing_schedule = self._column_names(connection, "ai_actor_schedules")
+        if "decision_engine_version" not in existing_schedule:
+            connection.execute(
+                "ALTER TABLE ai_actor_schedules ADD COLUMN "
+                "decision_engine_version TEXT NOT NULL DEFAULT 'npc-rules-v1'"
+            )
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS ai_actor_decisions (
+                decision_id TEXT PRIMARY KEY,
+                owner_user_id TEXT NOT NULL,
+                actor_id TEXT NOT NULL,
+                decision_at TEXT NOT NULL,
+                state_version INTEGER NOT NULL,
+                selected_candidate_id TEXT NOT NULL,
+                candidate_scores_json TEXT NOT NULL DEFAULT '[]',
+                rejected_candidates_json TEXT NOT NULL DEFAULT '[]',
+                reason_codes_json TEXT NOT NULL DEFAULT '[]',
+                random_seed_hash TEXT NOT NULL,
+                temperature REAL NOT NULL,
+                used_llm INTEGER NOT NULL DEFAULT 0,
+                llm_model TEXT,
+                fallback_reason TEXT,
+                engine_version TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE (
+                    owner_user_id, actor_id, decision_at,
+                    state_version, engine_version
+                ),
+                FOREIGN KEY (owner_user_id, actor_id)
+                    REFERENCES ai_actor_profiles(owner_user_id, actor_id)
+                    ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_ai_actor_decisions_owner_actor_time
+                ON ai_actor_decisions(owner_user_id, actor_id, decision_at DESC);
+            """
+        )
+
+    @staticmethod
+    def _extend_npc_phase2_tables(connection: sqlite3.Connection) -> None:
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS ai_actor_goals (
+                goal_id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL,
+                actor_id TEXT NOT NULL, goal_type TEXT NOT NULL, title TEXT NOT NULL,
+                priority INTEGER NOT NULL, progress REAL NOT NULL DEFAULT 0,
+                deadline TEXT, status TEXT NOT NULL DEFAULT 'candidate',
+                origin TEXT NOT NULL, origin_ref_id TEXT,
+                next_review_at TEXT NOT NULL,
+                abandon_conditions_json TEXT NOT NULL DEFAULT '[]',
+                metadata_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE (owner_user_id, actor_id, origin, origin_ref_id),
+                FOREIGN KEY (owner_user_id, actor_id)
+                    REFERENCES ai_actor_profiles(owner_user_id, actor_id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_ai_actor_goals_owner_actor_status
+                ON ai_actor_goals(owner_user_id, actor_id, status, priority DESC);
+            CREATE TABLE IF NOT EXISTS ai_actor_commitments (
+                commitment_id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL,
+                actor_id TEXT NOT NULL, commitment_type TEXT NOT NULL,
+                title TEXT NOT NULL, starts_at TEXT NOT NULL, ends_at TEXT NOT NULL,
+                location_id TEXT NOT NULL, participant_ids_json TEXT NOT NULL DEFAULT '[]',
+                flexibility TEXT NOT NULL DEFAULT 'soft',
+                status TEXT NOT NULL DEFAULT 'accepted', origin_event_id TEXT,
+                metadata_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE (owner_user_id, actor_id, starts_at, commitment_type),
+                FOREIGN KEY (owner_user_id, actor_id)
+                    REFERENCES ai_actor_profiles(owner_user_id, actor_id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_ai_actor_commitments_owner_actor_time
+                ON ai_actor_commitments(owner_user_id, actor_id, starts_at, ends_at);
+            CREATE TABLE IF NOT EXISTS ai_actor_plans (
+                plan_id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL,
+                actor_id TEXT NOT NULL, schedule_id TEXT, commitment_id TEXT,
+                goal_id TEXT, plan_type TEXT NOT NULL, starts_at TEXT NOT NULL,
+                ends_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'planned',
+                original_action_json TEXT NOT NULL DEFAULT '{}', actual_action_json TEXT,
+                reason_code TEXT, public_reason TEXT, private_reason TEXT,
+                confidence REAL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                UNIQUE (owner_user_id, actor_id, starts_at, plan_type),
+                FOREIGN KEY (schedule_id) REFERENCES ai_actor_schedules(schedule_id) ON DELETE SET NULL,
+                FOREIGN KEY (commitment_id) REFERENCES ai_actor_commitments(commitment_id) ON DELETE SET NULL,
+                FOREIGN KEY (goal_id) REFERENCES ai_actor_goals(goal_id) ON DELETE SET NULL,
+                FOREIGN KEY (owner_user_id, actor_id)
+                    REFERENCES ai_actor_profiles(owner_user_id, actor_id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_ai_actor_plans_owner_actor_time
+                ON ai_actor_plans(owner_user_id, actor_id, starts_at, status);
+            """
+        )
+
+    def _extend_npc_phase3_tables(self, connection: sqlite3.Connection) -> None:
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS ai_interaction_invitations (
+                invitation_id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL,
+                initiator_actor_id TEXT NOT NULL, target_actor_id TEXT NOT NULL,
+                interaction_template TEXT NOT NULL, starts_at TEXT NOT NULL,
+                ends_at TEXT NOT NULL, location_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'proposed', reason_code TEXT,
+                public_reason TEXT, private_reason TEXT, decision_score INTEGER,
+                idempotency_key TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_ai_interaction_invitations_owner_time
+                ON ai_interaction_invitations(owner_user_id, starts_at, status);
+            """
+        )
+        if "interaction_event_id" not in self._column_names(connection, "ai_memory_entries"):
+            connection.execute(
+                "ALTER TABLE ai_memory_entries ADD COLUMN interaction_event_id TEXT"
+            )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ai_memory_interaction_event "
+            "ON ai_memory_entries(owner_user_id, interaction_event_id)"
+        )
+
+    @staticmethod
+    def _extend_npc_phase4_tables(connection: sqlite3.Connection) -> None:
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS ai_world_opportunities (
+                opportunity_id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL,
+                opportunity_type TEXT NOT NULL, title TEXT NOT NULL,
+                starts_at TEXT NOT NULL, ends_at TEXT NOT NULL,
+                location_id TEXT NOT NULL, action_type TEXT NOT NULL,
+                tags_json TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'available', cooldown_key TEXT,
+                metadata_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL,
+                UNIQUE (owner_user_id, opportunity_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_ai_world_opportunities_owner_time
+                ON ai_world_opportunities(owner_user_id, starts_at, ends_at, status);
+            """
+        )
+
+    @staticmethod
+    def _extend_npc_phase5_tables(connection: sqlite3.Connection) -> None:
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS ai_decision_llm_calls (
+                call_id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL,
+                actor_id TEXT NOT NULL, decision_at TEXT NOT NULL,
+                state_version INTEGER NOT NULL, status TEXT NOT NULL,
+                trigger_reason TEXT NOT NULL, selected_candidate_id TEXT,
+                model TEXT, latency_ms INTEGER, input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0, fallback_reason TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE (owner_user_id, actor_id, decision_at, state_version)
+            );
+            CREATE INDEX IF NOT EXISTS idx_ai_decision_llm_calls_budget
+                ON ai_decision_llm_calls(owner_user_id, actor_id, decision_at);
+            """
+        )
+
+    def _extend_npc_long_horizon_tables(
+        self, connection: sqlite3.Connection
+    ) -> None:
+        memory_columns = self._column_names(connection, "ai_memory_entries")
+        for name, definition in {
+            "salience": "INTEGER NOT NULL DEFAULT 50",
+            "activation_count": "INTEGER NOT NULL DEFAULT 0",
+            "last_activated_at": "TEXT",
+            "superseded_by_memory_id": "TEXT",
+        }.items():
+            if name not in memory_columns:
+                connection.execute(
+                    f"ALTER TABLE ai_memory_entries ADD COLUMN {name} {definition}"
+                )
+        llm_columns = self._column_names(connection, "ai_decision_llm_calls")
+        if "reservation_expires_at" not in llm_columns:
+            connection.execute(
+                "ALTER TABLE ai_decision_llm_calls ADD COLUMN reservation_expires_at TEXT"
+            )
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS ai_actor_reflections (
+                reflection_id TEXT PRIMARY KEY,
+                owner_user_id TEXT NOT NULL,
+                actor_id TEXT NOT NULL,
+                period_type TEXT NOT NULL,
+                period_start TEXT NOT NULL,
+                period_end TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                source_event_ids_json TEXT NOT NULL DEFAULT '[]',
+                goal_changes_json TEXT NOT NULL DEFAULT '[]',
+                memory_changes_json TEXT NOT NULL DEFAULT '[]',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                UNIQUE (owner_user_id, actor_id, period_type, period_start),
+                FOREIGN KEY (owner_user_id, actor_id)
+                    REFERENCES ai_actor_profiles(owner_user_id, actor_id)
+                    ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_ai_actor_reflections_owner_actor_time
+                ON ai_actor_reflections(owner_user_id, actor_id, period_end DESC);
+
+            CREATE TABLE IF NOT EXISTS ai_actor_goal_transitions (
+                transition_id TEXT PRIMARY KEY,
+                owner_user_id TEXT NOT NULL,
+                actor_id TEXT NOT NULL,
+                goal_id TEXT NOT NULL,
+                previous_status TEXT NOT NULL,
+                next_status TEXT NOT NULL,
+                reason_code TEXT NOT NULL,
+                public_reason TEXT NOT NULL,
+                evidence_event_ids_json TEXT NOT NULL DEFAULT '[]',
+                decided_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE (owner_user_id, goal_id, previous_status, next_status, decided_at),
+                FOREIGN KEY (goal_id) REFERENCES ai_actor_goals(goal_id)
+                    ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_ai_goal_transitions_owner_actor_time
+                ON ai_actor_goal_transitions(owner_user_id, actor_id, decided_at DESC);
+
+            CREATE TABLE IF NOT EXISTS ai_quality_evaluation_jobs (
+                job_id TEXT PRIMARY KEY,
+                owner_user_id TEXT NOT NULL,
+                seeds_json TEXT NOT NULL,
+                days INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queued',
+                progress_current INTEGER NOT NULL DEFAULT 0,
+                progress_total INTEGER NOT NULL DEFAULT 1,
+                result_json TEXT,
+                error_text TEXT,
+                cancel_requested INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                finished_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_ai_quality_jobs_owner_time
+                ON ai_quality_evaluation_jobs(owner_user_id, created_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_ai_memory_retrieval_v2
+                ON ai_memory_entries(
+                    owner_user_id, ai_id, state, confidence DESC,
+                    salience DESC, learned_at DESC
+                );
             """
         )
 
@@ -1350,9 +1814,10 @@ class LifeStore:
                 INSERT OR IGNORE INTO ai_actor_states (
                     owner_user_id, actor_id, current_location, current_activity,
                     energy, hunger, stress, social_need, solitude_need,
+                    boredom, focus, confidence, comfort,
                     mood_json, active_goals_json, last_settled_at,
                     simulator_version, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     owner_user_id,
@@ -1364,6 +1829,10 @@ class LifeStore:
                     int(initial_state.get("stress", 24)),
                     int(initial_state.get("social_need", 28)),
                     int(initial_state.get("solitude_need", 22)),
+                    int(initial_state.get("boredom", 28)),
+                    int(initial_state.get("focus", 55)),
+                    int(initial_state.get("confidence", 50)),
+                    int(initial_state.get("comfort", 70)),
                     self._json(initial_state.get("mood", {})),
                     self._json(initial_state.get("active_goals", [])),
                     now_iso,
@@ -1427,8 +1896,9 @@ class LifeStore:
                 INSERT OR IGNORE INTO ai_actor_schedules (
                     schedule_id, owner_user_id, actor_id, window_key,
                     activity_id, event_type, location_id, summary,
-                    starts_at, ends_at, status, plan_json, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'planned', ?, ?, ?)
+                    starts_at, ends_at, status, decision_engine_version,
+                    plan_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'planned', ?, ?, ?, ?)
                 """,
                 (
                     schedule_id,
@@ -1441,6 +1911,7 @@ class LifeStore:
                     plan["summary"],
                     window.start_at.isoformat(),
                     window.end_at.isoformat(),
+                    plan.get("simulator_version", "npc-rules-v1"),
                     self._json(plan),
                     now_iso,
                     now_iso,
@@ -1511,6 +1982,9 @@ class LifeStore:
         expected_state_version: int,
         simulator_version: str,
         now: datetime,
+        decision: Optional[dict[str, Any]] = None,
+        actor_plan_outcome: Optional[dict[str, Any]] = None,
+        goal_progress: Optional[dict[str, Any]] = None,
     ) -> tuple[str, Optional[dict[str, Any]]]:
         connection = self._connect()
         try:
@@ -1533,6 +2007,68 @@ class LifeStore:
                 return "stale", None
 
             persisted_event = None
+            if decision is not None:
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO ai_actor_decisions (
+                        decision_id, owner_user_id, actor_id, decision_at,
+                        state_version, selected_candidate_id,
+                        candidate_scores_json, rejected_candidates_json,
+                        reason_codes_json, random_seed_hash, temperature,
+                        used_llm, llm_model, fallback_reason, engine_version,
+                        created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        decision.get("decision_id", uuid.uuid4().hex),
+                        owner_user_id,
+                        actor_id,
+                        decision.get("decision_at", window.start_at.isoformat()),
+                        int(decision.get("state_version", expected_state_version)),
+                        decision["selected_candidate_id"],
+                        self._json(decision.get("candidate_scores", [])),
+                        self._json(decision.get("rejected_candidates", [])),
+                        self._json(decision.get("reason_codes", [])),
+                        decision["random_seed_hash"],
+                        float(decision["temperature"]),
+                        1 if decision.get("used_llm") else 0,
+                        decision.get("llm_model"),
+                        decision.get("fallback_reason"),
+                        decision["engine_version"],
+                        now.isoformat(),
+                    ),
+                )
+            if actor_plan_outcome is not None:
+                change = actor_plan_outcome.get("change", {})
+                connection.execute(
+                    """
+                    UPDATE ai_actor_plans SET status = ?, actual_action_json = ?,
+                        reason_code = ?, public_reason = ?, private_reason = ?,
+                        confidence = ?, updated_at = ?
+                    WHERE owner_user_id = ? AND actor_id = ? AND plan_id = ?
+                    """,
+                    (
+                        actor_plan_outcome["status"],
+                        self._json(actor_plan_outcome.get("actual_action", {})),
+                        change.get("reason_code"), change.get("public_reason"),
+                        change.get("private_reason"), change.get("confidence"),
+                        now.isoformat(), owner_user_id, actor_id,
+                        actor_plan_outcome["plan_id"],
+                    ),
+                )
+            if goal_progress and goal_progress.get("goal_id"):
+                delta = max(0.0, float(goal_progress.get("delta", 0)))
+                connection.execute(
+                    """
+                    UPDATE ai_actor_goals SET
+                        progress = MIN(1.0, progress + ?),
+                        status = CASE WHEN progress + ? >= 1.0 THEN 'completed' ELSE status END,
+                        updated_at = ?
+                    WHERE owner_user_id = ? AND actor_id = ? AND goal_id = ?
+                      AND status = 'active'
+                    """,
+                    (delta, delta, now.isoformat(), owner_user_id, actor_id, goal_progress["goal_id"]),
+                )
             if event is not None:
                 event_id = event.get("event_id") or uuid.uuid4().hex
                 connection.execute(
@@ -1582,6 +2118,7 @@ class LifeStore:
                 UPDATE ai_actor_states SET
                     current_location = ?, current_activity = ?, energy = ?,
                     hunger = ?, stress = ?, social_need = ?, solitude_need = ?,
+                    boredom = ?, focus = ?, confidence = ?, comfort = ?,
                     mood_json = ?, active_goals_json = ?, last_settled_at = ?,
                     state_version = state_version + 1,
                     simulator_version = ?, updated_at = ?
@@ -1595,6 +2132,10 @@ class LifeStore:
                     int(next_state.get("stress", 24)),
                     int(next_state.get("social_need", 28)),
                     int(next_state.get("solitude_need", 22)),
+                    int(next_state.get("boredom", 28)),
+                    int(next_state.get("focus", 55)),
+                    int(next_state.get("confidence", 50)),
+                    int(next_state.get("comfort", 70)),
                     self._json(next_state.get("mood", {})),
                     self._json(next_state.get("active_goals", [])),
                     window.end_at.isoformat(),
@@ -1659,6 +2200,1069 @@ class LifeStore:
             return [self._decode_actor_event(row) for row in rows]
         finally:
             connection.close()
+
+    def list_actor_decisions(
+        self,
+        owner_user_id: str,
+        actor_id: str,
+        *,
+        before: Optional[str] = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        clauses = ["owner_user_id = ?", "actor_id = ?"]
+        params: list[Any] = [owner_user_id, actor_id]
+        if before:
+            clauses.append("decision_at < ?")
+            params.append(parse_datetime(before).isoformat())
+        params.append(max(1, min(100, limit)))
+        connection = self._connect()
+        try:
+            rows = connection.execute(
+                f"SELECT * FROM ai_actor_decisions WHERE {' AND '.join(clauses)} "
+                "ORDER BY decision_at DESC LIMIT ?",
+                params,
+            ).fetchall()
+            return [self._decode_actor_decision(row) for row in rows]
+        finally:
+            connection.close()
+
+    def count_decision_llm_calls(
+        self, owner_user_id: str, actor_id: str, *, day_start: str, day_end: str,
+    ) -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*) FROM ai_decision_llm_calls
+                WHERE owner_user_id = ? AND actor_id = ?
+                  AND decision_at >= ? AND decision_at < ?
+                """,
+                (
+                    owner_user_id, actor_id, parse_datetime(day_start).isoformat(),
+                    parse_datetime(day_end).isoformat(),
+                ),
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    def reserve_decision_llm_call(
+        self, owner_user_id: str, actor_id: str, *, call: dict[str, Any],
+        day_start: str, day_end: str, daily_budget: int, now: datetime,
+        reservation_seconds: int = 120,
+    ) -> bool:
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                UPDATE ai_decision_llm_calls SET status = 'reservation_expired',
+                    fallback_reason = 'reservation_expired'
+                WHERE owner_user_id = ? AND actor_id = ? AND status = 'reserved'
+                  AND reservation_expires_at IS NOT NULL
+                  AND reservation_expires_at <= ?
+                """,
+                (owner_user_id, actor_id, now.isoformat()),
+            )
+            existing = connection.execute(
+                "SELECT 1 FROM ai_decision_llm_calls WHERE owner_user_id = ? "
+                "AND actor_id = ? AND decision_at = ? AND state_version = ?",
+                (
+                    owner_user_id, actor_id,
+                    parse_datetime(call["decision_at"]).isoformat(),
+                    int(call["state_version"]),
+                ),
+            ).fetchone()
+            if existing:
+                connection.rollback()
+                return False
+            count = connection.execute(
+                """
+                SELECT COUNT(*) FROM ai_decision_llm_calls
+                WHERE owner_user_id = ? AND actor_id = ?
+                  AND decision_at >= ? AND decision_at < ?
+                  AND status <> 'reservation_expired'
+                """,
+                (
+                    owner_user_id, actor_id, parse_datetime(day_start).isoformat(),
+                    parse_datetime(day_end).isoformat(),
+                ),
+            ).fetchone()[0]
+            if int(count) >= max(0, int(daily_budget)):
+                connection.rollback()
+                return False
+            connection.execute(
+                """
+                INSERT INTO ai_decision_llm_calls (
+                    call_id, owner_user_id, actor_id, decision_at, state_version,
+                    status, trigger_reason, input_tokens, output_tokens,
+                    created_at, reservation_expires_at
+                ) VALUES (?, ?, ?, ?, ?, 'reserved', ?, 0, 0, ?, ?)
+                """,
+                (
+                    call["call_id"], owner_user_id, actor_id,
+                    parse_datetime(call["decision_at"]).isoformat(),
+                    int(call["state_version"]), call["trigger_reason"],
+                    now.isoformat(),
+                    (now + timedelta(seconds=max(10, reservation_seconds))).isoformat(),
+                ),
+            )
+            connection.commit()
+            return True
+        except sqlite3.IntegrityError:
+            if connection.in_transaction:
+                connection.rollback()
+            return False
+        except Exception:
+            if connection.in_transaction:
+                connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def finalize_decision_llm_call(
+        self, owner_user_id: str, actor_id: str, *, call_id: str,
+        changes: dict[str, Any], now: datetime,
+    ) -> dict[str, Any]:
+        del now
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE ai_decision_llm_calls SET
+                    status = ?, selected_candidate_id = ?, model = ?,
+                    latency_ms = ?, input_tokens = ?, output_tokens = ?,
+                    fallback_reason = ?, reservation_expires_at = NULL
+                WHERE call_id = ? AND owner_user_id = ? AND actor_id = ?
+                  AND status = 'reserved'
+                """,
+                (
+                    changes["status"], changes.get("selected_candidate_id"),
+                    changes.get("model"), changes.get("latency_ms"),
+                    int(changes.get("input_tokens", 0)),
+                    int(changes.get("output_tokens", 0)),
+                    changes.get("fallback_reason"), call_id,
+                    owner_user_id, actor_id,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM ai_decision_llm_calls WHERE call_id = ?",
+                (call_id,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("重要决策 LLM 预占记录不存在")
+        return dict(row)
+
+    def record_decision_llm_call(
+        self, owner_user_id: str, actor_id: str, *, call: dict[str, Any],
+        now: datetime,
+    ) -> dict[str, Any]:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO ai_decision_llm_calls (
+                    call_id, owner_user_id, actor_id, decision_at, state_version,
+                    status, trigger_reason, selected_candidate_id, model,
+                    latency_ms, input_tokens, output_tokens, fallback_reason, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    call["call_id"], owner_user_id, actor_id,
+                    parse_datetime(call["decision_at"]).isoformat(),
+                    int(call["state_version"]), call["status"],
+                    call["trigger_reason"], call.get("selected_candidate_id"),
+                    call.get("model"), call.get("latency_ms"),
+                    int(call.get("input_tokens", 0)),
+                    int(call.get("output_tokens", 0)), call.get("fallback_reason"),
+                    now.isoformat(),
+                ),
+            )
+            row = connection.execute(
+                """
+                SELECT * FROM ai_decision_llm_calls
+                WHERE owner_user_id = ? AND actor_id = ?
+                  AND decision_at = ? AND state_version = ?
+                """,
+                (
+                    owner_user_id, actor_id,
+                    parse_datetime(call["decision_at"]).isoformat(),
+                    int(call["state_version"]),
+                ),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("重要决策 LLM 调用记录写入失败")
+        return dict(row)
+
+    def list_decision_llm_calls(
+        self, owner_user_id: str, actor_id: str, *, limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM ai_decision_llm_calls
+                WHERE owner_user_id = ? AND actor_id = ?
+                ORDER BY decision_at DESC LIMIT ?
+                """,
+                (owner_user_id, actor_id, max(1, min(200, limit))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def ensure_actor_goal(
+        self, owner_user_id: str, actor_id: str, *, goal: dict[str, Any], now: datetime
+    ) -> dict[str, Any]:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO ai_actor_goals (
+                    goal_id, owner_user_id, actor_id, goal_type, title, priority,
+                    progress, deadline, status, origin, origin_ref_id, next_review_at,
+                    abandon_conditions_json, metadata_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    goal["goal_id"], owner_user_id, actor_id, goal["goal_type"],
+                    goal["title"], max(0, min(100, int(goal.get("priority", 50)))),
+                    max(0.0, min(1.0, float(goal.get("progress", 0)))),
+                    goal.get("deadline"), goal.get("status", "candidate"),
+                    goal["origin"], goal.get("origin_ref_id"), goal["next_review_at"],
+                    self._json(goal.get("abandon_conditions", [])),
+                    self._json(goal.get("metadata", {})), now.isoformat(), now.isoformat(),
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM ai_actor_goals WHERE owner_user_id = ? AND actor_id = ? "
+                "AND origin = ? AND origin_ref_id IS ?",
+                (owner_user_id, actor_id, goal["origin"], goal.get("origin_ref_id")),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("NPC 目标写入失败")
+        return self._decode_actor_goal(row)
+
+    def list_actor_goals(
+        self, owner_user_id: str, actor_id: str, *, status: Optional[str] = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        clauses, params = ["owner_user_id = ?", "actor_id = ?"], [owner_user_id, actor_id]
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        params.append(max(1, min(100, limit)))
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM ai_actor_goals WHERE {' AND '.join(clauses)} "
+                "ORDER BY priority DESC, created_at ASC LIMIT ?", params,
+            ).fetchall()
+        return [self._decode_actor_goal(row) for row in rows]
+
+    def transition_actor_goal(
+        self, owner_user_id: str, actor_id: str, *, goal_id: str,
+        next_status: str, reason_code: str, public_reason: str,
+        evidence_event_ids: list[str], next_review_at: datetime, now: datetime,
+    ) -> Optional[dict[str, Any]]:
+        allowed = {"candidate", "active", "paused", "completed", "abandoned", "failed"}
+        if next_status not in allowed:
+            raise ValueError("NPC 目标状态无效")
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM ai_actor_goals WHERE owner_user_id = ? "
+                "AND actor_id = ? AND goal_id = ?",
+                (owner_user_id, actor_id, goal_id),
+            ).fetchone()
+            if row is None:
+                connection.rollback()
+                return None
+            previous = str(row["status"])
+            if previous == next_status:
+                connection.execute(
+                    "UPDATE ai_actor_goals SET next_review_at = ?, updated_at = ? "
+                    "WHERE owner_user_id = ? AND actor_id = ? AND goal_id = ?",
+                    (
+                        next_review_at.isoformat(), now.isoformat(),
+                        owner_user_id, actor_id, goal_id,
+                    ),
+                )
+                row = connection.execute(
+                    "SELECT * FROM ai_actor_goals WHERE goal_id = ?", (goal_id,)
+                ).fetchone()
+                connection.commit()
+                return self._decode_actor_goal(row)
+            transition_id = hashlib.sha256(
+                f"{owner_user_id}:{goal_id}:{previous}:{next_status}:{now.isoformat()}".encode("utf-8")
+            ).hexdigest()[:32]
+            connection.execute(
+                """
+                UPDATE ai_actor_goals SET status = ?, next_review_at = ?,
+                    updated_at = ? WHERE owner_user_id = ? AND actor_id = ?
+                    AND goal_id = ?
+                """,
+                (
+                    next_status, next_review_at.isoformat(), now.isoformat(),
+                    owner_user_id, actor_id, goal_id,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO ai_actor_goal_transitions (
+                    transition_id, owner_user_id, actor_id, goal_id,
+                    previous_status, next_status, reason_code, public_reason,
+                    evidence_event_ids_json, decided_at, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    transition_id, owner_user_id, actor_id, goal_id, previous,
+                    next_status, reason_code, public_reason,
+                    self._json(evidence_event_ids), now.isoformat(), now.isoformat(),
+                ),
+            )
+            updated = connection.execute(
+                "SELECT * FROM ai_actor_goals WHERE goal_id = ?", (goal_id,)
+            ).fetchone()
+            connection.commit()
+            return self._decode_actor_goal(updated)
+        except Exception:
+            if connection.in_transaction:
+                connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def list_goal_transitions(
+        self, owner_user_id: str, actor_id: str, *, limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM ai_actor_goal_transitions
+                WHERE owner_user_id = ? AND actor_id = ?
+                ORDER BY decided_at DESC LIMIT ?
+                """,
+                (owner_user_id, actor_id, max(1, min(200, limit))),
+            ).fetchall()
+        results = []
+        for row in rows:
+            item = dict(row)
+            item["evidence_event_ids"] = self._load_json(
+                item.pop("evidence_event_ids_json"), []
+            )
+            results.append(item)
+        return results
+
+    def ensure_actor_commitment(
+        self, owner_user_id: str, actor_id: str, *, commitment: dict[str, Any],
+        now: datetime,
+    ) -> dict[str, Any]:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO ai_actor_commitments (
+                    commitment_id, owner_user_id, actor_id, commitment_type, title,
+                    starts_at, ends_at, location_id, participant_ids_json, flexibility,
+                    status, origin_event_id, metadata_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    commitment["commitment_id"], owner_user_id, actor_id,
+                    commitment["commitment_type"], commitment["title"],
+                    commitment["starts_at"], commitment["ends_at"],
+                    commitment.get("location_id", "home"),
+                    self._json(commitment.get("participant_ids", [])),
+                    commitment.get("flexibility", "soft"),
+                    commitment.get("status", "accepted"), commitment.get("origin_event_id"),
+                    self._json(commitment.get("metadata", {})), now.isoformat(), now.isoformat(),
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM ai_actor_commitments WHERE owner_user_id = ? "
+                "AND actor_id = ? AND starts_at = ? AND commitment_type = ?",
+                (owner_user_id, actor_id, commitment["starts_at"], commitment["commitment_type"]),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("NPC 承诺写入失败")
+        return self._decode_actor_commitment(row)
+
+    def list_actor_commitments(
+        self, owner_user_id: str, actor_id: str, *, after: Optional[str] = None,
+        before: Optional[str] = None, status: Optional[str] = None, limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        clauses, params = ["owner_user_id = ?", "actor_id = ?"], [owner_user_id, actor_id]
+        if after:
+            clauses.append("ends_at > ?"); params.append(parse_datetime(after).isoformat())
+        if before:
+            clauses.append("starts_at < ?"); params.append(parse_datetime(before).isoformat())
+        if status:
+            clauses.append("status = ?"); params.append(status)
+        params.append(max(1, min(200, limit)))
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM ai_actor_commitments WHERE {' AND '.join(clauses)} "
+                "ORDER BY starts_at ASC LIMIT ?", params,
+            ).fetchall()
+        return [self._decode_actor_commitment(row) for row in rows]
+
+    def actor_has_commitment_conflict(
+        self, owner_user_id: str, actor_id: str, *, starts_at: str,
+        ends_at: str, location_id: str,
+    ) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT 1 FROM ai_actor_commitments
+                WHERE owner_user_id = ? AND actor_id = ? AND status = 'accepted'
+                  AND starts_at < ? AND ends_at > ? AND location_id <> ?
+                LIMIT 1
+                """,
+                (
+                    owner_user_id, actor_id, parse_datetime(ends_at).isoformat(),
+                    parse_datetime(starts_at).isoformat(), location_id,
+                ),
+            ).fetchone()
+        return row is not None
+
+    def record_interaction_invitation(
+        self, owner_user_id: str, *, invitation: dict[str, Any],
+        decision: dict[str, Any], now: datetime,
+    ) -> tuple[dict[str, Any], bool]:
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            decision = dict(decision)
+            if decision["status"] == "accepted":
+                for actor_id in (
+                    invitation["initiator_actor_id"], invitation["target_actor_id"]
+                ):
+                    conflict = connection.execute(
+                        """
+                        SELECT 1 FROM ai_actor_commitments
+                        WHERE owner_user_id = ? AND actor_id = ?
+                          AND status = 'accepted' AND starts_at < ? AND ends_at > ?
+                          AND location_id <> ? LIMIT 1
+                        """,
+                        (
+                            owner_user_id, actor_id,
+                            parse_datetime(invitation["ends_at"]).isoformat(),
+                            parse_datetime(invitation["starts_at"]).isoformat(),
+                            invitation["location_id"],
+                        ),
+                    ).fetchone()
+                    if conflict:
+                        decision.update({
+                            "status": "rejected",
+                            "reason_code": "time_conflict",
+                            "public_reason": "那段时间已经有安排了。",
+                            "private_reason": "不想同时答应两个地点的事情。",
+                            "score": -100,
+                        })
+                        break
+            existing = connection.execute(
+                "SELECT * FROM ai_interaction_invitations "
+                "WHERE owner_user_id = ? AND idempotency_key = ?",
+                (owner_user_id, invitation["idempotency_key"]),
+            ).fetchone()
+            if existing:
+                result = self._decode_interaction_invitation(existing)
+                connection.commit()
+                return result, False
+            connection.execute(
+                """
+                INSERT INTO ai_interaction_invitations (
+                    invitation_id, owner_user_id, initiator_actor_id,
+                    target_actor_id, interaction_template, starts_at, ends_at,
+                    location_id, status, reason_code, public_reason,
+                    private_reason, decision_score, idempotency_key,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    invitation["invitation_id"], owner_user_id,
+                    invitation["initiator_actor_id"], invitation["target_actor_id"],
+                    invitation["interaction_template"],
+                    parse_datetime(invitation["starts_at"]).isoformat(),
+                    parse_datetime(invitation["ends_at"]).isoformat(),
+                    invitation["location_id"], decision["status"],
+                    decision["reason_code"], decision["public_reason"],
+                    decision["private_reason"], int(decision["score"]),
+                    invitation["idempotency_key"], now.isoformat(), now.isoformat(),
+                ),
+            )
+            if decision["status"] == "accepted":
+                participants = [
+                    invitation["initiator_actor_id"], invitation["target_actor_id"]
+                ]
+                for actor_id in participants:
+                    commitment_id = hashlib.sha256(
+                        f"{invitation['invitation_id']}:{actor_id}".encode("utf-8")
+                    ).hexdigest()[:32]
+                    connection.execute(
+                        """
+                        INSERT INTO ai_actor_commitments (
+                            commitment_id, owner_user_id, actor_id, commitment_type,
+                            title, starts_at, ends_at, location_id,
+                            participant_ids_json, flexibility, status,
+                            metadata_json, created_at, updated_at
+                        ) VALUES (?, ?, ?, 'social_invitation', ?, ?, ?, ?, ?,
+                                  'hard', 'accepted', ?, ?, ?)
+                        """,
+                        (
+                            commitment_id, owner_user_id, actor_id,
+                            invitation["title"],
+                            parse_datetime(invitation["starts_at"]).isoformat(),
+                            parse_datetime(invitation["ends_at"]).isoformat(),
+                            invitation["location_id"], self._json(participants),
+                            self._json({"invitation_id": invitation["invitation_id"]}),
+                            now.isoformat(), now.isoformat(),
+                        ),
+                    )
+            row = connection.execute(
+                "SELECT * FROM ai_interaction_invitations WHERE invitation_id = ?",
+                (invitation["invitation_id"],),
+            ).fetchone()
+            connection.commit()
+            return self._decode_interaction_invitation(row), True
+        except Exception:
+            if connection.in_transaction:
+                connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def list_interaction_invitations(
+        self, owner_user_id: str, *, actor_id: Optional[str] = None,
+        status: Optional[str] = None, limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        clauses, params = ["owner_user_id = ?"], [owner_user_id]
+        if actor_id:
+            clauses.append("(initiator_actor_id = ? OR target_actor_id = ?)")
+            params.extend((actor_id, actor_id))
+        if status:
+            clauses.append("status = ?"); params.append(status)
+        params.append(max(1, min(200, limit)))
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM ai_interaction_invitations WHERE {' AND '.join(clauses)} "
+                "ORDER BY starts_at DESC LIMIT ?", params,
+            ).fetchall()
+        return [self._decode_interaction_invitation(row) for row in rows]
+
+    def list_interaction_memories(
+        self, owner_user_id: str, *, event_id: Optional[str] = None,
+        actor_id: Optional[str] = None, limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        clauses, params = [
+            "owner_user_id = ?", "source_kind = 'npc_interaction'"
+        ], [owner_user_id]
+        if event_id:
+            clauses.append("interaction_event_id = ?")
+            params.append(event_id)
+        if actor_id:
+            clauses.append("ai_id = ?")
+            params.append(actor_id)
+        params.append(max(1, min(200, limit)))
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM ai_memory_entries WHERE {' AND '.join(clauses)} "
+                "ORDER BY learned_at DESC LIMIT ?", params,
+            ).fetchall()
+        results = []
+        for row in rows:
+            item = dict(row)
+            item["metadata"] = self._load_json(item.pop("metadata_json"), {})
+            results.append(item)
+        return results
+
+    def list_actor_memories(
+        self, owner_user_id: str, actor_id: str, *, state: str = "active",
+        limit: int = 50, context: Optional[dict[str, Any]] = None,
+        activate_at: Optional[datetime] = None,
+    ) -> list[dict[str, Any]]:
+        context = context or {}
+        participant_ids = {
+            str(item) for item in context.get("participant_ids", ()) if item
+        }
+        target_actor_id = context.get("target_actor_id")
+        if target_actor_id:
+            participant_ids.add(str(target_actor_id))
+        locations = {
+            str(item) for item in context.get("location_ids", ()) if item
+        }
+        if context.get("location_id"):
+            locations.add(str(context["location_id"]))
+        action_types = {
+            str(item) for item in context.get("action_types", ()) if item
+        }
+        if context.get("action_type"):
+            action_types.add(str(context["action_type"]))
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM ai_memory_entries
+                WHERE owner_user_id = ? AND ai_id = ? AND state = ?
+                ORDER BY
+                    (confidence * 0.55 + salience * 0.35
+                     + MIN(20, activation_count * 2)) DESC,
+                    learned_at DESC LIMIT ?
+                """,
+                (
+                    owner_user_id, actor_id, state,
+                    200 if context else max(1, min(200, limit)),
+                ),
+            ).fetchall()
+        results = []
+        for row in rows:
+            item = dict(row)
+            item["metadata"] = self._load_json(item.pop("metadata_json"), {})
+            metadata = item["metadata"]
+            matched = set()
+            other_actor_id = metadata.get("other_actor_id")
+            if other_actor_id and str(other_actor_id) in participant_ids:
+                matched.add("participant")
+            location_id = metadata.get("location_id")
+            if location_id and str(location_id) in locations:
+                matched.add("location")
+            action_type = metadata.get("action_type")
+            if action_type and str(action_type) in action_types:
+                matched.add("action")
+            item["retrieval_matches"] = sorted(matched)
+            item["retrieval_score"] = round(
+                float(item.get("confidence", 0)) * 0.55
+                + float(item.get("salience", 50)) * 0.35
+                + min(20, int(item.get("activation_count", 0)) * 2)
+                + len(matched) * 18,
+                3,
+            )
+            results.append(item)
+        results.sort(
+            key=lambda item: (
+                item["retrieval_score"], item.get("learned_at") or ""
+            ),
+            reverse=True,
+        )
+        results = results[:max(1, min(200, limit))]
+        activated_ids = [
+            item["memory_id"] for item in results if item["retrieval_matches"]
+        ]
+        if activated_ids and activate_at:
+            placeholders = ",".join("?" for _ in activated_ids)
+            with self._connect() as connection:
+                connection.execute(
+                    f"""
+                    UPDATE ai_memory_entries SET
+                        activation_count = activation_count + CASE
+                            WHEN last_activated_at = ? THEN 0 ELSE 1 END,
+                        last_activated_at = ?
+                    WHERE owner_user_id = ? AND ai_id = ?
+                      AND memory_id IN ({placeholders})
+                    """,
+                    (
+                        activate_at.isoformat(), activate_at.isoformat(),
+                        owner_user_id, actor_id,
+                        *activated_ids,
+                    ),
+                )
+        return results
+
+    def upsert_consolidated_memory(
+        self, owner_user_id: str, actor_id: str, *, memory: dict[str, Any],
+        now: datetime,
+    ) -> dict[str, Any]:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO ai_memory_entries (
+                    memory_id, owner_user_id, ai_id, memory_kind, content,
+                    source_kind, confidence, state, disclosure_level,
+                    metadata_json, learned_at, revised_at, salience,
+                    activation_count, last_activated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, 0, NULL)
+                ON CONFLICT(memory_id) DO UPDATE SET
+                    content = excluded.content,
+                    confidence = excluded.confidence,
+                    disclosure_level = excluded.disclosure_level,
+                    metadata_json = excluded.metadata_json,
+                    revised_at = excluded.revised_at,
+                    salience = excluded.salience,
+                    state = 'active'
+                """,
+                (
+                    memory["memory_id"], owner_user_id, actor_id,
+                    memory["memory_kind"], memory["content"],
+                    memory.get("source_kind", "reflection"),
+                    max(0, min(100, int(memory.get("confidence", 70)))),
+                    memory.get("disclosure_level", "private"),
+                    self._json(memory.get("metadata", {})), now.isoformat(),
+                    now.isoformat(), max(0, min(100, int(memory.get("salience", 60)))),
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM ai_memory_entries WHERE memory_id = ?",
+                (memory["memory_id"],),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("巩固记忆写入失败")
+        item = dict(row)
+        item["metadata"] = self._load_json(item.pop("metadata_json"), {})
+        return item
+
+    def mark_memories_consolidated(
+        self, owner_user_id: str, actor_id: str, memory_ids: list[str], *,
+        consolidated_memory_id: str, now: datetime,
+    ) -> int:
+        if not memory_ids:
+            return 0
+        placeholders = ",".join("?" for _ in memory_ids)
+        with self._connect() as connection:
+            result = connection.execute(
+                f"""
+                UPDATE ai_memory_entries SET state = 'consolidated',
+                    superseded_by_memory_id = ?, revised_at = ?
+                WHERE owner_user_id = ? AND ai_id = ? AND memory_id IN ({placeholders})
+                  AND memory_id <> ?
+                """,
+                (
+                    consolidated_memory_id, now.isoformat(), owner_user_id,
+                    actor_id, *memory_ids, consolidated_memory_id,
+                ),
+            )
+        return int(result.rowcount)
+
+    def decay_memories(
+        self, owner_user_id: str, actor_id: str, *, before: datetime,
+        now: datetime,
+    ) -> int:
+        with self._connect() as connection:
+            result = connection.execute(
+                """
+                UPDATE ai_memory_entries SET
+                    salience = MAX(5, salience - CASE
+                        WHEN memory_kind IN ('relationship', 'user') THEN 1 ELSE 3 END),
+                    revised_at = ?
+                WHERE owner_user_id = ? AND ai_id = ? AND state = 'active'
+                  AND learned_at < ?
+                """,
+                (now.isoformat(), owner_user_id, actor_id, before.isoformat()),
+            )
+        return int(result.rowcount)
+
+    def ensure_actor_reflection(
+        self, owner_user_id: str, actor_id: str, *, reflection: dict[str, Any],
+        now: datetime,
+    ) -> tuple[dict[str, Any], bool]:
+        reflection_id = reflection.get("reflection_id") or hashlib.sha256(
+            (
+                f"{owner_user_id}:{actor_id}:{reflection['period_type']}:"
+                f"{reflection['period_start']}"
+            ).encode("utf-8")
+        ).hexdigest()[:32]
+        with self._connect() as connection:
+            result = connection.execute(
+                """
+                INSERT OR IGNORE INTO ai_actor_reflections (
+                    reflection_id, owner_user_id, actor_id, period_type,
+                    period_start, period_end, summary, source_event_ids_json,
+                    goal_changes_json, memory_changes_json, metadata_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    reflection_id, owner_user_id, actor_id,
+                    reflection["period_type"], reflection["period_start"],
+                    reflection["period_end"], reflection["summary"],
+                    self._json(reflection.get("source_event_ids", [])),
+                    self._json(reflection.get("goal_changes", [])),
+                    self._json(reflection.get("memory_changes", [])),
+                    self._json(reflection.get("metadata", {})), now.isoformat(),
+                ),
+            )
+            row = connection.execute(
+                """
+                SELECT * FROM ai_actor_reflections
+                WHERE owner_user_id = ? AND actor_id = ? AND period_type = ?
+                  AND period_start = ?
+                """,
+                (
+                    owner_user_id, actor_id, reflection["period_type"],
+                    reflection["period_start"],
+                ),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("NPC 反思记录写入失败")
+        return self._decode_actor_reflection(row), result.rowcount == 1
+
+    def list_actor_reflections(
+        self, owner_user_id: str, actor_id: str, *, period_type: Optional[str] = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        clauses, params = ["owner_user_id = ?", "actor_id = ?"], [
+            owner_user_id, actor_id,
+        ]
+        if period_type:
+            clauses.append("period_type = ?")
+            params.append(period_type)
+        params.append(max(1, min(200, limit)))
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM ai_actor_reflections WHERE {' AND '.join(clauses)} "
+                "ORDER BY period_end DESC LIMIT ?", params,
+            ).fetchall()
+        return [self._decode_actor_reflection(row) for row in rows]
+
+    def create_quality_evaluation_job(
+        self, owner_user_id: str, *, job: dict[str, Any], now: datetime,
+    ) -> dict[str, Any]:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO ai_quality_evaluation_jobs (
+                    job_id, owner_user_id, seeds_json, days, status,
+                    progress_current, progress_total, cancel_requested, created_at
+                ) VALUES (?, ?, ?, ?, 'queued', 0, ?, 0, ?)
+                """,
+                (
+                    job["job_id"], owner_user_id, self._json(job["seeds"]),
+                    int(job["days"]), max(1, int(job["progress_total"])),
+                    now.isoformat(),
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM ai_quality_evaluation_jobs WHERE job_id = ?",
+                (job["job_id"],),
+            ).fetchone()
+        return self._decode_quality_job(row)
+
+    def claim_quality_evaluation_job(
+        self, owner: str, job_id: str, *, now: datetime,
+    ) -> Optional[dict[str, Any]]:
+        with self._connect() as connection:
+            result = connection.execute(
+                """
+                UPDATE ai_quality_evaluation_jobs SET status = 'running',
+                    started_at = ? WHERE owner_user_id = ? AND job_id = ?
+                    AND status = 'queued' AND cancel_requested = 0
+                """,
+                (now.isoformat(), owner, job_id),
+            )
+            if result.rowcount != 1:
+                return None
+            row = connection.execute(
+                "SELECT * FROM ai_quality_evaluation_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+        return self._decode_quality_job(row)
+
+    def finish_quality_evaluation_job(
+        self, owner: str, job_id: str, *, status: str,
+        result: Optional[dict[str, Any]], error_text: Optional[str], now: datetime,
+    ) -> Optional[dict[str, Any]]:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE ai_quality_evaluation_jobs SET status = ?,
+                    progress_current = CASE WHEN ? = 'completed'
+                        THEN progress_total ELSE progress_current END,
+                    result_json = ?, error_text = ?, finished_at = ?
+                WHERE owner_user_id = ? AND job_id = ?
+                """,
+                (
+                    status, status, self._json(result) if result is not None else None,
+                    error_text, now.isoformat(), owner, job_id,
+                ),
+            )
+        return self.get_quality_evaluation_job(owner, job_id)
+
+    def update_quality_evaluation_progress(
+        self, owner: str, job_id: str, *, current: int, total: int,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE ai_quality_evaluation_jobs SET progress_current = ?,
+                    progress_total = ? WHERE owner_user_id = ? AND job_id = ?
+                    AND status = 'running'
+                """,
+                (max(0, current), max(1, total), owner, job_id),
+            )
+
+    def get_quality_evaluation_job(
+        self, owner: str, job_id: str,
+    ) -> Optional[dict[str, Any]]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM ai_quality_evaluation_jobs "
+                "WHERE owner_user_id = ? AND job_id = ?", (owner, job_id),
+            ).fetchone()
+        return self._decode_quality_job(row) if row else None
+
+    def list_quality_evaluation_jobs(
+        self, owner: str, *, limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM ai_quality_evaluation_jobs WHERE owner_user_id = ? "
+                "ORDER BY created_at DESC LIMIT ?", (owner, max(1, min(100, limit))),
+            ).fetchall()
+        return [self._decode_quality_job(row) for row in rows]
+
+    def cancel_quality_evaluation_job(
+        self, owner: str, job_id: str, *, now: datetime,
+    ) -> Optional[dict[str, Any]]:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE ai_quality_evaluation_jobs SET cancel_requested = 1,
+                    status = CASE WHEN status = 'queued' THEN 'cancelled' ELSE status END,
+                    finished_at = CASE WHEN status = 'queued' THEN ? ELSE finished_at END
+                WHERE owner_user_id = ? AND job_id = ?
+                  AND status IN ('queued', 'running')
+                """,
+                (now.isoformat(), owner, job_id),
+            )
+        return self.get_quality_evaluation_job(owner, job_id)
+
+    def decay_relationships(
+        self, owner_user_id: str, actor_id: str, *, before: datetime,
+        now: datetime,
+    ) -> int:
+        with self._connect() as connection:
+            result = connection.execute(
+                """
+                UPDATE ai_relationships SET
+                    familiarity = MAX(0, familiarity - 1),
+                    affinity = CASE
+                        WHEN affinity > 0 THEN affinity - 1
+                        WHEN affinity < 0 THEN affinity + 1 ELSE 0 END,
+                    trust = CASE WHEN trust > 0 THEN trust - 1 ELSE trust END,
+                    tension = CASE WHEN tension > 0 THEN tension - 2 ELSE 0 END,
+                    updated_at = ?
+                WHERE owner_user_id = ? AND ai_id = ?
+                  AND (last_interaction_at IS NULL OR last_interaction_at < ?)
+                """,
+                (now.isoformat(), owner_user_id, actor_id, before.isoformat()),
+            )
+        return int(result.rowcount)
+
+    def ensure_world_opportunity(
+        self, owner_user_id: str, *, opportunity: dict[str, Any], now: datetime,
+    ) -> dict[str, Any]:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO ai_world_opportunities (
+                    opportunity_id, owner_user_id, opportunity_type, title,
+                    starts_at, ends_at, location_id, action_type, tags_json,
+                    status, cooldown_key, metadata_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    opportunity["opportunity_id"], owner_user_id,
+                    opportunity["opportunity_type"], opportunity["title"],
+                    parse_datetime(opportunity["starts_at"]).isoformat(),
+                    parse_datetime(opportunity["ends_at"]).isoformat(),
+                    opportunity["location_id"], opportunity["action_type"],
+                    self._json(opportunity.get("tags", [])),
+                    opportunity.get("status", "available"),
+                    opportunity.get("cooldown_key"),
+                    self._json(opportunity.get("metadata", {})), now.isoformat(),
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM ai_world_opportunities "
+                "WHERE owner_user_id = ? AND opportunity_id = ?",
+                (owner_user_id, opportunity["opportunity_id"]),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("世界机会写入失败")
+        return self._decode_world_opportunity(row)
+
+    def list_world_opportunities(
+        self, owner_user_id: str, *, after: Optional[str] = None,
+        before: Optional[str] = None, status: Optional[str] = None,
+        cooldown_key: Optional[str] = None, limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        clauses, params = ["owner_user_id = ?"], [owner_user_id]
+        if after:
+            clauses.append("ends_at > ?")
+            params.append(parse_datetime(after).isoformat())
+        if before:
+            clauses.append("starts_at < ?")
+            params.append(parse_datetime(before).isoformat())
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        if cooldown_key:
+            clauses.append("cooldown_key = ?")
+            params.append(cooldown_key)
+        params.append(max(1, min(500, limit)))
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM ai_world_opportunities WHERE {' AND '.join(clauses)} "
+                "ORDER BY starts_at ASC LIMIT ?", params,
+            ).fetchall()
+        return [self._decode_world_opportunity(row) for row in rows]
+
+    def ensure_actor_plan(
+        self, owner_user_id: str, actor_id: str, *, plan: dict[str, Any], now: datetime
+    ) -> dict[str, Any]:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO ai_actor_plans (
+                    plan_id, owner_user_id, actor_id, schedule_id, commitment_id,
+                    goal_id, plan_type, starts_at, ends_at, status,
+                    original_action_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    plan["plan_id"], owner_user_id, actor_id, plan.get("schedule_id"),
+                    plan.get("commitment_id"), plan.get("goal_id"), plan["plan_type"],
+                    plan["starts_at"], plan["ends_at"], plan.get("status", "planned"),
+                    self._json(plan.get("original_action", {})), now.isoformat(), now.isoformat(),
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM ai_actor_plans WHERE owner_user_id = ? AND actor_id = ? "
+                "AND starts_at = ? AND plan_type = ?",
+                (owner_user_id, actor_id, plan["starts_at"], plan["plan_type"]),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("NPC 计划写入失败")
+        return self._decode_actor_plan(row)
+
+    def list_actor_plans(
+        self, owner_user_id: str, actor_id: str, *, after: Optional[str] = None,
+        before: Optional[str] = None, limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        clauses, params = ["owner_user_id = ?", "actor_id = ?"], [owner_user_id, actor_id]
+        if after:
+            clauses.append("ends_at > ?"); params.append(parse_datetime(after).isoformat())
+        if before:
+            clauses.append("starts_at < ?"); params.append(parse_datetime(before).isoformat())
+        params.append(max(1, min(200, limit)))
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM ai_actor_plans WHERE {' AND '.join(clauses)} "
+                "ORDER BY starts_at ASC LIMIT ?", params,
+            ).fetchall()
+        return [self._decode_actor_plan(row) for row in rows]
+
+    def update_actor_plan_outcome(
+        self, owner_user_id: str, plan_id: str, *, status: str,
+        actual_action: dict[str, Any], change: dict[str, Any], now: datetime,
+    ) -> dict[str, Any]:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE ai_actor_plans SET status = ?, actual_action_json = ?,
+                    reason_code = ?, public_reason = ?, private_reason = ?,
+                    confidence = ?, updated_at = ?
+                WHERE owner_user_id = ? AND plan_id = ?
+                """,
+                (status, self._json(actual_action), change.get("reason_code"),
+                 change.get("public_reason"), change.get("private_reason"),
+                 change.get("confidence"), now.isoformat(), owner_user_id, plan_id),
+            )
+            row = connection.execute(
+                "SELECT * FROM ai_actor_plans WHERE owner_user_id = ? AND plan_id = ?",
+                (owner_user_id, plan_id),
+            ).fetchone()
+        if row is None:
+            raise KeyError("NPC 计划不存在")
+        return self._decode_actor_plan(row)
 
     def create_actor_intention(
         self,
@@ -2105,6 +3709,7 @@ class LifeStore:
             )
             for participant in participants:
                 actor_id = participant["actor_id"]
+                perspective = perspectives.get(actor_id, {})
                 connection.execute(
                     """
                     INSERT INTO ai_interaction_participants (
@@ -2118,7 +3723,34 @@ class LifeStore:
                         participant.get("participant_role", "participant"),
                     ),
                 )
-                perspective = perspectives.get(actor_id, {})
+                connection.execute(
+                    """
+                    INSERT INTO ai_memory_entries (
+                        memory_id, owner_user_id, ai_id, interaction_event_id,
+                        memory_kind, content, source_kind, confidence, state,
+                        disclosure_level, metadata_json, learned_at
+                    ) VALUES (?, ?, ?, ?, 'episodic', ?, 'npc_interaction', 100,
+                              'active', ?, ?, ?)
+                    """,
+                    (
+                        uuid.uuid4().hex, owner_user_id, actor_id, event_id,
+                        perspective.get("interpretation") or event["summary"],
+                        perspective.get("disclosure_level", "familiar"),
+                        self._json({
+                            "participant_role": participant.get(
+                                "participant_role", "participant"
+                            ),
+                            "other_actor_id": next(
+                                (
+                                    item["actor_id"] for item in participants
+                                    if item["actor_id"] != actor_id
+                                ),
+                                None,
+                            ),
+                        }),
+                        now.isoformat(),
+                    ),
+                )
                 connection.execute(
                     """
                     INSERT INTO ai_interaction_perspectives (
@@ -3541,6 +5173,16 @@ class LifeStore:
             "ai_life_events",
             "ai_story_arcs",
             "ai_relationships",
+            "ai_actor_reflections",
+            "ai_actor_goal_transitions",
+            "ai_quality_evaluation_jobs",
+            "ai_world_opportunities",
+            "ai_interaction_invitations",
+            "ai_actor_plans",
+            "ai_actor_commitments",
+            "ai_actor_goals",
+            "ai_actor_decisions",
+            "ai_decision_llm_calls",
             "ai_interaction_events",
             "ai_actor_profiles",
             "ai_life_profiles",
@@ -3593,6 +5235,77 @@ class LifeStore:
     def _decode_actor_event(self, row: sqlite3.Row) -> dict[str, Any]:
         result = dict(row)
         result["facts"] = self._load_json(result.pop("facts_json"), {})
+        return result
+
+    def _decode_actor_decision(self, row: sqlite3.Row) -> dict[str, Any]:
+        result = dict(row)
+        result["candidate_scores"] = self._load_json(
+            result.pop("candidate_scores_json"), []
+        )
+        result["rejected_candidates"] = self._load_json(
+            result.pop("rejected_candidates_json"), []
+        )
+        result["reason_codes"] = self._load_json(
+            result.pop("reason_codes_json"), []
+        )
+        result["used_llm"] = bool(result["used_llm"])
+        return result
+
+    def _decode_actor_goal(self, row: sqlite3.Row) -> dict[str, Any]:
+        result = dict(row)
+        result["abandon_conditions"] = self._load_json(
+            result.pop("abandon_conditions_json"), []
+        )
+        result["metadata"] = self._load_json(result.pop("metadata_json"), {})
+        return result
+
+    def _decode_actor_reflection(self, row: sqlite3.Row) -> dict[str, Any]:
+        result = dict(row)
+        result["source_event_ids"] = self._load_json(
+            result.pop("source_event_ids_json"), []
+        )
+        result["goal_changes"] = self._load_json(
+            result.pop("goal_changes_json"), []
+        )
+        result["memory_changes"] = self._load_json(
+            result.pop("memory_changes_json"), []
+        )
+        result["metadata"] = self._load_json(result.pop("metadata_json"), {})
+        return result
+
+    def _decode_quality_job(self, row: sqlite3.Row) -> dict[str, Any]:
+        result = dict(row)
+        result["seeds"] = self._load_json(result.pop("seeds_json"), [])
+        result["result"] = self._load_json(result.pop("result_json"), None)
+        result["cancel_requested"] = bool(result["cancel_requested"])
+        return result
+
+    def _decode_actor_commitment(self, row: sqlite3.Row) -> dict[str, Any]:
+        result = dict(row)
+        result["participant_ids"] = self._load_json(
+            result.pop("participant_ids_json"), []
+        )
+        result["metadata"] = self._load_json(result.pop("metadata_json"), {})
+        return result
+
+    def _decode_actor_plan(self, row: sqlite3.Row) -> dict[str, Any]:
+        result = dict(row)
+        result["original_action"] = self._load_json(
+            result.pop("original_action_json"), {}
+        )
+        result["actual_action"] = self._load_json(
+            result.pop("actual_action_json"), None
+        )
+        return result
+
+    @staticmethod
+    def _decode_interaction_invitation(row: sqlite3.Row) -> dict[str, Any]:
+        return dict(row)
+
+    def _decode_world_opportunity(self, row: sqlite3.Row) -> dict[str, Any]:
+        result = dict(row)
+        result["tags"] = self._load_json(result.pop("tags_json"), [])
+        result["metadata"] = self._load_json(result.pop("metadata_json"), {})
         return result
 
     def _decode_actor_intention(self, row: sqlite3.Row) -> dict[str, Any]:

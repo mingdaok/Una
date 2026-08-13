@@ -5,8 +5,9 @@ from __future__ import annotations
 import hashlib
 import os
 import tempfile
+import math
 from collections import Counter
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from .acceptance import LifeAcceptanceService
 from .service import LifeSettlementService
@@ -16,8 +17,16 @@ from .store import LifeStore
 SUGGESTION_TYPES = ("rest", "walk", "project")
 
 
+class EvaluationCancelled(RuntimeError):
+    pass
+
+
 class LifeQualityEvaluator:
-    def evaluate(self, seeds: Iterable[str], *, days: int) -> dict[str, Any]:
+    @staticmethod
+    def total_steps(seeds: Iterable[str], *, days: int) -> int:
+        return len(list(seeds)) * max(1, math.ceil(days / 7))
+    @staticmethod
+    def validate(seeds: Iterable[str], *, days: int) -> list[str]:
         normalized = [str(seed).strip() for seed in seeds]
         if not normalized or len(normalized) > 20:
             raise ValueError("评估种子数量必须为 1–20 个")
@@ -25,17 +34,33 @@ class LifeQualityEvaluator:
             raise ValueError("每个评估种子长度必须为 1–64 个字符")
         if len(set(normalized)) != len(normalized):
             raise ValueError("评估种子不能重复")
-        if days < 1 or days > 7:
-            raise ValueError("评估天数必须为 1–7 天")
+        if days < 1 or days > 90:
+            raise ValueError("评估天数必须为 1–90 天")
+        return normalized
+
+    def evaluate(
+        self, seeds: Iterable[str], *, days: int,
+        progress_callback: Callable[[int, int], None] | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
+        normalized = self.validate(seeds, days=days)
+        total_steps = self.total_steps(normalized, days=days)
+        completed_steps = 0
 
         with tempfile.TemporaryDirectory(prefix="una-life-quality-") as directory:
             store = LifeStore(os.path.join(directory, "quality.sqlite3"))
             settlement = LifeSettlementService(store)
             acceptance = LifeAcceptanceService(settlement)
-            runs = [
-                self._run_seed(settlement, acceptance, seed, days)
-                for seed in normalized
-            ]
+            runs = []
+            for seed in normalized:
+                run, steps = self._run_seed(
+                    settlement, acceptance, seed, days,
+                    completed_steps=completed_steps, total_steps=total_steps,
+                    progress_callback=progress_callback,
+                    cancel_requested=cancel_requested,
+                )
+                runs.append(run)
+                completed_steps += steps
         return self._aggregate(runs, days)
 
     def _run_seed(
@@ -44,7 +69,10 @@ class LifeQualityEvaluator:
         acceptance: LifeAcceptanceService,
         seed: str,
         days: int,
-    ) -> dict[str, Any]:
+        *, completed_steps: int = 0, total_steps: int = 1,
+        progress_callback: Callable[[int, int], None] | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
+    ) -> tuple[dict[str, Any], int]:
         digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:12]
         owner = f"quality-{digest}"
         acceptance.reset(owner, seed=seed, scenario="baseline")
@@ -57,17 +85,29 @@ class LifeQualityEvaluator:
                 request_id=f"quality:{seed}:{actor['actor_id']}",
                 message="批量质量评估的标准化建议",
             )
-        acceptance.advance(owner, hours=days * 24)
+        remaining_hours = days * 24
+        steps = 0
+        while remaining_hours:
+            if cancel_requested and cancel_requested():
+                raise EvaluationCancelled("质量评估已取消")
+            step = min(168, remaining_hours)
+            acceptance.advance(owner, hours=step)
+            remaining_hours -= step
+            steps += 1
+            if progress_callback:
+                progress_callback(completed_steps + steps, total_steps)
 
         events: list[dict[str, Any]] = []
         intentions: list[dict[str, Any]] = []
         suggestions: list[dict[str, Any]] = []
         relationship_tiers: Counter[str] = Counter()
+        reflections: list[dict[str, Any]] = []
         for actor in actors:
             actor_id = actor["actor_id"]
             events.extend(settlement.store.list_actor_events(owner, actor_id, limit=100))
             intentions.extend(settlement.store.list_actor_intentions(owner, actor_id, limit=100))
             suggestions.extend(settlement.store.list_actor_suggestions(owner, actor_id, limit=100))
+            reflections.extend(settlement.store.list_actor_reflections(owner, actor_id, limit=200))
             for relationship in settlement.store.list_relationships(owner, actor_id, limit=20):
                 tier = settlement.relationship_dynamics.describe(relationship)["relationship_tier"]
                 relationship_tiers[tier] += 1
@@ -87,7 +127,8 @@ class LifeQualityEvaluator:
             "completed_intentions": sum(item["status"] == "completed" for item in intentions),
             "suggestion_outcomes": suggestion_outcomes,
             "relationship_tiers": relationship_tiers,
-        }
+            "reflections": len(reflections),
+        }, steps
 
     @staticmethod
     def _aggregate(runs: list[dict[str, Any]], days: int) -> dict[str, Any]:
@@ -99,6 +140,7 @@ class LifeQualityEvaluator:
         repair_count = sum(run["repairs"] for run in runs)
         intention_count = sum(run["intentions"] for run in runs)
         completed_intentions = sum(run["completed_intentions"] for run in runs)
+        reflection_count = sum(run["reflections"] for run in runs)
         event_types: Counter[str] = Counter()
         suggestion_outcomes: Counter[str] = Counter()
         relationship_tiers: Counter[str] = Counter()
@@ -142,6 +184,7 @@ class LifeQualityEvaluator:
                 "intention_completion_rate": round(intention_completion_rate, 3),
                 "suggestion_outcomes": dict(suggestion_outcomes),
                 "relationship_tiers": dict(relationship_tiers),
+                "reflection_count": reflection_count,
             },
             "runs": [
                 {
@@ -153,6 +196,7 @@ class LifeQualityEvaluator:
                     "repairs": run["repairs"],
                     "intentions": run["intentions"],
                     "completed_intentions": run["completed_intentions"],
+                    "reflections": run["reflections"],
                     "suggestion_outcomes": dict(run["suggestion_outcomes"]),
                 }
                 for run in runs
@@ -161,4 +205,4 @@ class LifeQualityEvaluator:
         }
 
 
-__all__ = ["LifeQualityEvaluator"]
+__all__ = ["EvaluationCancelled", "LifeQualityEvaluator"]

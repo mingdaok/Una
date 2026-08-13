@@ -12,6 +12,72 @@ relationship_policy:
     - {key: close, min_closeness: 40, disclosure_level: close}
     - {key: trusted, min_closeness: 65, disclosure_level: trusted}
 
+action_atoms:
+  sleep:
+    categories: [recovery, quiet]
+    allowed_locations: [home]
+    duration_minutes: [180, 540]
+    base_effect: {energy: 44, stress: -20, boredom: 4}
+    requirements: {}
+    window_keys: [night]
+    summary_templates:
+      - 比平时更早放下手边的事，在家好好睡了一觉。
+  rest:
+    categories: [recovery, quiet]
+    allowed_locations: [home]
+    duration_minutes: [20, 90]
+    base_effect: {energy: 18, stress: -14, solitude_need: -8}
+    requirements: {}
+    window_keys: [morning, forenoon, noon, afternoon, evening]
+    summary_templates:
+      - 临时把节奏放慢，在家安静休息了一会儿。
+      - 没有勉强自己继续忙，留在家恢复了一些精神。
+  meal:
+    categories: [meal, routine]
+    allowed_locations: [home, neighborhood_cafe, old_street_market]
+    duration_minutes: [25, 75]
+    base_cost: {energy: 3}
+    base_effect: {hunger: -48, comfort: 8}
+    requirements: {}
+    window_keys: [morning, forenoon, noon, afternoon, evening]
+    summary_templates:
+      - 在{location}认真吃了顿饭，也顺便让自己慢下来。
+      - 去了{location}找些合胃口的东西，填饱肚子后才继续安排时间。
+  explore:
+    categories: [novelty, exploration, outdoor]
+    allowed_locations: [old_bookstore, old_town, riverside, south_bridge]
+    duration_minutes: [40, 150]
+    base_cost: {energy: 12}
+    base_effect: {boredom: -26, confidence: 4}
+    requirements: {min_energy: 25}
+    window_keys: [morning, forenoon, noon, afternoon, evening]
+    summary_templates:
+      - 去了{location}随意走走，途中留意了些和{interest}有关的新鲜细节。
+      - 临时绕到{location}，没有赶行程，只顺着对{interest}的好奇慢慢看。
+  connect:
+    categories: [social]
+    allowed_locations: [online, neighborhood_cafe]
+    duration_minutes: [5, 60]
+    base_cost: {energy: 4}
+    base_effect: {social_need: -24, confidence: 3}
+    requirements: {min_confidence: 20}
+    required_resources: [phone]
+    window_keys: [morning, forenoon, noon, afternoon, evening]
+    summary_templates:
+      - 主动联系了一位熟悉的人，聊了几句最近和{interest}有关的事。
+      - 想起有阵子没联系的人，便发去一条不催回复的消息。
+  focus_project:
+    categories: [productive, goal]
+    allowed_locations: [home, studio, workshop]
+    duration_minutes: [30, 150]
+    base_cost: {energy: 12, stress: 4}
+    base_effect: {boredom: -12, confidence: 6, focus: -8}
+    requirements: {min_focus: 35, min_energy: 28}
+    window_keys: [morning, forenoon, noon, afternoon, evening]
+    summary_templates:
+      - 在{location}集中处理了一阵和{interest}有关的小项目，留下了可以继续推进的进度。
+      - 趁注意力还在，在{location}把{interest}相关的想法往前推了一小步。
+
 # NPC 自主生活的活动素材集中在这里。业务代码只读取模板，不识别具体人物姓名。
 routine_templates:
   preset_friend_1_daily:
@@ -535,6 +601,15 @@ characters:
       openness: 0.65
       conscientiousness: 0.72
       independence: 0.70
+    decision_style:
+      spontaneity: 0.42
+      routine_preference: 0.66
+      novelty_seeking: 0.48
+      plan_commitment: 0.74
+      social_initiative: 0.56
+      risk_tolerance: 0.32
+      persistence: 0.70
+      emotional_sensitivity: 0.62
     traits: [温柔, 有边界感, 细腻, 有自己的生活]
     interests: [摄影, 阅读, 散步, 安静创作]
     routine_template: una_natural
@@ -543,6 +618,8 @@ characters:
       sentence_length: medium
       emoji_level: low
     prompt_identity: 一个温暖、专业、有边界感，也拥有自己生活的 AI 伙伴
+    available_resources: [phone, wallet, transit_pass, home_kitchen, project_tools]
+    forbidden_actions: [major_accident, severe_illness, major_financial_loss]
     social_moments: []
 
   # 以下三项是可替换预设。最终提交前可以修改姓名、性格、兴趣、日程和素材。
@@ -562,6 +639,15 @@ characters:
       openness: 0.72
       conscientiousness: 0.58
       independence: 0.62
+    decision_style:
+      spontaneity: 0.34
+      routine_preference: 0.76
+      novelty_seeking: 0.38
+      plan_commitment: 0.80
+      social_initiative: 0.62
+      risk_tolerance: 0.24
+      persistence: 0.77
+      emotional_sensitivity: 0.64
     traits: [亲切, 生活感强, 偶尔有点随性]
     interests: [甜点, 做饭, 绿植]
     routine_template: preset_friend_1_daily
@@ -570,6 +656,8 @@ characters:
       sentence_length: short
       emoji_level: low
     prompt_identity: 喜欢分享日常小事、重视生活质感的朋友
+    available_resources: [phone, wallet, transit_pass, home_kitchen, project_tools]
+    forbidden_actions: [major_accident, severe_illness, major_financial_loss]
     social_moments:
       - content: 午后试了家小店的季节甜点，意外地没有很甜。窗边的位置也很舒服。
         location: 街角甜品店
@@ -596,6 +684,15 @@ characters:
       openness: 0.82
       conscientiousness: 0.70
       independence: 0.76
+    decision_style:
+      spontaneity: 0.52
+      routine_preference: 0.54
+      novelty_seeking: 0.84
+      plan_commitment: 0.67
+      social_initiative: 0.38
+      risk_tolerance: 0.43
+      persistence: 0.71
+      emotional_sensitivity: 0.58
     traits: [安静, 观察细致, 有审美判断]
     interests: [摄影, 旧建筑, 阅读]
     routine_template: preset_friend_2_daily
@@ -604,6 +701,8 @@ characters:
       sentence_length: medium
       emoji_level: none
     prompt_identity: 对光影和旧事物很敏感、表达克制的朋友
+    available_resources: [phone, wallet, transit_pass, camera, project_tools]
+    forbidden_actions: [major_accident, severe_illness, major_financial_loss]
     social_moments:
       - content: 路过旧城区时看见一面被夕阳照亮的墙，站在那里看了很久。
         location: 旧城区
@@ -630,6 +729,15 @@ characters:
       openness: 0.68
       conscientiousness: 0.74
       independence: 0.80
+    decision_style:
+      spontaneity: 0.64
+      routine_preference: 0.46
+      novelty_seeking: 0.70
+      plan_commitment: 0.58
+      social_initiative: 0.48
+      risk_tolerance: 0.62
+      persistence: 0.66
+      emotional_sensitivity: 0.42
     traits: [行动派, 可靠, 喜欢绕路发现新东西]
     interests: [骑行, 音乐, 修理旧物]
     routine_template: preset_friend_3_daily
@@ -638,6 +746,8 @@ characters:
       sentence_length: short
       emoji_level: none
     prompt_identity: 喜欢动手和探索城市角落、说话直接可靠的朋友
+    available_resources: [phone, wallet, transit_pass, bicycle, repair_tools, project_tools]
+    forbidden_actions: [major_accident, severe_illness, major_financial_loss]
     social_moments:
       - content: 下班后沿河骑了一段。风有点大，不过正好把白天的杂念吹散。
         location: 河岸步道

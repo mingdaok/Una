@@ -125,6 +125,9 @@
 .npc-quality-form > button { height: 36px; display: flex; align-items: center; gap: 7px; padding: 0 14px; color: #171911; border: 0; border-radius: 6px; background: var(--ni-accent); cursor: pointer; font-size: 10px; }
 .npc-quality-form > button:disabled { opacity: .55; cursor: wait; }
 .npc-quality-error { margin: 0; padding: 0 17px 14px; color: #ffaaaa; font-size: 10px; }
+.npc-quality-job { display: flex; align-items: center; gap: 10px; padding: 0 17px 14px; color: var(--ni-muted); font: 9px ui-monospace, monospace; }
+.npc-quality-job strong { color: var(--ni-text); }
+.npc-quality-job button { margin-left: auto; padding: 4px 8px; color: #ffb0b0; border: 1px solid rgba(255,107,107,.3); border-radius: 5px; background: transparent; cursor: pointer; }
 .npc-quality-metrics { display: grid; grid-template-columns: repeat(4,1fr); gap: 1px; overflow: hidden; border: 1px solid var(--ni-line); border-radius: 14px; background: var(--ni-line); }
 .npc-quality-metrics article { padding: 16px; background: var(--ni-panel); }
 .npc-quality-metrics span,.npc-quality-metrics strong,.npc-quality-metrics small { display: block; }

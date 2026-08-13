@@ -126,6 +126,8 @@ def test_life_api_exposes_npc_state_schedule_and_safe_events(tmp_path, monkeypat
     assert life.json()["schedule"]
     assert events.status_code == 200
     assert events.json()["count"] == 2
+    assert all(item["source"] != "固定日程" for item in events.json()["items"])
+    assert all(item["location_name"] for item in events.json()["items"])
     assert all("private_thought" not in item for item in events.json()["items"])
     assert all("facts" not in item for item in events.json()["items"])
     assert client.get("/api/life/actors/not-real/life").status_code == 404
