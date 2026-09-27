@@ -1,3 +1,4 @@
+import QQConnectionPanel from '../components/QQConnectionPanel';
 import WallGallery from '../components/WallGallery';
 import { useEffect, useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -50,6 +51,7 @@ export default function MainUnaPage() {
   const [isBookOpen, setIsBookOpen] = useState(false);
   const [showSocial, setShowSocial] = useState(false);  // 朋友圈
   const [showChat, setShowChat] = useState(false);    // WeChat 聊天
+  const [showQQ, setShowQQ] = useState(false);
   const [showLife, setShowLife] = useState(false);    // UNA 的生活
   const [isNavigationOpen, setIsNavigationOpen] = useState(false);
   const [currentModel, setCurrentModel] = useState(readSelectedLive2DModel);
@@ -368,6 +370,7 @@ export default function MainUnaPage() {
         )}
       </AnimatePresence>
 
+      {showQQ && <QQConnectionPanel onClose={() => setShowQQ(false)} />}
       <UnaNavigationDrawer
         open={isNavigationOpen}
         onOpenChange={setIsNavigationOpen}
@@ -383,8 +386,9 @@ export default function MainUnaPage() {
         onToggleScene={handleToggleSceneFromNavigation}
         onOpenCharacterSettings={handleOpenCharacterSettings}
         onOpenSettings={handleOpenCharacterSettings}
+        onOpenQQ={() => setShowQQ(true)}
         onLogout={handleLogout}
-        hidden={showSocial || showChat || showLife || isBookOpen || isBookTransitioning}
+        hidden={showQQ || showSocial || showChat || showLife || isBookOpen || isBookTransitioning}
       />
 
       {/* === 书房场景 === */}

@@ -46,3 +46,11 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 frontend_react/.npm-cache/
+
+# Local QQ runtime and work files
+.qq-data/
+.qq-deps/
+.qq.env
+.pnpm-store/
+tmp/
+output/

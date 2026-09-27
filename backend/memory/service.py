@@ -23,7 +23,7 @@ class MemoryService:
         self.storage = MemoryStorage()
         print("🧠 [MemoryService] 记忆服务已启动")
 
-    def remember(self, user_id, user_text, ai_reply, emotion):
+    def remember(self, user_id, user_text, ai_reply, emotion, memory_id=None):
         """
         [写入] 将对话存入向量数据库
         """
@@ -31,7 +31,7 @@ class MemoryService:
         if len(user_text) < 2 and len(ai_reply) < 2:
             return
 
-        mem_id = str(uuid.uuid4())
+        mem_id = memory_id or str(uuid.uuid4())
         
         # 获取详细时间，包含星期几 (采纳源 A: 增加上下文)
         now = datetime.datetime.now()
@@ -48,7 +48,7 @@ class MemoryService:
         full_text_to_embed = f"[{time_str}] [{emotion}] 用户: {user_text} | Una: {ai_reply}"
         
         self.storage.add(user_id, mem_id, full_text_to_embed, metadata)
-        print(f"💾 [记忆固化] {time_str} | 用户: {user_text[:10]}... -> Una: {ai_reply[:10]}...")
+        if memory_id is None: print(f"💾 [记忆固化] {time_str} | 用户: {user_text[:10]}... -> Una: {ai_reply[:10]}...")
 
     def recall(self, user_id, current_query_text):
         """

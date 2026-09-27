@@ -18,6 +18,12 @@ class Settings:
     cors_origins: tuple[str, ...]
 
 
+    @property
+    def qq(self):
+        from channels.config import QQConfig
+        return QQConfig.load()
+
+
 def load_settings() -> Settings:
     return Settings(
         database_path=os.getenv("UNA_DB_PATH", ""),

@@ -97,7 +97,13 @@ async def _convert_wav_to_mp3(wav_filepath: str, mp3_filepath: str) -> bool:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr = await proc.communicate()
+        try:
+            _, stderr = await asyncio.wait_for(proc.communicate(), 30)
+        except BaseException:
+            if proc.returncode is None:
+                proc.kill()
+            await proc.wait()
+            raise
         if proc.returncode != 0:
             err_text = stderr.decode('utf-8', errors='ignore') if isinstance(stderr, bytes) else str(stderr)
             print(f"⚠️ [FFmpeg->MP3] 转换失败: {err_text[:200]}")
@@ -154,7 +160,7 @@ async def _run_rhubarb(audio_filepath: str) -> list:
         raise RhubarbStageError("Rhubarb analysis failed") from e
 
 async def generate_audio_gsv(
-    text: str, emotion="neutral", *, trace: SpeechTrace | None = None
+    text: str, emotion="neutral", *, trace: SpeechTrace | None = None, lipsync: bool = True, output_dir: str | None = None
 ) -> tuple[str | None, list]:
     """
     调用 GPT-SoVITS 合成语音，并绑定时间戳返回。
@@ -181,21 +187,21 @@ async def generate_audio_gsv(
         print(f"⚠️ [GSV] 清洗后文本为空，跳过: '{text}' -> '{clean_text}'")
         return None, []
 
-    print(f"🗣️ [GSV] 合成语音: 「{clean_text[:20]}...」 速度={_emotion_to_speed(emotion)}")
+    if output_dir is None: print(f"🗣️ [GSV] 合成语音: 「{clean_text[:20]}...」 速度={_emotion_to_speed(emotion)}")
 
     payload = build_gsv_payload(clean_text, emotion)
 
     # 校验参考音频配置
     if not REF_AUDIO_PATH:
         print("⚠️ [GSV] ref_audio_path 未配置，跳过 GPT-SoVITS")
-        return await _fallback_edge(text, emotion, trace=trace) if FALLBACK_EDGE else None
+        return await _fallback_edge(text, emotion, trace=trace, lipsync=lipsync, output_dir=output_dir) if FALLBACK_EDGE else (None, [])
 
     # 生成文件名
     filename = f"{uuid.uuid4()}.wav"
-    filepath = os.path.join(AUDIO_DIR, filename)
+    filepath = os.path.join(output_dir or AUDIO_DIR, filename)
 
     try:
-        print(f"🗣️ [GSV] 合成语音: 「{clean_text[:20]}...」 速度={_emotion_to_speed(emotion)}")
+        if output_dir is None: print(f"🗣️ [GSV] 合成语音: 「{clean_text[:20]}...」 速度={_emotion_to_speed(emotion)}")
         # 注意：GPT-SoVITS 合成耗时较长，timeout 设长一点
         timeout = aiohttp.ClientTimeout(total=120)
         http_started = time.perf_counter()
@@ -236,7 +242,7 @@ async def generate_audio_gsv(
             print(f"✅ [GSV] 合成成功: {filename}")
             rhubarb_started = time.perf_counter()
             try:
-                visemes = await _run_rhubarb(filepath)
+                visemes = await _run_rhubarb(filepath) if lipsync else []
             except RhubarbStageError:
                 visemes = []
                 log_speech_stage(
@@ -251,7 +257,7 @@ async def generate_audio_gsv(
                 log_speech_stage(trace, "rhubarb", (time.perf_counter() - rhubarb_started) * 1000)
 
             mp3_filename = filename.replace('.wav', '.mp3')
-            mp3_filepath = os.path.join(AUDIO_DIR, mp3_filename)
+            mp3_filepath = os.path.join(output_dir or AUDIO_DIR, mp3_filename)
             transcode_started = time.perf_counter()
             try:
                 transcoded = await _convert_wav_to_mp3(filepath, mp3_filepath)
@@ -271,8 +277,8 @@ async def generate_audio_gsv(
                     os.remove(filepath)
                 except:
                     pass
-                return f"/static/voice/{mp3_filename}", visemes
-            return f"/static/voice/{filename}", visemes
+                return (mp3_filepath if output_dir else f"/static/voice/{mp3_filename}"), visemes
+            return (filepath if output_dir else f"/static/voice/{filename}"), visemes
 
     except aiohttp.ClientConnectorError:
         print(f"❌ [GSV] 无法连接 GPT-SoVITS ({GSV_URL})，请确保 api_v2.py 已启动")
@@ -286,12 +292,12 @@ async def generate_audio_gsv(
     # ——— 降级处理 ———
     if FALLBACK_EDGE:
         print("⬇️ [GSV] 降级到 edge-tts...")
-        return await _fallback_edge(text, emotion, trace=trace)
+        return await _fallback_edge(text, emotion, trace=trace, lipsync=lipsync, output_dir=output_dir)
     return None, []
 
 
 async def _fallback_edge(
-    text: str, emotion="neutral", *, trace: SpeechTrace | None = None
+    text: str, emotion="neutral", *, trace: SpeechTrace | None = None, lipsync: bool = True, output_dir: str | None = None
 ) -> tuple[str | None, list]:
     """降级方案：使用 edge-tts 合成"""
     try:
@@ -301,7 +307,7 @@ async def _fallback_edge(
         emotion = str(emotion or "neutral").lower().strip()
         
         filename = f"{uuid.uuid4()}.mp3"
-        filepath = os.path.join(AUDIO_DIR, filename)
+        filepath = os.path.join(output_dir or AUDIO_DIR, filename)
         voice = "zh-CN-XiaoxiaoNeural"
         rate = "+0%"
         if emotion in ("sad", "cry", "depressed"): rate = "-5%"
@@ -309,6 +315,9 @@ async def _fallback_edge(
         communicate = edge_tts.Communicate(text, voice, rate=rate)
         await communicate.save(filepath)
         print(f"🔊 [EdgeTTS] 降级合成成功: {filename}")
+
+        if not lipsync:
+            return (filepath if output_dir else f"/static/voice/{filename}"), []
 
         # 将 mp3 转为 wav 给 rhubarb
         wav_filepath = filepath.replace(".mp3", ".wav")
@@ -352,7 +361,7 @@ async def _fallback_edge(
             print(f"⚠️ [FFmpeg/Rhubarb] 转换或解析报错: {e}")
             visemes = []
             
-        return f"/static/voice/{filename}", visemes
+        return (filepath if output_dir else f"/static/voice/{filename}"), visemes
     except Exception as e:
         print(f"❌ [EdgeTTS] 降级失败: {e}")
         return None, []

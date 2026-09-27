@@ -1,5 +1,6 @@
 import os
 import sys
+import pytest
 
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -34,6 +35,27 @@ def collect_fragments(fragments):
     events.extend(new_events)
     body_parts.append(body)
     return events, "".join(body_parts)
+
+
+@pytest.mark.parametrize("header", ["MOOD: 0", "mood: -12", "MOOD：+3", "MOOD: [2]"])
+def test_standalone_mood_header_is_removed_at_every_fragment_boundary(header):
+    text = header + "哦？绕了一圈又绕回这句。"
+    for fragments in ([text[:i], text[i:]] for i in range(len(text) + 1)):
+        events, body = collect_fragments(fragments)
+        assert body == "哦？绕了一圈又绕回这句。"
+        assert len([e for e in events if e["type"] == "meta"]) == 1
+    assert collect_fragments(list(text))[1] == "哦？绕了一圈又绕回这句。"
+    assert sanitize_reply_text(text) == "哦？绕了一圈又绕回这句。"
+
+
+def test_separate_mood_line_and_repeated_headers_do_not_leak():
+    text = "EMOTION: happy\nMOOD: 0\nACTION: null\nMOOD: [2]你好。"
+    assert collect_fragments(list(text))[1] == "你好。"
+
+
+def test_mood_discussion_in_body_is_preserved():
+    for text in ("这个 MOOD: 0 表示什么？", "MOOD: 是一个字段名。"):
+        assert sanitize_reply_text(text) == text
 
 
 def test_mixed_legacy_and_semantic_controls_never_enter_body():

@@ -14,10 +14,19 @@ import yaml
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.yaml")
 with open(CONFIG_PATH, 'r', encoding='utf-8') as f: config = yaml.safe_load(f)
 
+SILICON_CONFIG = config.get('apis', {}).get('silicon_base', {})
+LLM_API_KEY = os.getenv('DEEPSEEK_API_KEY') or SILICON_CONFIG.get('api_key', '')
+LLM_BASE_URL = os.getenv('DEEPSEEK_BASE_URL') or SILICON_CONFIG.get(
+    'base_url', 'https://api.siliconflow.cn/v1'
+)
+LLM_MODEL = os.getenv('DEEPSEEK_MODEL') or SILICON_CONFIG.get(
+    'llm_model', SILICON_CONFIG.get('model', 'deepseek-ai/DeepSeek-V2.5')
+)
+
 brain = UnaBrain(
-    api_key=config['apis']['silicon_base']['api_key'], 
-    base_url=config['apis']['silicon_base']['base_url'],
-    model=config['apis']['silicon_base']['model']
+    api_key=LLM_API_KEY,
+    base_url=LLM_BASE_URL,
+    model=LLM_MODEL,
 )
 
 async def run_daily_routine(user_id="mobile_user"):

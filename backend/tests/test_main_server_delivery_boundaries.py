@@ -26,7 +26,7 @@ class EmptyService:
 
 
 @pytest.fixture
-def main_server(monkeypatch):
+def main_server(monkeypatch, tmp_path, request):
     class FakeBrain:
         def __init__(self, *args, **kwargs):
             pass
@@ -71,7 +71,7 @@ def main_server(monkeypatch):
         "memory": memory_package,
         "memory.service": module_with("memory.service", MemoryService=EmptyService),
         "database": module_with(
-            "database", get_recent_mood_scores=lambda *args: [],
+            "database", DB_PATH=str(tmp_path / "main-test.sqlite3"), get_recent_mood_scores=lambda *args: [],
             add_message=lambda *args: None,
         ),
         "social_db": module_with("social_db"),
@@ -87,7 +87,7 @@ def main_server(monkeypatch):
             media_url=lambda media_id, user_id: f"/api/media/{media_id}",
             sign_history_audio_urls=lambda history, user_id: history, router=APIRouter(),
         ),
-        "settings": module_with("settings", settings=SimpleNamespace(cors_origins=())),
+        "settings": module_with("settings", settings=SimpleNamespace(cors_origins=(), qq=__import__("channels.config", fromlist=["QQConfig"]).QQConfig(enabled=getattr(request, "param", False), bot_id="123456", token="x" * 32, media_dir=str(tmp_path / "qq-media")))),
         "brain_engine": module_with("brain_engine", UnaBrain=FakeBrain),
         "asr_engine": module_with("asr_engine", SenseVoiceASR=EmptyService),
         "tts_service": module_with(
@@ -407,6 +407,7 @@ def test_chat_reply_waits_for_speech_delivery_before_end(main_server, monkeypatc
             return True
 
         monkeypatch.setattr(main_server, "brain", Brain())
+        monkeypatch.setattr(main_server.conversation_service, "brain", main_server.brain)
         monkeypatch.setattr(main_server.memory_service, "recall", lambda *args: "", raising=False)
         monkeypatch.setattr(main_server.memory_service, "remember", lambda *args: None, raising=False)
         monkeypatch.setattr(main_server.database, "get_recent_mood_scores", lambda *args: [])
@@ -512,6 +513,7 @@ def test_chat_blocks_false_npc_first_person_claim_and_persists_evidence(
 
     async def scenario():
         monkeypatch.setattr(main_server, "brain", Brain())
+        monkeypatch.setattr(main_server.conversation_service, "brain", main_server.brain)
         monkeypatch.setattr(main_server, "life_chat_context_service", Context())
         monkeypatch.setattr(main_server, "life_content_safety_service", safety)
         monkeypatch.setattr(main_server.memory_service, "recall", lambda *args: "", raising=False)
@@ -709,6 +711,7 @@ def test_live2d_candidate_routes_to_v3_director_with_runtime_model(
         events = []
         director = MotionDirector()
         monkeypatch.setattr(main_server, "brain", Brain())
+        monkeypatch.setattr(main_server.conversation_service, "brain", main_server.brain)
         monkeypatch.setattr(main_server, "motion_director", director)
         monkeypatch.setattr(main_server, "is_motion_v3_candidate", lambda plan: True)
         monkeypatch.setattr(main_server.memory_service, "recall", lambda *args: "", raising=False)
@@ -833,3 +836,9 @@ def test_chat_websocket_stops_after_disconnect_message(main_server, monkeypatch,
         assert websocket.receive_count == 1
 
     run_scenario(scenario())
+
+
+@pytest.mark.parametrize("main_server", [True], indirect=True)
+def test_qq_enabled_startup_uses_imported_tts(main_server):
+    assert main_server.qq_service.media is not None
+    assert main_server.qq_service.media.tts is main_server.generate_audio_file

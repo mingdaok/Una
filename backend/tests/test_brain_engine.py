@@ -60,3 +60,52 @@ async def test_legacy_action_prefix_is_stripped_without_emitting_preset_action(
         assert "[动作" not in combined_text
         assert "惊讶" not in combined_text
         assert "哇！" in combined_text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel", ["qq_private", "qq_group", "web"])
+async def test_channel_persona_and_generation_budget(brain, channel):
+    async def empty_stream():
+        if False:
+            yield None
+    create = AsyncMock(return_value=empty_stream())
+    with patch.object(brain.client.chat.completions, "create", create):
+        _ = [event async for event in brain.chat_stream(
+            "test", "你好", context={"profile": "PRIVATE_PROFILE", "history": []},
+            long_term_memory="PRIVATE_MEMORY", life_context="PRIVATE_LIFE", channel=channel,
+        )]
+    options = create.call_args.kwargs
+    prompt = options["messages"][0]["content"]
+    if channel == "web":
+        assert "心理支持 AI" in prompt
+        assert "max_tokens" not in options
+    else:
+        assert "你是 UNA，在 QQ" in prompt
+        assert "80-150" not in prompt
+        assert "tracks" not in prompt
+        assert options["max_tokens"] == 768
+        if channel == "qq_group":
+            assert "PRIVATE_PROFILE" not in prompt
+            assert "PRIVATE_MEMORY" not in prompt
+            assert "PRIVATE_LIFE" not in prompt
+        else:
+            assert "PRIVATE_PROFILE" in prompt
+
+
+@pytest.mark.asyncio
+async def test_qq_images_are_passed_as_user_content_blocks(brain):
+    async def empty_stream():
+        if False:
+            yield None
+    create = AsyncMock(return_value=empty_stream())
+    images = ["data:image/jpeg;base64,YQ==", "data:image/jpeg;base64,Yg=="]
+    with patch.object(brain.client.chat.completions, "create", create):
+        _ = [event async for event in brain.chat_stream(
+            "qq_group", '{"speaker":{"id":"member:200"},"content":"两张图有何不同"}',
+            context={"profile": "", "history": []}, channel="qq_group", images=images,
+        )]
+    messages = create.call_args.kwargs["messages"]
+    assert isinstance(messages[0]["content"], str)
+    content = messages[1]["content"]
+    assert "member:200" in content[0]["text"]
+    assert [part["image_url"]["url"] for part in content[1:]] == images

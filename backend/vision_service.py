@@ -29,7 +29,7 @@ class VisionService:
         }
         print(f"👀 [VisionService] 视觉模组已加载: {VISION_MODEL}")
 
-    def see_and_reply(self, image_data, user_context=""):
+    def see_and_reply(self, image_data, user_context="", *, log_content=True):
         """
         让 Una 看图并说话
         image_data: 可能是纯 Base64，也可能是带 data:image 前缀的字符串
@@ -80,13 +80,13 @@ class VisionService:
                 res_json = response.json()
                 if 'choices' in res_json and len(res_json['choices']) > 0:
                     reply = res_json['choices'][0]['message']['content']
-                    print(f"💬 [Vision Reply]: {reply}")
+                    if log_content: print(f"💬 [Vision Reply]: {reply}")
                     return reply
                 else:
-                    print(f"⚠️ API 返回结构异常: {res_json}")
+                    print("Vision response invalid")
                     return "嗯...我好像没看清，这是什么呀？"
             else:
-                print(f"❌ 视觉API报错: {response.text}")
+                print(f"Vision API error: {response.status_code}")
                 return "哎呀，我看不太清...是不是信号不好？"
                 
         except Exception as e:

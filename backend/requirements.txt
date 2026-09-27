@@ -35,3 +35,7 @@ python-dotenv>=1.0.0     # 环境变量管理
 # 3. 部署在拥有 GPU 的服务器上时，请使用以下命令单独安装配套的 GPU 版 PyTorch（如 cu118/cu121）。
 #    请务必【先】执行该命令，然后再运行 pip install -r requirements.txt，以免 pip 默认下载成 CPU 版：
 #    命令: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+
+# QQ media decoding and reverse WebSocket transport
+Pillow>=10.4.0
+websockets>=12.0

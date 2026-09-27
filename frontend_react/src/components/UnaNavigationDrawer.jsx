@@ -58,6 +58,7 @@ export default function UnaNavigationDrawer({
   onToggleScene,
   onOpenCharacterSettings,
   onOpenSettings,
+  onOpenQQ,
   onLogout,
   hidden = false,
 }) {
@@ -169,6 +170,7 @@ export default function UnaNavigationDrawer({
               </div>
 
               <div className="una-drawer-footer">
+                <MenuRow icon={MessageCircle} label="QQ 连接" onClick={runAndClose(onOpenQQ)} />
                 <MenuRow icon={Settings} label="设置" onClick={runAndClose(onOpenSettings)} />
                 <MenuRow icon={LogOut} label="退出登录" onClick={runAndClose(onLogout)} />
               </div>

@@ -88,6 +88,10 @@ def init_db():
         if 'audio_path' not in columns:
             print("⚠️ 正在迁移数据库: 添加 audio_path 字段...")
             cursor.execute("ALTER TABLE chat_history ADD COLUMN audio_path TEXT")
+        for name in ('source_channel', 'source_message_id'):
+            if name not in columns:
+                cursor.execute(f'ALTER TABLE chat_history ADD COLUMN {name} TEXT')
+
         if 'content_evidence_json' not in columns:
             cursor.execute(
                 "ALTER TABLE chat_history ADD COLUMN content_evidence_json TEXT NOT NULL DEFAULT '{}'"
@@ -290,7 +294,7 @@ def add_message(
     except Exception as e:
         print(f"❌ DB Write Error: {e}")
 
-def get_recent_history(user_id, limit=50):
+def get_recent_history(user_id, limit=50, exclude_channel=None):
     try:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
@@ -298,8 +302,8 @@ def get_recent_history(user_id, limit=50):
         cursor.execute(
             """SELECT role, content, audio_path, timestamp, mood_score,
                       content_evidence_json
-               FROM chat_history WHERE user_id = ? ORDER BY id DESC LIMIT ?""",
-            (user_id, limit)
+               FROM chat_history WHERE user_id = ? AND (? IS NULL OR source_channel IS NULL OR source_channel != ?) ORDER BY id DESC LIMIT ?""",
+            (user_id, exclude_channel, exclude_channel, limit)
         )
         rows = cursor.fetchall()
         conn.close()

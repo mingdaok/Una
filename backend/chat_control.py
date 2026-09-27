@@ -15,10 +15,13 @@ from live2d_motion import (
 
 
 _EMOTION_PREFIX = "EMOTION:"
+_MOOD_PREFIX = "MOOD:"
 _ACTION_PREFIX = "ACTION:"
 _LEGACY_ACTION_PREFIX = "[动作:"
 _PARTIAL_MARKERS = (
     _EMOTION_PREFIX,
+    _MOOD_PREFIX,
+    "MOOD：",
     _ACTION_PREFIX,
     _LEGACY_ACTION_PREFIX,
     "```json",
@@ -29,6 +32,7 @@ _EMOTION_RE = re.compile(
     r"\s*\|\s*MOOD:\s*(?:\[\s*(-?\d+)\s*\]|(-?\d+))",
     re.IGNORECASE,
 )
+_MOOD_RE = re.compile(r"^MOOD[:：]\s*(?:\[\s*([+-]?\d+)\s*\]|([+-]?\d+))", re.IGNORECASE)
 _JSON_NUMBER_RE = re.compile(
     r"-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?"
 )
@@ -124,6 +128,12 @@ class ControlPrefixDemux:
             if emotion_status == "consumed":
                 continue
             if emotion_status == "waiting":
+                return events, ""
+
+            mood_status = self._consume_mood(events, final)
+            if mood_status == "consumed":
+                continue
+            if mood_status == "waiting":
                 return events, ""
 
             action_status = self._consume_action(events, final)
@@ -275,6 +285,29 @@ class ControlPrefixDemux:
             self._ensure_meta(events)
             return "consumed"
         return "waiting"
+
+    def _consume_mood(self, events: list[dict[str, Any]], final: bool) -> str:
+        """Accept standalone mood headers, including headers glued to the body."""
+        if not self._buffer.upper().startswith((_MOOD_PREFIX, "MOOD：")):
+            return "not_control"
+        match = _MOOD_RE.match(self._buffer)
+        if match is None:
+            suffix = self._buffer[len(_MOOD_PREFIX):].strip()
+            if suffix in ("", "+", "-") or re.fullmatch(r"\[\s*[+-]?\d*\s*", suffix):
+                if not final:
+                    return "waiting"
+                self._buffer = ""
+                return "consumed"
+            return "not_control"
+        # Wait for the complete integer: '-1' may be the first part of '-12'.
+        if match.group(2) is not None and match.end() == len(self._buffer) and not final:
+            return "waiting"
+        score = max(-5, min(5, int(match.group(1) or match.group(2))))
+        self._buffer = self._buffer[match.end():]
+        if not self._meta_emitted:
+            events.append({"type": "meta", "emotion": "neutral", "mood_score": score})
+            self._meta_emitted = True
+        return "consumed"
 
     def _consume_action(
         self,

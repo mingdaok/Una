@@ -31,7 +31,7 @@ class MemoryStorage:
 
     def add(self, user_id, doc_id, text, metadata):
         collection = self._get_user_collection(user_id)
-        collection.add(
+        collection.upsert(
             ids=[doc_id],
             documents=[text],
             metadatas=[metadata]

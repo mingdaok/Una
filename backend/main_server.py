@@ -142,6 +142,15 @@ if os.path.exists(CONFIG_PATH):
     with open(CONFIG_PATH, 'r', encoding='utf-8') as f: config = yaml.safe_load(f)
 else: config = {'apis': {'silicon_base': {'api_key': '', 'base_url': '', 'model': ''}}}
 
+SILICON_CONFIG = config.get('apis', {}).get('silicon_base', {})
+LLM_API_KEY = os.getenv('DEEPSEEK_API_KEY') or SILICON_CONFIG.get('api_key', '')
+LLM_BASE_URL = os.getenv('DEEPSEEK_BASE_URL') or SILICON_CONFIG.get(
+    'base_url', 'https://api.siliconflow.cn/v1'
+)
+LLM_MODEL = os.getenv('DEEPSEEK_MODEL') or SILICON_CONFIG.get(
+    'llm_model', 'deepseek-ai/DeepSeek-V2.5'
+)
+
 AUDIO_BASE_URL = config.get('app', {}).get('audio_base_url', '').strip() or "http://127.0.0.1:8000"
 if AUDIO_BASE_URL.endswith('/'):
     AUDIO_BASE_URL = AUDIO_BASE_URL[:-1]
@@ -232,9 +241,9 @@ async def serve_index():
     return JSONResponse(status_code=404, content={"message": "Frontend index.html not found"})
 
 brain = UnaBrain(
-    api_key=config['apis']['silicon_base']['api_key'], 
-    base_url=config['apis']['silicon_base']['base_url'],
-    model=config['apis']['silicon_base'].get('llm_model', 'deepseek-ai/DeepSeek-V2.5')
+    api_key=LLM_API_KEY,
+    base_url=LLM_BASE_URL,
+    model=LLM_MODEL,
 )
 asr = SenseVoiceASR()
 memory_service = MemoryService()
@@ -257,6 +266,33 @@ app.include_router(create_voice_call_router(auth_service, voice_call_service))
 diary_service = DiaryService(brain=brain, life_service=life_service)
 vision_service = VisionService() if 'VisionService' in globals() and VisionService else None
 executor = ThreadPoolExecutor(max_workers=2)
+
+from conversation_service import ConversationService
+from channels.store import ChannelStore
+from channels.service import QQService
+from channels.media import QQMedia
+from channels.api import router_for as create_qq_router
+conversation_service = ConversationService(
+    brain, database, memory_service, life_chat_context_service, life_content_safety_service,
+)
+qq_conversation_service = conversation_service
+if settings.qq.enabled and os.getenv("UNA_QQ_LLM_MODEL"):
+    qq_key = os.getenv("UNA_QQ_LLM_API_KEY", "")
+    qq_url = os.getenv("UNA_QQ_LLM_BASE_URL", "")
+    if not qq_key or not qq_url:
+        raise RuntimeError("QQ 独立模型需要 UNA_QQ_LLM_API_KEY 和 UNA_QQ_LLM_BASE_URL")
+    qq_brain = UnaBrain(api_key=qq_key, base_url=qq_url, model=os.environ["UNA_QQ_LLM_MODEL"])
+    if qq_url.rstrip("/") in ("https://api.deepseek.com", "https://api.deepseek.com/v1"):
+        qq_brain.qq_request_options = {"extra_body": {"thinking": {"type": "disabled"}}}
+    qq_conversation_service = ConversationService(
+        qq_brain, database, memory_service, life_chat_context_service, life_content_safety_service,
+    )
+qq_service = QQService(settings.qq, ChannelStore(database.DB_PATH, settings.qq.bot_id, deferred=True),
+                       qq_conversation_service, database)
+if settings.qq.enabled and not settings.qq.error:
+    qq_service.media = QQMedia(settings.qq, qq_service.adapter, vision_service, asr, generate_audio_file)
+app.include_router(create_qq_router(qq_service, get_current_user))
+
 
 # 将 brain 实例注入 social_api
 if social_api_module:
@@ -491,7 +527,7 @@ async def process_and_push_response(user_text, user_id, live2d_model=None):
             user_id,
             user_text,
         )
-    asyncio.create_task(brain.update_profile_task(user_id, user_text))
+
 
     recent_moods = database.get_recent_mood_scores(user_id, 5)
     negative_count = len([m for m in recent_moods if m <= -2])
@@ -595,7 +631,7 @@ async def process_and_push_response(user_text, user_id, live2d_model=None):
 
     try:
         # 使用流式接口获取片段
-        async for item in brain.chat_stream(
+        async for item in conversation_service.stream(
             user_id,
             user_text,
             long_term_memory=relevant_memories,
@@ -1184,6 +1220,7 @@ async def lifespan(application):
         id="daily_social_post",
         replace_existing=True
     )
+    await qq_service.start()
     scheduler.start()
     print("🌿 [Scheduler] AI 生活增量结算已启动 (每 15 分钟)")
     print("⏰ [Scheduler] 日记定时任务已启动 (每天北京时间 23:30)")
@@ -1192,6 +1229,7 @@ async def lifespan(application):
         yield
     finally:
         try:
+            await qq_service.close()
             await voice_call_service.close()
             print("☎️ [VoiceCall] 实时语音资源已关闭")
         finally:
