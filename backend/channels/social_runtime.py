@@ -289,7 +289,10 @@ class SocialRuntime:
                                 (user_text, row["conversation"], row["generation"], target),
                             )
                         )
-                request_voice = voice_requested(event["text"])
+                request_voice = voice_requested(event["text"]) or (
+                    event["direct"]
+                    and voice_followup_requested(event, history, row["created"])
+                )
                 if group:
                     current["content"] = user_text[:2000]
                     current["media_status"] = "images_attached" if images else "not_provided"
@@ -969,11 +972,42 @@ class SocialRuntime:
 
 
 def voice_requested(text):
-    if re.search(r"不要.*语音|别.*语音|关闭.*语音|语音设置|语音功能|怎么.*语音", text):
+    text = re.sub(r"\s+", "", text)
+    if re.search(r"不要.*语音|不用.*语音|别.*语音|关闭.*语音|语音设置|语音功能|怎么.*语音", text):
         return False
     return bool(
-        re.search(r"语音回复|用语音[说读回]|读给我听|念给我听|发[个段条]语音", text)
+        re.search(r"语音回复|用语音[说读回]|读给我听|念给我听|发(?:送)?(?:一|1)?[个段条]?语音", text)
     )
+
+
+def voice_followup_requested(event, history, created):
+    """Continue only a short request chain by this sender in the supplied conversation.
+
+    The explicit request must remain within 120 seconds; follow-ups never renew it.
+    A different topic or cancellation by this sender ends the chain.
+    """
+    def followup(text):
+        text = re.sub(r"[\s，,。.!！?？~～]", "", text)
+        return bool(re.fullmatch(
+            r"(?:求你了?|拜托了?)(?:就一次)?|就一次(?:嘛|吧)?|"
+            r"(?:再)?发(?:送)?(?:一|1)?[条个段](?:吧|嘛|呀|啊)?|"
+            r"(?:快|快点|赶紧)发(?:吧|嘛|呀|啊)?", text
+        ))
+
+    if not followup(event["text"]):
+        return False
+    previous = sorted(
+        (h for h in history if h.get("role") == "user"
+         and str(h.get("sender")) == str(event["sender"])
+         and 0 <= created - h.get("created", 0) <= 120),
+        key=lambda h: h["created"], reverse=True,
+    )
+    for message in previous:
+        if voice_requested(message["content"]):
+            return True
+        if not followup(message["content"]):
+            return False
+    return False
 
 
 def speakable(text):

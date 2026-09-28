@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from test_qq_channels import stack, event, bind, process_first
 from channels.api import router_for
 from channels.social_types import ReplyPlan, Decision, StickerDescription
-from channels.social_runtime import voice_requested
+from channels.social_runtime import voice_requested, voice_followup_requested
 from channels.media import MediaError
 from conversation_service import ConversationService
 
@@ -334,6 +334,52 @@ async def test_tts_failure_never_duplicates_text(stack):
 @pytest.mark.parametrize("text,wanted", [("用语音说一句", True), ("读给我听", True), ("语音回复", True), ("关闭语音回复", False), ("怎么设置语音回复", False)])
 def test_voice_intent(text, wanted):
     assert voice_requested(text) == wanted
+
+
+@pytest.mark.parametrize("text,wanted", [
+    ("发一条语音", True), ("发个语音吧", True), ("发送一段语音", True),
+    ("发 1 条语音", True), ("发语音", True), ("发一条", False),
+    ("不要发一条语音", False), ("不用语音回复", False),
+    ("怎么发送一条语音", False), ("关闭语音", False),
+])
+def test_natural_voice_requests(text, wanted):
+    assert voice_requested(text) == wanted
+
+
+@pytest.mark.parametrize("followup", ["求你了就一次", "发一条", "快发", "再发一条吧"])
+def test_voice_followup_same_sender(followup):
+    history = [dict(role="user", sender="200", content="发一条语音", created=100),
+               dict(role="assistant", sender="100", content="不发", created=101),
+               dict(role="user", sender="201", content="聊点别的", created=102)]
+    assert voice_followup_requested(dict(sender="200", text=followup), history, 110)
+    assert not voice_followup_requested(dict(sender="202", text=followup), history, 110)
+    assert not voice_followup_requested(dict(sender="200", text=followup), history, 221)
+
+
+@pytest.mark.parametrize("interruption", ["不用语音了", "算了", "聊聊今天的天气"])
+def test_voice_followup_stops_on_cancellation_or_topic_change(interruption):
+    history = [dict(role="user", sender="200", content="发一条语音", created=100),
+               dict(role="user", sender="200", content=interruption, created=105)]
+    assert not voice_followup_requested(dict(sender="200", text="发一条"), history, 110)
+
+
+def test_voice_followups_do_not_renew_timeout_or_use_future_messages():
+    history = [dict(role="user", sender="200", content="发一条语音", created=100),
+               dict(role="user", sender="200", content="求你了就一次", created=200),
+               dict(role="user", sender="200", content="发一条语音", created=400)]
+    assert not voice_followup_requested(dict(sender="200", text="发一条"), history, 230)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_group_natural_voice_request_and_followup_queue_tts(stack, enabled):
+    group_on(stack)
+    stack.store.set_behavior("300", {"voice": enabled})
+    for mid, text in enumerate(["发一条语音", "求你了就一次", "发一条"], 1):
+        await stack.receive(event(text, mid=mid, group=300))
+        await process_first(stack)
+    jobs = stack.store.rows("SELECT * FROM qq_media_jobs WHERE kind='tts'")
+    assert len(jobs) == (3 if enabled else 0)
 
 
 @pytest.mark.asyncio
